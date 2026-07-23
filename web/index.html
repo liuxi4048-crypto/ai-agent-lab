@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-agent-lab</title>
+<style>
+  :root{
+    --bg:#0f1017; --panel:#171826; --panel2:#1e2030; --border:#2a2d42;
+    --text:#e6e7f0; --muted:#9aa0b8; --faint:#6b7089;
+    --accent:#7aa2f7; --accent-dim:#3d5a9e;
+    --plan:#f5c96b; --build:#7aa2f7; --run:#87d96a; --fix:#f7768e;
+    --green:#87d96a; --red:#f7768e; --amber:#f5c96b; --cyan:#7dcfff;
+    --radius:12px; --mono:"Cascadia Code","Consolas",monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font-family:var(--sans);font-size:15px;line-height:1.55;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  /* ---- top bar ---- */
+  header.topbar{
+    display:flex;align-items:center;gap:12px;
+    padding:14px 20px;border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#181a2a,#141522);
+  }
+  .logo{font-weight:700;font-size:17px;letter-spacing:.3px}
+  .logo .dot{color:var(--accent)}
+  .sub{color:var(--muted);font-size:13px}
+  .conn{margin-left:auto;display:flex;align-items:center;gap:7px;
+    font-size:13px;color:var(--muted)}
+  .conn .led{width:9px;height:9px;border-radius:50%;background:var(--faint)}
+  .conn.online .led{background:var(--green);box-shadow:0 0 8px var(--green)}
+  /* ---- layout ---- */
+  .shell{flex:1;display:grid;grid-template-columns:360px 1fr;min-height:0}
+  aside{border-right:1px solid var(--border);display:flex;flex-direction:column;
+    min-height:0;background:var(--panel)}
+  main{display:flex;flex-direction:column;min-height:0}
+  /* ---- new task form ---- */
+  .form{padding:18px;border-bottom:1px solid var(--border)}
+  .form h2{margin:0 0 12px;font-size:13px;letter-spacing:.6px;
+    text-transform:uppercase;color:var(--muted)}
+  .form label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+  textarea,select,input[type=number]{
+    width:100%;background:var(--panel2);color:var(--text);
+    border:1px solid var(--border);border-radius:9px;padding:10px 12px;
+    font-family:inherit;font-size:14px;outline:none;transition:border .15s;
+  }
+  textarea{resize:vertical;min-height:76px;line-height:1.5}
+  textarea:focus,select:focus,input:focus{border-color:var(--accent)}
+  .row{display:flex;gap:10px;margin-top:12px}
+  .row>div{flex:1}
+  .toggle{display:flex;align-items:center;gap:9px;margin-top:14px;
+    font-size:13px;color:var(--text);cursor:pointer;user-select:none}
+  .switch{width:38px;height:22px;border-radius:12px;background:var(--panel2);
+    border:1px solid var(--border);position:relative;transition:.15s;flex:none}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;
+    border-radius:50%;background:var(--faint);transition:.15s}
+  .toggle.on .switch{background:var(--accent-dim);border-color:var(--accent)}
+  .toggle.on .switch::after{left:18px;background:var(--accent)}
+  .btn{width:100%;margin-top:16px;padding:12px;border:none;border-radius:10px;
+    background:var(--accent);color:#0c1020;font-weight:700;font-size:14px;
+    cursor:pointer;transition:.15s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:active{transform:translateY(1px)}
+  /* ---- task list ---- */
+  .list{flex:1;overflow-y:auto;padding:12px}
+  .list h2{margin:4px 8px 10px;font-size:13px;letter-spacing:.6px;
+    text-transform:uppercase;color:var(--muted)}
+  .empty{color:var(--faint);font-size:13px;padding:20px 12px;text-align:center}
+  .card{background:var(--panel2);border:1px solid var(--border);border-radius:11px;
+    padding:12px 13px;margin-bottom:10px;cursor:pointer;transition:.15s;
+    border-left:3px solid var(--faint)}
+  .card:hover{border-color:var(--accent-dim)}
+  .card.sel{border-color:var(--accent);border-left-color:var(--accent);
+    background:#1c2137}
+  .card .t{font-size:14px;font-weight:600;margin-bottom:8px;line-height:1.35;
+    display:flex;align-items:center;gap:8px}
+  .card.state-running{border-left-color:var(--amber)}
+  .card.state-done{border-left-color:var(--green)}
+  .card.state-error{border-left-color:var(--red)}
+  .card.state-stopped{border-left-color:var(--faint)}
+  .card.state-maxiter{border-left-color:#e0a04d}
+  .sdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--faint)}
+  .state-running .sdot{background:var(--amber);animation:pulse 1.2s infinite}
+  .state-done .sdot{background:var(--green)}
+  .state-error .sdot{background:var(--red)}
+  .state-maxiter .sdot{background:#e0a04d}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px}
+  .chip{background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    padding:2px 7px;color:var(--muted)}
+  .badge{border-radius:6px;padding:2px 7px;font-weight:700;font-size:11px;color:#0c1020}
+  .badge.PLAN{background:var(--plan)} .badge.BUILD{background:var(--build)}
+  .badge.RUN{background:var(--run)} .badge.FIX{background:var(--fix)}
+  .bar{height:4px;border-radius:3px;background:var(--panel);margin-top:9px;overflow:hidden}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .3s}
+  /* ---- main detail ---- */
+  .detail-head{padding:16px 22px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:16px;background:var(--panel)}
+  .detail-head .title{font-size:16px;font-weight:700;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .kv{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+    margin-top:5px}
+  .kv b{color:var(--text);font-weight:600}
+  .stopbtn{margin-left:auto;padding:9px 16px;border:1px solid var(--red);
+    background:transparent;color:var(--red);border-radius:9px;font-weight:600;
+    cursor:pointer;font-size:13px;flex:none}
+  .stopbtn:hover{background:var(--red);color:#0c1020}
+  .stopbtn:disabled{opacity:.4;cursor:default;background:transparent;color:var(--red)}
+  .log{flex:1;overflow-y:auto;padding:18px 22px;font-family:var(--mono);
+    font-size:13.5px;line-height:1.75;background:var(--bg)}
+  .log .ln{white-space:pre-wrap;word-break:break-word;padding:1px 0}
+  .ln.divider{color:var(--faint);margin:10px 0 4px;font-weight:700;
+    border-top:1px dashed var(--border);padding-top:8px}
+  .ln.ai{color:var(--cyan)}
+  .ln.tool{color:var(--accent)}
+  .ln.result{color:var(--muted)}
+  .ln.error{color:var(--red);font-weight:600}
+  .ln.success{color:var(--green);font-weight:700}
+  .ln.meta{color:var(--faint)}
+  .placeholder{flex:1;display:flex;align-items:center;justify-content:center;
+    color:var(--faint);font-size:15px;flex-direction:column;gap:8px}
+  /* ---- approval modal ---- */
+  .overlay{position:fixed;inset:0;background:rgba(6,7,14,.72);
+    display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:16px;
+    padding:24px;width:min(560px,92vw);box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .modal h3{margin:0 0 6px;font-size:17px}
+  .modal .who{color:var(--muted);font-size:13px;margin-bottom:14px}
+  .modal pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;
+    padding:14px 16px;font-family:var(--mono);font-size:13.5px;color:var(--cyan);
+    overflow-x:auto;margin:0 0 6px}
+  .modal .cwd{color:var(--faint);font-size:12px;font-family:var(--mono);margin-bottom:18px}
+  .modal .acts{display:flex;gap:12px;justify-content:flex-end}
+  .modal button{padding:10px 20px;border-radius:9px;font-weight:700;font-size:14px;
+    cursor:pointer;border:1px solid var(--border)}
+  .deny{background:transparent;color:var(--text)}
+  .deny:hover{border-color:var(--red);color:var(--red)}
+  .allow{background:var(--green);color:#0c1020;border-color:var(--green)}
+  .allow:hover{filter:brightness(1.08)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2b2f47;border-radius:6px}
+  ::-webkit-scrollbar-thumb:hover{background:#3a3f5f}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">ai-agent-lab <span class="dot">●</span></div>
+  <div class="sub">ローカルLLM コーディングエージェント / 並列実行</div>
+  <div class="conn" id="conn"><span class="led"></span><span id="connt">接続中…</span></div>
+</header>
+
+<div class="shell">
+  <aside>
+    <div class="form">
+      <h2>新しいタスク</h2>
+      <label>作りたいもの(目標)</label>
+      <textarea id="goal" placeholder="例: projects/notepad-gui に tkinter のメモ帳を作って。検証は py_compile のみ。">projects/notepad-gui に、tkinterで動く簡易メモ帳GUIを作って。検証は python -m py_compile のみ(GUIは起動しない)。</textarea>
+      <div class="row">
+        <div>
+          <label>モデル</label>
+          <select id="model"></select>
+        </div>
+        <div style="flex:0 0 96px">
+          <label>最大反復</label>
+          <input type="number" id="maxiter" value="18" min="1" max="60">
+        </div>
+      </div>
+      <div class="toggle on" id="approveTog">
+        <div class="switch"></div><span>実行前に承認する</span>
+      </div>
+      <button class="btn" id="run">＋ タスクを追加して実行</button>
+    </div>
+    <div class="list">
+      <h2>タスク</h2>
+      <div id="cards"><div class="empty">まだタスクはありません</div></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="detail" style="display:flex;flex-direction:column;min-height:0;flex:1">
+      <div class="placeholder" id="ph">
+        <div style="font-size:32px">🤖</div>
+        <div>左でタスクを作成すると、ここに進行状況が表示されます</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3>コマンド実行の承認</h3>
+    <div class="who" id="apWho"></div>
+    <pre id="apCmd"></pre>
+    <div class="cwd" id="apCwd"></div>
+    <div class="acts">
+      <button class="deny" id="apDeny">拒否</button>
+      <button class="allow" id="apAllow">実行を許可</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const tasks = new Map();   // id -> {meta..., log:[]}
+let selected = null;
+let defaultModel = "coder";
+const apQueue = [];        // 承認待ち [{id,task,command,cwd}]
+
+// ---- モデル取得 ----
+fetch("/api/models").then(r=>r.json()).then(d=>{
+  defaultModel = d.default;
+  const sel = $("#model");
+  sel.innerHTML = "";
+  d.models.forEach(m=>{
+    const o = document.createElement("option");
+    o.value = m.key; o.textContent = `${m.key}  (${m.tag})`;
+    o.title = m.use; if(m.key===d.default) o.selected = true;
+    sel.appendChild(o);
+  });
+});
+
+// ---- 承認トグル ----
+$("#approveTog").onclick = () => $("#approveTog").classList.toggle("on");
+
+// ---- タスク作成 ----
+$("#run").onclick = () => {
+  const goal = $("#goal").value.trim();
+  if(!goal){ $("#goal").focus(); return; }
+  fetch("/api/tasks",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      goal, model:$("#model").value,
+      max_iter:parseInt($("#maxiter").value)||18,
+      approve:$("#approveTog").classList.contains("on")
+    })});
+};
+
+// ---- SSE ----
+function connect(){
+  const es = new EventSource("/api/events");
+  es.onopen = ()=>{ $("#conn").classList.add("online"); $("#connt").textContent="接続済み"; };
+  es.onerror = ()=>{ $("#conn").classList.remove("online"); $("#connt").textContent="再接続中…"; };
+  es.onmessage = e=>{
+    const ev = JSON.parse(e.data);
+    if(ev.type==="snapshot"){
+      tasks.clear();
+      ev.tasks.forEach(t=>tasks.set(t.id,{...t,log:t.log||[]}));
+      renderCards();
+      if(!selected && ev.tasks.length) selectTask(ev.tasks[ev.tasks.length-1].id);
+    } else if(ev.type==="status"){
+      const t = tasks.get(ev.task) || {log:[]};
+      Object.assign(t, ev); if(!t.log) t.log=[]; tasks.set(ev.task,t);
+      renderCards();
+      if(selected===ev.task) renderHead();
+      if(!selected) selectTask(ev.task);
+    } else if(ev.type==="log"){
+      const t = tasks.get(ev.task); if(!t) return;
+      t.log.push(ev.line);
+      if(selected===ev.task) appendLine(ev.line);
+    } else if(ev.type==="approval"){
+      apQueue.push(ev); pumpApproval();
+    } else if(ev.type==="approval_done"){
+      const i = apQueue.findIndex(a=>a.id===ev.id);
+      if(i>=0) apQueue.splice(i,1);
+      if($("#overlay").dataset.id==String(ev.id)){ $("#overlay").classList.remove("show"); pumpApproval(); }
+    }
+  };
+}
+connect();
+
+// ---- タスクカード ----
+function renderCards(){
+  const box = $("#cards");
+  if(tasks.size===0){ box.innerHTML='<div class="empty">まだタスクはありません</div>'; return; }
+  const arr = [...tasks.values()].sort((a,b)=>a.id-b.id);
+  box.innerHTML = "";
+  arr.forEach(t=>{
+    const pct = t.max ? Math.round((t.iter||0)/t.max*100) : 0;
+    const el = document.createElement("div");
+    el.className = `card state-${t.state} ${selected===t.id?"sel":""}`;
+    el.onclick = ()=>selectTask(t.id);
+    el.innerHTML = `
+      <div class="t"><span class="sdot"></span>${esc(t.title||"(無題)")}</div>
+      <div class="meta">
+        <span class="chip">${esc(t.model)}</span>
+        <span class="badge ${t.phase}">${t.phase}</span>
+        <span class="chip">${t.iter||0}/${t.max}</span>
+        <span class="chip">${stateLabel(t.state)}</span>
+      </div>
+      <div class="bar"><i style="width:${pct}%"></i></div>`;
+    box.appendChild(el);
+  });
+}
+
+function selectTask(id){
+  selected = id; renderCards();
+  const t = tasks.get(id); if(!t) return;
+  $("#detail").innerHTML = `
+    <div class="detail-head">
+      <div style="min-width:0">
+        <div class="title">${esc(t.title||"(無題)")}</div>
+        <div class="kv" id="kv"></div>
+      </div>
+      <button class="stopbtn" id="stop">■ 停止</button>
+    </div>
+    <div class="log" id="logview"></div>`;
+  $("#stop").onclick = ()=>fetch(`/api/tasks/${id}/stop`,{method:"POST"});
+  renderHead();
+  const lv = $("#logview");
+  lv.innerHTML = "";
+  t.log.forEach(l=>appendLine(l,false));
+  lv.scrollTop = lv.scrollHeight;
+}
+
+function renderHead(){
+  const t = tasks.get(selected); if(!t) return;
+  const kv = $("#kv"); if(!kv) return;
+  kv.innerHTML = `
+    <span>モデル <b>${esc(t.model)}</b> <span style="color:var(--faint)">${esc(t.tag||"")}</span></span>
+    <span>フェーズ <b style="color:var(--${(t.phase||'').toLowerCase()})">${t.phase}</b></span>
+    <span>反復 <b>${t.iter||0}/${t.max}</b></span>
+    <span>状態 <b>${stateLabel(t.state)}</b></span>
+    <span>承認 <b>${t.approve?"ON":"OFF(自走)"}</b></span>`;
+  const stop = $("#stop");
+  if(stop) stop.disabled = (t.state!=="running");
+}
+
+function appendLine(line, scroll=true){
+  const lv = $("#logview"); if(!lv) return;
+  const div = document.createElement("div");
+  div.className = "ln " + classify(line);
+  div.textContent = line;
+  lv.appendChild(div);
+  if(scroll){ const near = lv.scrollHeight-lv.scrollTop-lv.clientHeight < 120;
+    if(near) lv.scrollTop = lv.scrollHeight; }
+}
+
+function classify(l){
+  const s = l.trim();
+  if(s.startsWith("===")) return "divider";
+  if(s.startsWith("[FINISH]") || s.includes("=== 完了")) return "success";
+  if(s.includes("[error]") || s.includes("[拒否]") || s.startsWith("[停止]")) return "error";
+  if(s.startsWith("[AI]")) return "ai";
+  if(s.startsWith("->")) return "tool";
+  if(s.startsWith("[agent]") || s.startsWith("[goal]")) return "meta";
+  if(s.startsWith("exit=") || s.startsWith("---") || s.startsWith("書き込み") || s.startsWith("[")) return "result";
+  return "";
+}
+function stateLabel(s){
+  return {running:"実行中",done:"完了",error:"エラー",stopped:"停止",
+    maxiter:"上限到達",queued:"待機"}[s]||s;
+}
+function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---- 承認モーダル ----
+function pumpApproval(){
+  if($("#overlay").classList.contains("show")) return;
+  const a = apQueue[0]; if(!a) return;
+  const t = tasks.get(a.task);
+  $("#apWho").textContent = t ? `タスク: ${t.title}` : "";
+  $("#apCmd").textContent = "$ " + a.command;
+  $("#apCwd").textContent = "cwd: " + a.cwd;
+  $("#overlay").dataset.id = a.id;
+  $("#overlay").classList.add("show");
+  $("#apAllow").onclick = ()=>respond(a.id,true);
+  $("#apDeny").onclick  = ()=>respond(a.id,false);
+}
+function respond(id,ok){
+  fetch(`/api/approvals/${id}`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ok})});
+  $("#overlay").classList.remove("show");
+  const i = apQueue.findIndex(a=>a.id===id); if(i>=0) apQueue.splice(i,1);
+  setTimeout(pumpApproval,80);
+}
+</script>
+</body>
+</html>

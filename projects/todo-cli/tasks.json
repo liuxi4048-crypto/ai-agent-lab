@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "task": "Buy milk",
+    "completed": true
+  },
+  {
+    "id": 2,
+    "task": "\u725b\u4e73\u3092\u8cb7\u3046",
+    "completed": false
+  },
+  {
+    "id": 3,
+    "task": "\u6383\u9664\u3059\u308b",
+    "completed": false
+  }
+]

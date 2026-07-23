@@ -1,0 +1,29 @@
+# 16GB VRAM + 64GB RAM(オフロード・帯域律速)前提。
+# 主力は MoE(活性パラメータが小さくオフロード耐性が高い)を単一常駐。
+# 役割(plan/code)分けはモデル切替でなく system prompt で行う(再ロード回避)。
+# ※ここに並ぶのは「実際に ollama list に存在するタグ」。新規 pull 不要。
+# tag は「num_ctx=16384 を焼き込んだ派生モデル」。理由: OpenAI互換エンドポイントは
+# リクエストの num_ctx(extra_body)を無視するため、モデル側に固定するのが確実。
+# 派生元: q3-coder-16k←qwen3:30b / q36-smart-16k←qwen3.6:35b / gemma3-fast-16k←gemma3:12b
+# 作り方: modelfiles/*.Modelfile を `ollama create <名前> -f ...` で生成(base層は共有=軽量)。
+# tools: エージェント(function calling)で使えるか。false は step1_chat 専用(gemma3 は tools 非対応)。
+models:
+  coder:  { tag: "q3-coder-16k",   tier: local, tools: true,  use: "主力 / MoE(活性≈3B) / 16K / 一部RAMオフロード" }
+  smart:  { tag: "q36-smart-16k",  tier: local, tools: true,  use: "上位MoE(活性≈3.5B) / 16K / より賢い・重め" }
+  heavy:  { tag: "gpt-oss:120b",   tier: local, tools: true,  use: "難所のみ / 超大MoE / 低速オフロード" }
+  fast:   { tag: "gemma3-fast-16k",tier: local, tools: false, use: "dense 8GB / 高速 / ※tools非対応=chat専用" }
+  # クラウド層(任意・外部送信/課金)。使う時だけ OLLAMA_API_KEY を設定。
+  # glm:  { tag: "glm-5.2:cloud",    tier: cloud, use: "難所のみ(外部送信)" }
+
+default: coder
+
+# 計画=plan / 実装=code。16GBでは同時常駐不可のため同一モデル、役割はプロンプトで分離。
+roles:
+  plan: coder
+  code: coder
+
+# 実行時オプション。文脈長(num_ctx)は派生モデルに焼き込み済み(上記 tag)。
+# KVキャッシュ量子化はサーバ側 env。実効化: `setx OLLAMA_KV_CACHE_TYPE q8_0` 後に ollama 再起動。
+env:
+  num_ctx: 16384       # 参考(実効は派生モデル側)
+  kv_cache_type: q8_0  # 参考(実効はサーバ env)
