@@ -40,12 +40,25 @@ models.yaml の各モデルは `family` / `placement` / `strengths` を持つ:
 | smart | qwen3.6:35b | qwen | hybrid | 上位(SWE-bench 73.4%) |
 | reasoner | deepseek-r1:14b | deepseek | vram | 深い推論・数学。批評レビュアー(tools非対応) |
 | deep | deepseek-r1:70b | deepseek | hybrid | DeepSeek最大(dense・低速だが最深) |
-| next | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | Qwen最大・hybrid筆頭 |
+| next | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | Qwen最大(**未導入**: 2026-07-24時点でHF CDNのstream errorによりpull失敗が続く。partialは保持されるので後日 `ollama pull` 再実行で再開可。導入までは heavy がhybrid筆頭) |
 | heavy | gpt-oss:120b | gpt-oss | hybrid | **最大モデル**(65GB, MoE) |
 | fast | gemma3:12b | gemma | vram | 高速チャット(tools非対応) |
 
 - `model=auto`: タスク文から強み(コーディング→Qwen / 数学・推論→DeepSeek / 並列→worker)で自動選択(router.py)
 - 批評ループの既定レビュアーは**作成者と別ファミリー**(models.yaml `critique_pairs`)
+
+### 実測(このマシン / 2026-07-24 / ROCm 7.1ネイティブ)
+
+| key | 生成速度 | PROCESSOR | 備考 |
+|---|---|---|---|
+| worker (gpt-oss:20b) | **102.1 tok/s** | 100% GPU | 12GB常駐+16K×2スロット(q8_0 KV)でVRAM内 |
+| reasoner (deepseek-r1:14b) | 55.3 tok/s | 100% GPU | |
+| coder (qwen3:30b) | 50 tok/s | 23%/77% CPU/GPU | v1時代(20 tok/s)の2.5倍 |
+| heavy (gpt-oss:120b, 65GB) | 10.7 tok/s | 77%/23% CPU/GPU | MoE活性5.1B。ロード65秒 |
+| deep (deepseek-r1:70b, 42GB) | 1.6 tok/s | 66%/34% CPU/GPU | dense=全重みストリーミングの遅さの実例 |
+
+**65GBのMoE(heavy)が42GBのdense(deep)より6.7倍速い** — hybrid帯域律速では
+「ファイルサイズより活性パラメータ数」という設計判断の実証値。
 
 ### 「RAMを仮想VRAMとして使う」について(2026-07調査)
 

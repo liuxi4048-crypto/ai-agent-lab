@@ -26,13 +26,21 @@ def _tools_required(mode: str) -> bool:
     return mode in ("code", "swarm-code")
 
 
-def pick_model(cfg, task: str, mode: str) -> str:
-    """タスク文とモードから models.yaml のキーを選ぶ。"""
+def pick_model(cfg, task: str, mode: str, installed: set | None = None) -> str:
+    """タスク文とモードから models.yaml のキーを選ぶ。
+
+    installed が渡された場合、Ollamaに実在するタグのモデルだけを候補にする
+    (未DLモデルへの自動ルーティングを防ぐ)。
+    """
     models = cfg.get("models", {})
+
+    def _found(tag: str) -> bool:
+        return installed is None or tag in installed or f"{tag}:latest" in installed
 
     def ok(key: str) -> bool:
         m = models.get(key)
-        return m is not None and (not _tools_required(mode) or m.get("tools", False))
+        return (m is not None and _found(m.get("tag", ""))
+                and (not _tools_required(mode) or m.get("tools", False)))
 
     heavy = bool(_HEAVY_RE.search(task))
     code = bool(_CODE_RE.search(task))
@@ -54,17 +62,17 @@ def pick_model(cfg, task: str, mode: str) -> str:
     # orchestra / critique(chat系: tools不問)
     if heavy:
         for k in ("heavy", "next", "smart"):
-            if k in models:
+            if ok(k):
                 return k
     if code:
         for k in ("coder", "smart", "worker"):
-            if k in models:
+            if ok(k):
                 return k
     if reason:
         for k in ("reasoner", "smart"):
-            if k in models:
+            if ok(k):
                 return k
-    return "worker" if "worker" in models else cfg.get("default", "coder")
+    return "worker" if ok("worker") else cfg.get("default", "coder")
 
 
 def critique_pair(cfg, author_key: str) -> str:

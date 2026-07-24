@@ -93,7 +93,9 @@ async def start_run(req: RunRequest) -> dict:
         raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
 
     cfg = llm.load_config()
-    model = req.model if req.model and req.model != "auto" else router.pick_model(cfg, task, req.mode)
+    installed = set(await llm.list_models())
+    model = (req.model if req.model and req.model != "auto"
+             else router.pick_model(cfg, task, req.mode, installed=installed))
 
     reviewer = None
     if req.mode == "critique" or (req.mode == "code" and req.critique):
