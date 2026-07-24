@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Agent Lab</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --dim: #8b949e;
+    --blue: #58a6ff; --green: #3fb950; --red: #f85149; --gray: #6e7681; --amber: #d29922;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", "Yu Gothic UI", sans-serif; }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  #back-btn {
+    display: none; background: #21262d; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
+  }
+  #back-btn:hover { border-color: var(--blue); }
+  #cancel-btn {
+    display: none; background: transparent; color: var(--red); border: 1px solid var(--red);
+    border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
+  }
+  #cancel-btn:hover { background: #2d1517; }
+  .stats { display: flex; gap: 14px; font-size: 13px; color: var(--dim); }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+  /* ---- ホーム画面 ---- */
+  #home-view { max-width: 960px; margin: 0 auto; padding: 16px 20px 60px; }
+  .input-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .input-row input[type=text] {
+    flex: 1; min-width: 240px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 14px;
+  }
+  .input-row select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; font-size: 13px; max-width: 260px;
+  }
+  .input-row button {
+    background: #238636; color: #fff; border: none; border-radius: 6px;
+    padding: 10px 22px; font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  .input-row button:disabled { background: var(--gray); cursor: not-allowed; }
+  .opt-row { display: flex; gap: 18px; margin-top: 8px; font-size: 13px; color: var(--dim);
+    align-items: center; flex-wrap: wrap; }
+  .opt-row label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
+  .opt-row input[type=number] { width: 60px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+
+  #cards { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+  #cards-empty { color: var(--dim); font-size: 13px; text-align: center; margin-top: 40px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; cursor: pointer; transition: border-color .15s;
+  }
+  .card:hover { border-color: var(--blue); }
+  .card.st-running   { border-left: 4px solid var(--amber); }
+  .card.st-queued    { border-left: 4px solid var(--purple); }
+  .card.st-done      { border-left: 4px solid var(--green); }
+  .card.st-error     { border-left: 4px solid var(--red); }
+  .card.st-cancelled { border-left: 4px solid var(--gray); }
+  .card-head { display: flex; align-items: center; gap: 10px; }
+  .card-task { font-weight: 600; font-size: 14px; flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-cancel {
+    background: transparent; color: var(--red); border: 1px solid var(--red);
+    border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .card-cancel:hover { background: #2d1517; }
+  .card-meta { display: flex; gap: 14px; font-size: 12px; color: var(--dim); margin-top: 8px;
+    flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+  .card .progress-bar { margin-top: 10px; }
+
+  .badge {
+    font-size: 12px; padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+    background: #21262d; color: var(--dim); font-weight: 600;
+  }
+  .badge.b-running   { color: var(--amber); animation: pulse 1.2s infinite; }
+  .badge.b-queued    { color: var(--purple); }
+  .badge.b-done      { color: var(--green); }
+  .badge.b-error     { color: var(--red); }
+  .badge.b-cancelled { color: var(--gray); }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .hybrid-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid var(--purple); color: var(--purple); white-space: nowrap; }
+
+  /* ---- 詳細画面(実行ツリー) ---- */
+  #detail-view { display: none; }
+  #banner { display: none; margin: 14px auto 0; max-width: 960px; padding: 10px 16px;
+    border-radius: 8px; font-size: 13px; }
+  #banner.ok { display: block; background: #12261a; border: 1px solid var(--green); }
+  #banner.err { display: block; background: #2d1517; border: 1px solid var(--red); }
+
+  #tree { padding: 0 20px 20px; max-width: 960px; margin: 0 auto; }
+
+  .node {
+    position: relative; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px; margin-top: 14px;
+    animation: slideIn .3s ease;
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; } }
+  .node.child { margin-left: 42px; }
+  .node.child::before {
+    content: ""; position: absolute; left: -24px; top: -14px; width: 20px; height: 38px;
+    border-left: 2px solid var(--border); border-bottom: 2px solid var(--border);
+    border-bottom-left-radius: 8px;
+  }
+
+  .node.kind-round { background: #10161f; border-style: dashed; }
+  #tree .node.kind-author { border-left: 4px solid var(--blue); }
+  #tree .node.kind-reviewer { border-left: 4px solid var(--amber); }
+  #tree .node.kind-coder { border-left: 4px solid var(--purple); }
+  #tree .node.kind-merger { border-left: 4px solid var(--green); }
+
+  .node.status-thinking { animation: glowBlue 1.6s ease-in-out infinite; }
+  .node.status-generating { animation: glowGreen 1.6s ease-in-out infinite; }
+  .node.kind-coder.status-running { animation: glowPurple 1.6s ease-in-out infinite; }
+  @keyframes glowBlue {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 12px 2px #58a6ff55; }
+  }
+  @keyframes glowGreen {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 12px 2px #3fb95055; }
+  }
+  @keyframes glowPurple {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 12px 2px #bc8cff55; }
+  }
+
+  .verdict { display: none; font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+    white-space: nowrap; font-weight: 600; }
+  .verdict.ok { display: inline-block; background: #12261a; color: var(--green); border: 1px solid var(--green); }
+  .verdict.ng { display: inline-block; background: #2d1517; color: var(--red); border: 1px solid var(--red); }
+
+  .flow-arrow { text-align: center; color: var(--dim); font-size: 12.5px;
+    margin-top: 12px; animation: slideIn .3s ease; letter-spacing: .05em; }
+
+  .node.status-running { border-color: var(--amber); }
+  .status-running .badge { color: var(--amber); }
+  .node.status-thinking { border-color: var(--blue); }
+  .node.status-generating { border-color: var(--green); }
+  .node.status-done { border-color: #2ea04366; }
+  .node.status-error { border-color: var(--red); }
+  .node.status-cancelled { border-color: var(--gray); opacity: .7; }
+  .status-cancelled .badge { color: var(--gray); }
+
+  .node-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .status-waiting    .badge { color: var(--gray); }
+  .status-thinking   .badge { color: var(--blue); animation: pulse 1.2s infinite; }
+  .status-generating .badge { color: var(--green); }
+  .status-done       .badge { color: var(--green); }
+  .status-error      .badge { color: var(--red); }
+
+  .spinner {
+    width: 12px; height: 12px; border: 2px solid var(--green); border-top-color: transparent;
+    border-radius: 50%; animation: spin .8s linear infinite; display: none;
+  }
+  .status-generating .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .title { font-weight: 600; font-size: 14px; flex: 1; }
+  .meta { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .detail { font-size: 12.5px; color: var(--dim); margin-top: 6px; }
+
+  .progress-wrap { margin-top: 8px; }
+  .progress-bar { height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--green)); width: 0; transition: width .4s; }
+  .progress-label { font-size: 11px; color: var(--dim); margin-top: 3px; }
+
+  .preview {
+    margin-top: 8px; font-family: Consolas, monospace; font-size: 12px;
+    color: #7ee787; background: #0d1117; border-radius: 6px; padding: 8px 10px;
+    white-space: pre-wrap; word-break: break-all; min-height: 18px;
+  }
+  .preview::after { content: "▌"; animation: pulse 1s infinite; }
+  .status-done .preview::after, .status-error .preview::after { content: ""; }
+
+  /* coder ノードの逐次ログ */
+  .agentlog {
+    margin-top: 8px; font-family: Consolas, monospace; font-size: 12px;
+    background: #0d1117; border-radius: 6px; padding: 8px 10px;
+    max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .agentlog div { padding: 1px 0; }
+  .agentlog .c-ai    { color: var(--blue); }
+  .agentlog .c-tool  { color: var(--amber); }
+  .agentlog .c-phase { color: var(--purple); font-weight: 600; }
+  .agentlog .c-done  { color: var(--green); font-weight: 600; }
+  .agentlog .c-err   { color: var(--red); }
+  .agentlog .c-out   { color: var(--dim); }
+
+  .log { display: none; margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; }
+  .node.expanded .log { display: block; }
+  .log h4 { font-size: 12px; color: var(--dim); margin: 8px 0 4px; }
+  .log pre {
+    font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    background: #0d1117; border-radius: 6px; padding: 10px; max-height: 320px; overflow-y: auto;
+  }
+
+  .answer-card { border: 1px solid var(--green); background: #12261a; }
+  .answer-card .output { margin-top: 10px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+
+  #artifacts { display: none; margin: 14px auto 60px; max-width: 920px; background: var(--panel);
+    border: 1px solid var(--amber); border-radius: 8px; padding: 12px 14px; }
+  #artifacts h3 { font-size: 13px; color: var(--amber); margin-bottom: 8px; }
+  #artifacts a { display: block; color: var(--blue); font-size: 13px;
+    text-decoration: none; padding: 3px 0; }
+  #artifacts a:hover { text-decoration: underline; }
+  #artifacts .no-link { color: var(--red); font-size: 13px; }
+
+  /* ---- 承認モーダル ---- */
+  #approve-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: #000a; align-items: center; justify-content: center;
+  }
+  #approve-overlay.show { display: flex; }
+  #approve-modal {
+    background: var(--panel); border: 1px solid var(--amber); border-radius: 10px;
+    max-width: 640px; width: 92%; padding: 20px;
+  }
+  #approve-modal h3 { font-size: 15px; color: var(--amber); margin-bottom: 10px; }
+  #approve-cmd {
+    font-family: Consolas, monospace; font-size: 13px; background: #0d1117;
+    border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-all;
+    margin: 8px 0;
+  }
+  #approve-cwd { font-size: 12px; color: var(--dim); margin-bottom: 14px; }
+  #approve-modal .btns { display: flex; gap: 10px; justify-content: flex-end; }
+  #approve-modal button { border-radius: 6px; padding: 8px 20px; font-size: 14px;
+    cursor: pointer; font-weight: 600; border: none; }
+  #btn-approve { background: #238636; color: #fff; }
+  #btn-deny { background: transparent; color: var(--red); border: 1px solid var(--red) !important; }
+  #approve-count { font-size: 12px; color: var(--dim); margin-right: auto; align-self: center; }
+</style>
+</head>
+<body>
+<header>
+  <button id="back-btn" onclick="location.hash=''">← タスク一覧</button>
+  <h1>🧪 AI Agent Lab</h1>
+  <button id="cancel-btn" onclick="cancelCurrentRun()" style="display:none">⛔ 中断</button>
+  <div class="stats">
+    <span id="stat-detail-wrap" style="display:none">
+      <span>実行中エージェント <b id="stat-active">0</b></span>
+      <span style="margin-left:14px">総トークン <b id="stat-tokens">0</b></span>
+      <span style="margin-left:14px">経過 <b id="stat-elapsed">-</b></span>
+    </span>
+    <span>実行中タスク <b id="stat-running">0</b></span>
+    <span>Ollama <b id="stat-ollama">確認中…</b></span>
+  </div>
+</header>
+
+<!-- ホーム: タスク一覧 -->
+<div id="home-view">
+  <div class="input-row">
+    <input type="text" id="task-input" placeholder="新しいタスクを入力(例: メモ帳アプリを作って動かして)"
+           onkeydown="if(event.key==='Enter')startRun()">
+    <select id="mode-select" title="実行モード" onchange="onModeChange()">
+      <option value="code">🛠 コード(エージェント)</option>
+      <option value="swarm-code">🐝 スウォーム(並列コーダー)</option>
+      <option value="orchestra">🎼 並列分解</option>
+      <option value="critique">🔁 批評ループ</option>
+    </select>
+    <select id="model-select" title="使用するモデル(批評ループでは作成者モデル)"></select>
+    <select id="reviewer-select" title="レビュアーモデル" style="display:none"></select>
+    <button id="run-btn" onclick="startRun()">実行</button>
+  </div>
+  <div class="opt-row" id="code-opts">
+    <label title="run_command をユーザー承認してから実行する"><input type="checkbox" id="approve-check" checked> 実行前に承認</label>
+    <label title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check" onchange="onModeChange()"> レビュー+FIX</label>
+    <label>最大反復 <input type="number" id="maxiter-input" value="18" min="4" max="50"></label>
+    <span id="route-hint"></span>
+  </div>
+  <div id="cards"></div>
+  <div id="cards-empty">まだタスクがありません。上の入力欄からタスクを開始してください。</div>
+</div>
+
+<!-- 詳細: 実行ツリー -->
+<div id="detail-view">
+  <div id="banner"></div>
+  <div id="tree"></div>
+  <div id="artifacts"><h3>📦 成果物(クリックで表示・保存)</h3><div id="artifact-list"></div></div>
+</div>
+
+<!-- 承認モーダル -->
+<div id="approve-overlay">
+  <div id="approve-modal">
+    <h3>⚠️ コマンド実行の承認</h3>
+    <div>エージェントが次のコマンドの実行を要求しています:</div>
+    <div id="approve-cmd"></div>
+    <div id="approve-cwd"></div>
+    <div class="btns">
+      <span id="approve-count"></span>
+      <button id="btn-deny" onclick="respondApproval(false)">拒否</button>
+      <button id="btn-approve" onclick="respondApproval(true)">✅ 実行を承認</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STATUS_LABEL = {
+  waiting: "⏳ 待機", thinking: "🧠 思考中", generating: "✍️ 生成中",
+  running: "🚀 実行中", done: "✅ 完了", error: "❌ 失敗", cancelled: "⛔ 中断",
+};
+const CARD_LABEL = { running: "🚀 実行中", queued: "⏳ 待機中", done: "✅ 完了",
+  error: "❌ 失敗", cancelled: "⛔ 中断" };
+const MODE_ICON = { orchestra: "🎼", critique: "🔁", code: "🛠", "swarm-code": "🐝" };
+const PLACEMENT_TAG = { vram: "▣VRAM", hybrid: "⬔RAM+VRAM" };
+
+const $ = (id) => document.getElementById(id);
+const tree = $("tree");
+
+function fmtSec(s) {
+  if (s < 0) s = 0;
+  if (s < 60) return s.toFixed(0) + "秒";
+  return Math.floor(s / 60) + "分" + Math.floor(s % 60) + "秒";
+}
+function fmtTime(t) {
+  const d = new Date(t * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/* ================= ホーム画面 ================= */
+let runsCache = [];
+let modelCatalog = { models: [], default: "" };
+
+function modelLabel(m) {
+  const parts = [`${m.key} · ${m.family}`, PLACEMENT_TAG[m.placement] || m.placement];
+  if (!m.tools) parts.push("toolsなし");
+  if (!m.installed) parts.push("未DL");
+  return parts.join(" ");
+}
+
+function fillModels() {
+  const mode = $("mode-select").value;
+  const toolsRequired = (mode === "code" || mode === "swarm-code");
+
+  const sel = $("model-select");
+  const saved = localStorage.getItem("model_" + mode);
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "auto"; auto.textContent = "🎯 auto(強みで自動選択)";
+  sel.appendChild(auto);
+  for (const m of modelCatalog.models) {
+    const opt = document.createElement("option");
+    opt.value = m.key; opt.textContent = modelLabel(m);
+    if (toolsRequired && !m.tools) opt.disabled = true;
+    if (!m.installed) opt.disabled = true;
+    sel.appendChild(opt);
+  }
+  sel.value = saved && [...sel.options].some(o => o.value === saved && !o.disabled) ? saved : "auto";
+  sel.onchange = () => localStorage.setItem("model_" + mode, sel.value);
+
+  const rev = $("reviewer-select");
+  rev.innerHTML = "";
+  const revAuto = document.createElement("option");
+  revAuto.value = ""; revAuto.textContent = "🔍 auto(異ファミリー自動)";
+  rev.appendChild(revAuto);
+  for (const m of modelCatalog.models) {
+    const opt = document.createElement("option");
+    opt.value = m.key; opt.textContent = "🔍 " + modelLabel(m);
+    if (!m.installed) opt.disabled = true;
+    rev.appendChild(opt);
+  }
+  const savedRev = localStorage.getItem("reviewer_model") || "";
+  rev.value = [...rev.options].some(o => o.value === savedRev && !o.disabled) ? savedRev : "";
+  rev.onchange = () => localStorage.setItem("reviewer_model", rev.value);
+}
+
+async function loadModels() {
+  try {
+    modelCatalog = await (await fetch("/models")).json();
+  } catch { /* Ollama未接続時はヘルス表示に任せる */ }
+  $("mode-select").value = localStorage.getItem("mode") || "code";
+  onModeChange();
+}
+
+function onModeChange() {
+  const mode = $("mode-select").value;
+  localStorage.setItem("mode", mode);
+  const critiqueOn = $("critique-check").checked;
+  $("reviewer-select").style.display =
+    (mode === "critique" || (mode === "code" && critiqueOn)) ? "" : "none";
+  $("code-opts").style.display = (mode === "code" || mode === "swarm-code") ? "flex" : "none";
+  fillModels();
+}
+
+async function refreshRuns() {
+  try {
+    const data = await (await fetch("/runs")).json();
+    runsCache = data.runs;
+    renderCards();
+    $("stat-running").textContent = runsCache.filter(r => r.status === "running").length;
+  } catch { /* サーバー停止中 */ }
+}
+
+function renderCards() {
+  const box = $("cards");
+  box.innerHTML = "";
+  $("cards-empty").style.display = runsCache.length ? "none" : "";
+  for (const r of runsCache) {
+    const card = document.createElement("div");
+    card.className = "card st-" + r.status;
+    card.onclick = () => { location.hash = "run/" + r.id; };
+
+    const elapsed = r.finished_at
+      ? fmtSec(r.finished_at - r.created_at)
+      : fmtSec(Date.now() / 1000 - r.created_at) + " 経過";
+    const isCritique = r.mode === "critique";
+    const progLabel = { critique: "ラウンド", code: "iter", "swarm-code": "サブタスク",
+      orchestra: "サブタスク" }[r.mode] || "";
+    const prog = r.progress ? `${progLabel} ${r.progress[0]}/${r.progress[1]}` : "";
+    const icon = MODE_ICON[r.mode] || "🤖";
+    const modelLbl = isCritique
+      ? `${icon} ✍️ ${r.model || ""} ⇄ 🔍 ${r.reviewer_model || ""}`
+      : `${icon} ${r.model || ""}` + (r.reviewer_model ? ` +🔍 ${r.reviewer_model}` : "");
+    const pct = r.progress && r.progress[1] ? r.progress[0] / r.progress[1] * 100
+              : (r.status !== "running" && r.status !== "queued" ? 100 : 0);
+    const cancellable = r.status === "running" || r.status === "queued";
+
+    card.innerHTML = `
+      <div class="card-head">
+        <span class="badge b-${r.status}">${CARD_LABEL[r.status] || r.status}</span>
+        <span class="card-task"></span>
+        ${r.hybrid ? '<span class="hybrid-tag">⬔ RAM+VRAM直列</span>' : ""}
+        ${cancellable ? '<button class="card-cancel">⛔ 中断</button>' : ""}
+      </div>
+      <div class="card-meta">
+        <span>🕐 ${fmtTime(r.created_at)}</span>
+        <span>⏱ ${elapsed}</span>
+        <span>${modelLbl}</span>
+        <span>${r.tokens || 0} tok</span>
+        <span>${prog}</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+    card.querySelector(".card-task").textContent = r.task;
+    const cancelBtn = card.querySelector(".card-cancel");
+    if (cancelBtn) {
+      cancelBtn.onclick = (ev) => { ev.stopPropagation(); cancelRun(r.id); };
+    }
+    box.appendChild(card);
+  }
+}
+
+async function cancelRun(runId) {
+  try {
+    await fetch(`/run/${runId}/cancel`, { method: "POST" });
+    await refreshRuns();
+  } catch { /* 通信エラーは静かに無視、一覧の再取得で状態は追従する */ }
+}
+
+function cancelCurrentRun() {
+  if (currentRunId) cancelRun(currentRunId);
+}
+
+async function startRun() {
+  const task = $("task-input").value.trim();
+  if (!task) return;
+  $("run-btn").disabled = true;
+  try {
+    const mode = $("mode-select").value;
+    const critique = mode === "code" && $("critique-check").checked;
+    const body = {
+      task, mode,
+      model: $("model-select").value,
+      reviewer_model: (mode === "critique" || critique) ? $("reviewer-select").value : "",
+      approve: $("approve-check").checked,
+      critique,
+      max_iter: parseInt($("maxiter-input").value) || 18,
+    };
+    const resp = await fetch("/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      $("task-input").value = "";
+      await refreshRuns();
+      location.hash = "run/" + data.run_id;
+    } else {
+      alert(data.detail || resp.statusText);
+    }
+  } finally {
+    $("run-btn").disabled = false;
+  }
+}
+
+/* ================= 承認モーダル ================= */
+let approvalQueue = [];   // {aid, command, cwd}
+
+function showNextApproval() {
+  const cur = approvalQueue[0];
+  const ov = $("approve-overlay");
+  if (!cur) { ov.classList.remove("show"); return; }
+  $("approve-cmd").textContent = "$ " + cur.command;
+  $("approve-cwd").textContent = "cwd: " + cur.cwd;
+  $("approve-count").textContent =
+    approvalQueue.length > 1 ? `他 ${approvalQueue.length - 1} 件待機中` : "";
+  ov.classList.add("show");
+}
+
+async function respondApproval(approved) {
+  const cur = approvalQueue[0];
+  if (!cur || !currentRunId) return;
+  try {
+    await fetch(`/run/${currentRunId}/approvals/${cur.aid}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved }),
+    });
+  } catch { /* 失敗時は approval_resolved イベントで整合させる */ }
+  approvalQueue.shift();
+  showNextApproval();
+}
+
+function enqueueApproval(a) {
+  if (!approvalQueue.some(x => x.aid === a.aid)) {
+    approvalQueue.push(a);
+    showNextApproval();
+  }
+}
+
+function removeApproval(aid) {
+  const idx = approvalQueue.findIndex(x => x.aid === aid);
+  if (idx >= 0) { approvalQueue.splice(idx, 1); showNextApproval(); }
+}
+
+/* ================= 詳細画面(実行ツリー) ================= */
+const nodes = new Map();
+let runStartedAt = null;
+let runFinishedAt = null;
+let es = null;
+let currentRunId = null;
+
+function setCancelVisible(visible) {
+  $("cancel-btn").style.display = visible ? "inline-block" : "none";
+}
+
+function nodeElapsed(d) {
+  if (!d.started_at) return "";
+  const end = d.finished_at || Date.now() / 1000;
+  return fmtSec(end - d.started_at);
+}
+
+function nodeDepth(d) {
+  let depth = 0, cur = d;
+  while (cur && cur.parent_id && depth < 8) {
+    const parent = nodes.get(cur.parent_id);
+    if (!parent) break;
+    depth++; cur = parent.data;
+  }
+  return depth;
+}
+
+function classifyLog(line) {
+  const t = line.trimStart();
+  if (t.startsWith("[AI]")) return "c-ai";
+  if (t.startsWith("->")) return "c-tool";
+  if (t.startsWith("===") || t.startsWith("[agent]") || t.startsWith("[goal]")) return "c-phase";
+  if (t.startsWith("[FINISH]") || t.includes("=== 完了")) return "c-done";
+  if (t.startsWith("[停止]") || t.startsWith("[retry]") || t.startsWith("[拒否]")
+      || t.startsWith("[MAX_ITER") || t.includes("エラー")) return "c-err";
+  return "c-out";
+}
+
+function appendLogLine(entry, line) {
+  const box = entry.el.querySelector(".agentlog");
+  box.style.display = "";
+  const div = document.createElement("div");
+  div.className = classifyLog(line);
+  div.textContent = line;
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.appendChild(div);
+  while (box.childNodes.length > 2000) box.removeChild(box.firstChild);
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderNode(d) {
+  let entry = nodes.get(d.id);
+  if (!entry) {
+    if (d.kind === "round" || d.kind === "answer") {
+      const hasRound = [...nodes.values()].some(x => x.data.kind === "round");
+      if (hasRound) {
+        const arrow = document.createElement("div");
+        arrow.className = "flow-arrow";
+        arrow.textContent = d.kind === "round" ? "⬇ 批評を反映して改稿 ⬇" : "⬇ 最終稿 ⬇";
+        tree.appendChild(arrow);
+      }
+    }
+    const el = document.createElement("div");
+    el.dataset.id = d.id;
+    if (d.parent_id) el.classList.add("child");
+    el.innerHTML = `
+      <div class="node-head" onclick="this.parentElement.classList.toggle('expanded')">
+        <span class="badge"></span><span class="spinner"></span>
+        <span class="title"></span><span class="verdict"></span><span class="meta"></span>
+      </div>
+      <div class="detail"></div>
+      <div class="progress-wrap" style="display:none">
+        <div class="progress-bar"><div class="progress-fill"></div></div>
+        <div class="progress-label"></div>
+      </div>
+      <div class="preview" style="display:none"></div>
+      <div class="agentlog" style="display:none"></div>
+      <div class="output" style="display:none"></div>
+      <div class="log">
+        <h4>プロンプト</h4><pre class="log-prompt"></pre>
+        <h4>出力全文</h4><pre class="log-output"></pre>
+      </div>`;
+    tree.appendChild(el);
+    entry = { data: d, el };
+    nodes.set(d.id, entry);
+    // スナップショット復元: 保存済みログを再生
+    if (d.log && d.log.length) {
+      for (const line of d.log) appendLogLine(entry, line);
+    }
+  } else {
+    entry.data = { ...entry.data, ...d };
+  }
+  updateNode(entry);
+  return entry;
+}
+
+function updateNode(entry) {
+  const { data: d, el } = entry;
+  const hadExpanded = el.classList.contains("expanded");
+  el.className = "node status-" + d.status
+    + " kind-" + (d.kind || "task")
+    + (d.parent_id ? " child" : "")
+    + (d.kind === "answer" ? " answer-card" : "")
+    + (hadExpanded ? " expanded" : "");
+  const depth = nodeDepth(d);
+  el.style.marginLeft = depth ? (depth * 42) + "px" : "";
+  el.querySelector(".badge").textContent = STATUS_LABEL[d.status] || d.status;
+
+  const vm = (d.title || "").match(/^(.*?)\s*[—:：]?\s*(✅承認|❌要改善)(.*)$/);
+  const verdictEl = el.querySelector(".verdict");
+  if (vm) {
+    el.querySelector(".title").textContent = vm[1];
+    verdictEl.textContent = vm[2] + vm[3];
+    verdictEl.className = "verdict " + (vm[2] === "✅承認" ? "ok" : "ng");
+  } else {
+    el.querySelector(".title").textContent = d.title;
+    verdictEl.className = "verdict";
+    verdictEl.textContent = "";
+  }
+
+  const metaParts = [];
+  if (d.tokens) metaParts.push(d.tokens + " tok");
+  const elapsed = nodeElapsed(d);
+  if (elapsed) metaParts.push(elapsed);
+  el.querySelector(".meta").textContent = metaParts.join(" · ");
+
+  el.querySelector(".detail").textContent = d.detail || "";
+  el.querySelector(".detail").style.display = d.detail ? "" : "none";
+
+  const pw = el.querySelector(".progress-wrap");
+  if (d.progress) {
+    pw.style.display = "";
+    const [done, total] = d.progress;
+    pw.querySelector(".progress-fill").style.width = (total ? done / total * 100 : 0) + "%";
+    const isCritique = [...nodes.values()].some(x => x.data.kind === "round");
+    const isCoder = [...nodes.values()].some(x => x.data.kind === "coder");
+    pw.querySelector(".progress-label").textContent =
+      isCritique ? `ラウンド ${done} / ${total}`
+      : isCoder ? `進行 ${done} / ${total}`
+      : `サブタスク完了 ${done} / ${total}`;
+  }
+
+  const preview = el.querySelector(".preview");
+  if (d.kind === "answer") {
+    preview.style.display = "none";
+    const out = el.querySelector(".output");
+    out.style.display = "";
+    out.textContent = d.output || "";
+  } else if (d.kind === "coder") {
+    preview.style.display = "none";  // coder はログビューが主役
+  } else if (d.status === "generating") {
+    preview.style.display = d.preview ? "" : "none";
+    preview.textContent = "…" + (d.preview || "");
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } else if (d.status === "done" || d.status === "error") {
+    if (d.preview) { preview.style.display = ""; preview.textContent = d.preview; }
+  }
+
+  el.querySelector(".log-prompt").textContent = d.prompt || "(なし)";
+  el.querySelector(".log-output").textContent = d.output || "(なし)";
+}
+
+function renderArtifacts(list) {
+  const box = $("artifacts"), out = $("artifact-list");
+  out.innerHTML = "";
+  box.style.display = list.length ? "block" : "none";
+  for (const a of list) {
+    if (a.path) {
+      const link = document.createElement("a");
+      link.href = a.path; link.target = "_blank"; link.textContent = "📄 " + a.name;
+      out.appendChild(link);
+    } else {
+      const span = document.createElement("div");
+      span.className = "no-link"; span.textContent = a.name;
+      out.appendChild(span);
+    }
+  }
+}
+
+function updateStats() {
+  let active = 0, tokens = 0;
+  for (const { data: d } of nodes.values()) {
+    if (d.status === "thinking" || d.status === "generating" || d.status === "running") active++;
+    tokens += d.tokens || 0;
+  }
+  $("stat-active").textContent = active;
+  $("stat-tokens").textContent = tokens;
+  if (runStartedAt) {
+    const end = runFinishedAt || Date.now() / 1000;
+    $("stat-elapsed").textContent = fmtSec(end - runStartedAt);
+  }
+}
+
+function tick() {
+  for (const entry of nodes.values()) {
+    if (["thinking", "generating", "running"].includes(entry.data.status)) updateNode(entry);
+  }
+  updateStats();
+}
+setInterval(tick, 1000);
+
+function handleEvent(e) {
+  switch (e.type) {
+    case "snapshot":
+      tree.innerHTML = ""; nodes.clear();
+      approvalQueue = [];
+      runStartedAt = e.run_started_at;
+      runFinishedAt = e.running ? null
+        : Math.max(0, ...e.nodes.map(n => n.finished_at || 0)) || null;
+      e.nodes.forEach(renderNode);
+      renderArtifacts(e.artifacts || []);
+      (e.approvals || []).forEach(a => enqueueApproval(a));
+      setCancelVisible(e.running);
+      if (!e.running && e.nodes.length) {
+        const root = e.nodes.find(n => n.kind === "task");
+        const b = $("banner");
+        if (root && root.status === "cancelled") {
+          b.className = "err"; b.textContent = "⛔ このタスクは中断されました";
+        } else if (root && root.status === "error") {
+          b.className = "err"; b.textContent = "❌ このタスクはエラーで終了しました";
+        } else {
+          b.className = "ok"; b.textContent = "✅ このタスクは完了しています";
+        }
+      }
+      break;
+    case "reset":
+      tree.innerHTML = ""; nodes.clear();
+      approvalQueue = [];
+      showNextApproval();
+      runStartedAt = e.run_started_at;
+      runFinishedAt = null;
+      $("banner").className = ""; $("banner").textContent = "";
+      renderArtifacts([]);
+      setCancelVisible(true);
+      break;
+    case "node_created":
+      renderNode(e.node);
+      break;
+    case "status_changed": {
+      const n = nodes.get(e.id);
+      if (n) { Object.assign(n.data, { status: e.status, started_at: e.started_at, finished_at: e.finished_at }); updateNode(n); }
+      break;
+    }
+    case "token_progress": {
+      const n = nodes.get(e.id);
+      if (n) {
+        n.data.tokens = e.tokens; n.data.preview = e.preview;
+        if (n.data.status !== "generating") n.data.status = "generating";
+        updateNode(n);
+      }
+      break;
+    }
+    case "log_line": {
+      const n = nodes.get(e.id);
+      if (n) appendLogLine(n, e.line);
+      break;
+    }
+    case "approval_requested":
+      enqueueApproval({ aid: e.aid, command: e.command, cwd: e.cwd });
+      break;
+    case "approval_resolved":
+      removeApproval(e.aid);
+      break;
+    case "prompt": {
+      const n = nodes.get(e.id);
+      if (n) { n.data.prompt = e.prompt; updateNode(n); }
+      break;
+    }
+    case "title": {
+      const n = nodes.get(e.id);
+      if (n) { n.data.title = e.title; updateNode(n); }
+      break;
+    }
+    case "artifacts":
+      renderArtifacts(e.artifacts);
+      break;
+    case "progress": {
+      const n = nodes.get(e.id);
+      if (n) { n.data.progress = [e.done, e.total]; updateNode(n); }
+      break;
+    }
+    case "node_completed": {
+      const n = nodes.get(e.id);
+      if (n) {
+        n.data.output = e.output;
+        n.data.preview = e.error ? (e.error || "").slice(0, 120) : (e.output || "").slice(-120);
+        updateNode(n);
+      }
+      break;
+    }
+    case "run_finished": {
+      runFinishedAt = Date.now() / 1000;
+      setCancelVisible(false);
+      approvalQueue = [];
+      showNextApproval();
+      const b = $("banner");
+      if (e.error && e.error.includes("中断")) { b.className = "err"; b.textContent = "⛔ " + e.error; }
+      else if (e.error) { b.className = "err"; b.textContent = "❌ 実行エラー: " + e.error; }
+      else { b.className = "ok"; b.textContent = "✅ 全エージェントの実行が完了しました"; }
+      break;
+    }
+  }
+  tick();
+}
+
+/* ================= 画面切り替え ================= */
+function enterDetail(runId) {
+  if (es) { es.close(); es = null; }  // run→run 直接遷移で旧SSEを閉じる
+  currentRunId = runId;
+  $("home-view").style.display = "none";
+  $("detail-view").style.display = "block";
+  $("back-btn").style.display = "inline-block";
+  $("stat-detail-wrap").style.display = "";
+  tree.innerHTML = ""; nodes.clear();
+  approvalQueue = [];
+  showNextApproval();
+  runStartedAt = runFinishedAt = null;
+  $("banner").className = ""; $("banner").textContent = "";
+  renderArtifacts([]);
+  setCancelVisible(false);
+  es = new EventSource("/events/" + runId);
+  es.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
+}
+
+function enterHome() {
+  if (es) { es.close(); es = null; }
+  currentRunId = null;
+  approvalQueue = [];
+  showNextApproval();
+  setCancelVisible(false);
+  $("home-view").style.display = "block";
+  $("detail-view").style.display = "none";
+  $("back-btn").style.display = "none";
+  $("stat-detail-wrap").style.display = "none";
+  refreshRuns();
+}
+
+function route() {
+  const m = location.hash.match(/^#run\/(\w+)$/);
+  if (m) enterDetail(m[1]);
+  else enterHome();
+}
+window.addEventListener("hashchange", route);
+
+/* ================= 共通 ================= */
+async function checkHealth() {
+  try {
+    const h = await (await fetch("/health")).json();
+    $("stat-ollama").textContent = h.ollama ? "接続OK" : "未接続";
+    $("stat-ollama").style.color = h.ollama ? "var(--green)" : "var(--red)";
+  } catch { $("stat-ollama").textContent = "?"; }
+}
+
+loadModels();
+checkHealth();
+route();
+setInterval(checkHealth, 10000);
+setInterval(() => { if (!es) refreshRuns(); }, 2000);
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@
   /quit          終了
 """
 import sys
-from llm import load_config, chat
+from llm import load_config, chat_sync
 
 ROLE_PROMPTS = {
     "plan": "あなたは設計者。要件を分解し、作るもの・手順・検証方法を簡潔に日本語で計画する。",
@@ -33,7 +33,7 @@ def main():
             break
         if user == "/models":
             for k, m in cfg["models"].items():
-                print(f"  {k:8} {m['tag']:16} [{m.get('tier','local')}] {m.get('use','')}")
+                print(f"  {k:9} {m['tag']:44} [{m.get('placement','vram')}] {m.get('use','')}")
             continue
         if user.startswith("/model "):
             key = user.split(maxsplit=1)[1].strip()
@@ -56,11 +56,11 @@ def main():
             {"role": "user", "content": user}
         ]
         try:
-            resp = chat(cfg, model_key, messages)
+            msg = chat_sync(cfg, model_key, messages)
         except Exception as e:
             print(f"  [error] {e}")
             continue
-        answer = resp.choices[0].message.content or ""
+        answer = msg.get("content") or ""
         print(f"\n{model_key}> {answer}")
         history += [{"role": "user", "content": user},
                     {"role": "assistant", "content": answer}]

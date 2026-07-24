@@ -1,29 +1,84 @@
-# 16GB VRAM + 64GB RAM(オフロード・帯域律速)前提。
-# 主力は MoE(活性パラメータが小さくオフロード耐性が高い)を単一常駐。
-# 役割(plan/code)分けはモデル切替でなく system prompt で行う(再ロード回避)。
-# ※ここに並ぶのは「実際に ollama list に存在するタグ」。新規 pull 不要。
-# tag は「num_ctx=16384 を焼き込んだ派生モデル」。理由: OpenAI互換エンドポイントは
-# リクエストの num_ctx(extra_body)を無視するため、モデル側に固定するのが確実。
-# 派生元: q3-coder-16k←qwen3:30b / q36-smart-16k←qwen3.6:35b / gemma3-fast-16k←gemma3:12b
-# 作り方: modelfiles/*.Modelfile を `ollama create <名前> -f ...` で生成(base層は共有=軽量)。
-# tools: エージェント(function calling)で使えるか。false は step1_chat 専用(gemma3 は tools 非対応)。
+# 16GB VRAM (RX 9070 XT / ROCm gfx1201) + 64GB RAM 前提のモデルマトリクス。
+# placement:
+#   vram   = VRAMに全載り → 並列スロット(OLLAMA_NUM_PARALLEL)の対象にできる
+#   hybrid = VRAM+RAMオフロード(=本機での実用的な「RAM仮想VRAM」) → 直列実行を強制
+# num_ctx はリクエスト毎に options.num_ctx で送る(ネイティブ/api/chatで有効・実測済み)。
+# tools: function calling 対応。false のモデルはチャット/批評専用(コーディングエージェント不可)。
+# strengths: ルーティング(model=auto)と批評ペア選定に使う。
 models:
-  coder:  { tag: "q3-coder-16k",   tier: local, tools: true,  use: "主力 / MoE(活性≈3B) / 16K / 一部RAMオフロード" }
-  smart:  { tag: "q36-smart-16k",  tier: local, tools: true,  use: "上位MoE(活性≈3.5B) / 16K / より賢い・重め" }
-  heavy:  { tag: "gpt-oss:120b",   tier: local, tools: true,  use: "難所のみ / 超大MoE / 低速オフロード" }
-  fast:   { tag: "gemma3-fast-16k",tier: local, tools: false, use: "dense 8GB / 高速 / ※tools非対応=chat専用" }
-  # クラウド層(任意・外部送信/課金)。使う時だけ OLLAMA_API_KEY を設定。
-  # glm:  { tag: "glm-5.2:cloud",    tier: cloud, use: "難所のみ(外部送信)" }
+  worker:
+    tag: "gpt-oss:20b"
+    family: gpt-oss
+    placement: vram          # ~13GB 全載り。swarm並列の主役
+    tools: true
+    num_ctx: 16384
+    strengths: [tool, speed, reasoning]
+    use: "並列ワーカー / VRAM全載りMoE(活性3.6B) / swarm・planner・merger向け"
+  coder:
+    tag: "qwen3:30b"
+    family: qwen
+    placement: hybrid        # 18GB・77%GPU(50 tok/s実測)。spillするため並列不可
+    tools: true
+    num_ctx: 16384
+    strengths: [coding, tool]
+    use: "主力コーダー / MoE(活性≈3B) / codeモード既定"
+  smart:
+    tag: "qwen3.6:35b"
+    family: qwen
+    placement: hybrid
+    tools: true
+    num_ctx: 16384
+    strengths: [coding, reasoning]
+    use: "上位MoE(SWE-bench 73.4%) / 難しい実装・レビュアー"
+  reasoner:
+    tag: "deepseek-r1:14b"
+    family: deepseek
+    placement: vram          # 9.3GB 全載り
+    tools: false             # R1系はfunction calling非対応(批評・推論専用)
+    num_ctx: 16384
+    strengths: [reasoning, math]
+    use: "深い推論・数学(CoT) / 批評ループの異ファミリーレビュアー"
+  deep:
+    tag: "deepseek-r1:70b"
+    family: deepseek
+    placement: hybrid        # 43GB dense → 2〜5 tok/s想定。時間をかけてよい推論専用
+    tools: false
+    num_ctx: 8192
+    strengths: [reasoning, math]
+    use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
+  next:
+    tag: "hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M"
+    family: qwen
+    placement: hybrid        # 48GB MoE(活性≈3B) → hybrid筆頭候補
+    tools: true              # 要検証: import失敗/tools不可なら false に変更
+    num_ctx: 16384
+    strengths: [coding, tool, reasoning]
+    use: "Qwen最大 / VRAM+RAM筆頭 / 高品質エージェント"
+  heavy:
+    tag: "gpt-oss:120b"
+    family: gpt-oss
+    placement: hybrid        # 65GB MoE(活性5.1B) → 8〜18 tok/s想定
+    tools: true
+    num_ctx: 16384
+    strengths: [tool, reasoning]
+    use: "最大モデル / VRAM+RAM / 難所のみ"
+  fast:
+    tag: "gemma3:12b"
+    family: gemma
+    placement: vram
+    tools: false             # gemma3はtools非対応=chat専用
+    num_ctx: 16384
+    strengths: [chat, speed]
+    use: "高速チャット・多言語 / 非エージェント"
 
 default: coder
 
-# 計画=plan / 実装=code。16GBでは同時常駐不可のため同一モデル、役割はプロンプトで分離。
-roles:
-  plan: coder
-  code: coder
-
-# 実行時オプション。文脈長(num_ctx)は派生モデルに焼き込み済み(上記 tag)。
-# KVキャッシュ量子化はサーバ側 env。実効化: `setx OLLAMA_KV_CACHE_TYPE q8_0` 後に ollama 再起動。
-env:
-  num_ctx: 16384       # 参考(実効は派生モデル側)
-  kv_cache_type: q8_0  # 参考(実効はサーバ env)
+# 批評ループの異ファミリーペア既定(router.pyが参照)。
+critique_pairs:
+  coder: reasoner      # 作成者=Qwen coder → レビュアー=DeepSeek(視点の多様性)
+  smart: reasoner
+  worker: reasoner
+  next: reasoner
+  heavy: smart
+  reasoner: worker
+  deep: smart

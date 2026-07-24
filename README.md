@@ -1,98 +1,113 @@
-# ai-agent-lab —「計画して開発する」ローカルLLMコーディングエージェント
+# AI Agent Lab — ローカルLLM並列AIエージェント統合システム
 
-目標を渡すと、AI が **計画(PLAN.md)→ 実装 → 実行・検証 → 自己修正** を人手なしで回して
-動くもの(システム/アプリ)を作る、自作の簡易コーディングエージェント。頭脳はローカル LLM。
+ローカルLLM(Ollama)だけで動く、並列マルチエージェント実行基盤 + コーディングエージェント。
+agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai-agent-lab v1(ツール実行型
+コーディングエージェント)を統合した v2。API課金なし・全処理ローカル完結。
 
-## 実機前提
-- **AMD gfx1201 (RDNA4) / VRAM 16GB + RAM 64GB**。上位モデルは RAM オフロード前提=**帯域律速**。
-- よって **MoE モデルを主力**にし、**単一モデル常駐 + 役割は system prompt で分離**(再ロード回避)。
+## 実行モード(ダッシュボードから選択)
 
-## Step 0 —【最優先】GPUバックエンド疎通 + tok/s 実測
-`ollama` が gfx1201 を GPU として使えているかを最初に確認する。ダメだと全 CPU で頓挫する。
-- 認識確認: モデルを1つ動かして `ollama ps` を見る → `PROCESSOR` が `100% GPU` か `xx%/yy% CPU/GPU`。
-- stock **ROCm 6.4.2 は gfx1201 未対応**のことがある → **ROCm 7.x** 差し込み、または **`OLLAMA_VULKAN=1`**(Vulkan バックエンド)で回避。
-- 主力モデルの **tok/s を実測** → `agent.py` の `--max-iter` や `run_command` timeout の基準にする。
+| モード | 内容 |
+|---|---|
+| 🛠 **code** | コーディングエージェント1本。PLAN→BUILD→RUN→FIX を自律反復し動くものを作る。「レビュー+FIX」ONで完走後に異ファミリーモデルがコードレビュー→要改善ならFIXラウンド |
+| 🐝 **swarm-code** | Plannerがタスクを2〜3の独立サブタスクへ分解 → **並列コーディングエージェント**(各自 `projects/run_<id>/sub_<i>/` に隔離)→ 統合エージェントがレポート |
+| 🎼 **orchestra** | Planner分解 → チャット型サブエージェント並列 → 統合(旧agent-orchestra) |
+| 🔁 **critique** | 作成者モデル ⇄ レビュアーモデルが最大3ラウンド批評改善(既定で**異ファミリーペア**) |
 
-### 実測メモ(このマシン / 2026-07-21 計測)
+- タスクは**3件まで並列実行**、超過分はキューイング(`queued`→自動開始)
+- `run_command` は**実行前承認**(ダッシュボードにモーダル表示)が既定ON
+- 実行状況はツリー表示+coderノードは色分きライブログ。完了タスクは `runs/` に永続化
+
+## 起動
+
 ```
-backend      : GPU オフロード動作を確認(ollama ps が CPU/GPU 分割を表示。全CPU落ちではない)
-tok/s (coder): 約 20 tok/s(qwen3:30b, 生成 eval rate)、初回ロード約11秒
-文脈の罠      : 既定 num_ctx=262144(256K)だと SIZE 45GB・GPU34% と重い
-              → num_ctx=16384 で SIZE 20GB・GPU77% に改善(下記「派生モデル」で固定)
-ollama ps    : q3-coder-16k  20GB  23%/77% CPU/GPU  CONTEXT 16384
+python server.py     # → http://127.0.0.1:8765
+python app.py        # デスクトップアプリ(WebView2)。Ollama自動起動付き
+python agent.py "todo-cli に TODO CLI を作って動かして" [--model coder] [--yes]   # CLI
 ```
-> 注: OpenAI互換エンドポイントは num_ctx を無視するため、文脈長は**派生モデル**に焼き込む(重要)。
+
+## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT)
+
+models.yaml の各モデルは `family` / `placement` / `strengths` を持つ:
+
+- **placement: vram** — VRAMに全載り。並列スロット(`OLLAMA_NUM_PARALLEL`)で真の並列が可能
+- **placement: hybrid** — VRAM+RAMオフロード(=本機で実用になる「RAMの仮想VRAM化」)。
+  同時実行すると帯域を食い合うため **RunManagerが直列強制**
+
+| key | tag | family | placement | 位置づけ |
+|---|---|---|---|---|
+| worker | gpt-oss:20b | gpt-oss | vram | 並列ワーカー主役(swarm/planner/merger) |
+| coder | qwen3:30b | qwen | hybrid | 主力コーダー(50 tok/s実測) |
+| smart | qwen3.6:35b | qwen | hybrid | 上位(SWE-bench 73.4%) |
+| reasoner | deepseek-r1:14b | deepseek | vram | 深い推論・数学。批評レビュアー(tools非対応) |
+| deep | deepseek-r1:70b | deepseek | hybrid | DeepSeek最大(dense・低速だが最深) |
+| next | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | Qwen最大・hybrid筆頭 |
+| heavy | gpt-oss:120b | gpt-oss | hybrid | **最大モデル**(65GB, MoE) |
+| fast | gemma3:12b | gemma | vram | 高速チャット(tools非対応) |
+
+- `model=auto`: タスク文から強み(コーディング→Qwen / 数学・推論→DeepSeek / 並列→worker)で自動選択(router.py)
+- 批評ループの既定レビュアーは**作成者と別ファミリー**(models.yaml `critique_pairs`)
+
+### 「RAMを仮想VRAMとして使う」について(2026-07調査)
+
+- WindowsのWDDM「共有GPUメモリ」はディスクリートGPUでは制御不可の会計値で、
+  Vulkan自動スピルは OOM や「CPU単体より遅い」実例あり(llama.cpp #12748)→ **不採用**
+- 本機で実際に機能するのは **llama.cpp系の明示的CPUオフロード**(OllamaはVRAM超過分を自動スプリット)。
+  activeパラメータの小さいMoEなら実用速度(gpt-oss:120b級で8〜18 tok/s目安。dense 70Bは2〜5 tok/s)
+- これを `placement: hybrid` として設計に組み込み済み。SAM(Resizable BAR)有効化を推奨
 
 ## セットアップ
+
 ```
-pip install -r requirements.txt
-ollama serve            # 別プロセスで起動済みならOK
-ollama list             # models.yaml のタグが存在すること
+python -m pip install -r requirements.txt
+ollama pull gpt-oss:20b
+ollama pull deepseek-r1:14b
+ollama pull deepseek-r1:70b
+ollama pull hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M
 ```
 
-## 使い方
+環境変数(ユーザーレベル、設定後 Ollama 再起動):
+
 ```
-python server.py                      # ★Web UI(推奨)→ http://127.0.0.1:8765 をブラウザで開く
-python gui.py                         # 旧: tkinter デスクトップGUI(軽量・オフライン)
-python step1_chat.py                  # 接続 + /model 切替 + /role 切替
-python step2_tool.py "..."            # ツールループの心臓部
-python agent.py "projects/todo-cli に 追加/一覧/完了 のTODO CLIを作って動かして"
-python agent.py --model smart --yes "..."   # 別モデル / 承認スキップで自走
+setx OLLAMA_KV_CACHE_TYPE q8_0      # KVキャッシュ量子化(メモリ半減)
+setx OLLAMA_NUM_PARALLEL 2          # 並列デコードスロット
+setx OLLAMA_MAX_LOADED_MODELS 1     # 16GBでは常駐1本(スラッシング防止)
+setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 ```
-### Web UI(`server.py` + `web/index.html`)— 推奨・追加依存なし
-Python標準ライブラリだけのローカルHTTPサーバ + **SSE**でライブ配信するダッシュボード。
-`python server.py` で起動し **http://127.0.0.1:8765** を開く。
-- 左サイドバー: 新規タスク作成(目標・モデル・最大反復・承認トグル)+ タスク一覧カード。
-- 右メイン: 選択タスクのヘッダ(モデル/実タグ/フェーズ/反復/状態/承認)+ 色分けライブログ。
-- **並列実行**: カードを増やすほどタスクが同時進行。各カードに状態ドット・フェーズバッジ・進捗バー。
-- 承認ONなら run_command ごとに**承認モーダル**(どのタスクかも表示)。
-- ログはフェーズ区切り/AI発話/ツール呼び出し/結果/エラー/完了を**色分け**して可読性重視。
-- 構成: `server.py`(タスク管理・SSE・承認の HTTP 往復)/ `web/index.html`(UI一式・inline CSS/JS)。
-  バックエンドは `agent.run_agent(...)` を再利用。
 
-### 旧 tkinter GUI(`gui.py`)— 軽量・オフライン
-- 目標を書いて「＋ タスク追加して実行」→ タスクが**タブ**として増える。
-- **使用モデルを明示**: 選択肢も各タスク見出しも `key (実タグ)` 表示(例 `coder (q3-coder-16k)`)。
-- **AIの動きが見える**: フェーズ(PLAN/BUILD/RUN/FIX を色分け)・反復数・**AIの思考/発話**・
-  ツール呼び出し・実行結果がライブログに流れる。タブのアイコンで状態(⏳実行中/✅完了/⏹停止/⚠上限/❌エラー)。
-- **並列実行(Claude Code 風)**: 複数タスクを同時に走らせられる。各タスクは独立ログ・状態・停止ボタン。
-  ※同じモデルのタスクはロード済みモデルを共有して軽い。違うモデルの同時実行は再ロードで遅くなる(16GB制約)。
-- 「実行前に承認する」ONで run_command ごとに承認ダイアログ(どのタスクかも表示)。
+### GPUバックエンド(RX 9070 XT / gfx1201)
 
-## モデル(models.yaml)
-tag は num_ctx=16384 を焼き込んだ**派生モデル**(OpenAI互換endpointがnum_ctxを無視するため)。
-| key | tag(派生) | 派生元 | 位置づけ |
-|---|---|---|---|
-| coder | q3-coder-16k | qwen3:30b | 主力 MoE(活性≈3B) |
-| smart | q36-smart-16k | qwen3.6:35b | 上位 MoE(活性≈3.5B) |
-| fast | gemma3-fast-16k | gemma3:12b | dense・VRAM全載り高速 |
-| heavy | gpt-oss:120b | (そのまま) | 難所のみ・超大MoE・低速 |
-
-派生モデルの作成: `ollama create q3-coder-16k -f modelfiles/coder.Modelfile`(base層共有=軽量)。
-役割(plan/code)はモデル切替でなく system prompt で分離。`OLLAMA_KV_CACHE_TYPE=q8_0` 推奨。
-
-> **重要**: エージェントは function calling(tools)を使う。**gemma3(fast)は tools 非対応**なので
-> エージェント/GUI では選べない(chat専用=step1_chat 用)。tool対応は coder/smart/heavy。
-> models.yaml の `tools: true/false` で管理。GUIのモデル選択は tool対応のみ表示。
-
-## 構成(GUI)
-- `gui.py` … tkinter GUI。`agent.run_agent(goal, model, max_iter, approve, emit, should_stop)` を
-  別スレッドで実行し、`emit` の出力をキュー経由でライブログに反映。承認は `tools.APPROVER`
-  フック経由で GUI ダイアログに差し替え。停止は協調フラグ(`should_stop`)。
-
-## 安全策
-- 生成物は **`projects/` 配下に限定**(パストラバーサル遮断)。
-- 破壊的コマンドは **denylist で拒否**(ただし回避容易=補助線)。
-- **本丸は run_command の実行前承認(既定ON)**。自走は `--yes` で明示的に外す。
-- 発展: `run_command` をコンテナ/別ユーザで隔離。
+- Ollama 0.32.1 は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**(実測50 tok/s @ qwen3:30b)
+- `ollama ps` の PROCESSOR が全CPUなら: ①デバイスマネージャーでdGPUが無効化されていないか
+  ②`OLLAMA_VULKAN=1` を試す
+- ネイティブ `/api/chat` は `options.num_ctx` をリクエスト単位で尊重(0.32.1実測)。
+  旧v1の「派生モデルにnum_ctx焼き込み」(modelfiles/)は不要になったがフォールバックとして残置
 
 ## 構成
+
 ```
-llm.py         # 設定読込 + Ollama(OpenAI互換)クライアント
-tools.py       # ツール群 + 安全策(パス限定/denylist/承認)
-step1_chat.py  # Step1: 接続・切替
-step2_tool.py  # Step2: ツールループ
-agent.py       # 本体: Plan→Build→Run→Fix 自律ループ
-models.yaml    # モデル登録・roles・env
-projects/      # エージェントの生成物サンドボックス
+llm.py            Ollamaネイティブ/api/chatクライアント(async, tools, per-request num_ctx)
+models.yaml       モデルマトリクス(family/placement/strengths)+critique_pairs
+agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX)
+tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
+router.py         model=auto ルーティング+異ファミリー批評ペア
+events.py         EventBus(ノード状態→SSE, log_line, 承認イベント)
+runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future, 永続化)
+orchestrator.py   4モードのオーケストレーター
+server.py         FastAPI(/run /events SSE /approvals /models /health)
+static/index.html ダッシュボード(単一HTML, 依存CDNなし)
+app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
+step1_chat.py     学習用: 最小チャット / step2_tool.py 学習用: 最小ツールループ
+gui.py, web/      【非推奨・v1遺物】新UIは static/index.html(server.py)を使う
 ```
+
+## 安全設計
+
+- ファイル/コマンドは `projects/` 配下のみ(`Toolbox._safe_path`)。run毎に `projects/run_<id>/` へ隔離
+- denylist(rm -rf / format / reset --hard 等)+ **実行前承認**(既定ON)。自走(`--yes`/承認OFF)は
+  検証コマンド程度に留めるのを推奨
+- キャンセル時は保留中の承認Futureを自動却下(デッドロック防止)
+
+## 将来拡張
+
+- llama-server(Vulkan)バックエンド: llm.py の `OLLAMA_BASE` を差し替え+`/v1`変換の薄い層で対応可能
+- PyInstaller化: `pyinstaller --noconfirm --windowed --name AgentLab --add-data "static;static" --collect-all uvicorn app.py`

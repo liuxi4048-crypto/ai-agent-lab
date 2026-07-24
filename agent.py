@@ -3,19 +3,23 @@
 目標を渡すと Plan → Build → Run → Fix を人手なしで反復し、動くものを作る。
 ・固定FSMに縛らず「モデルが次ツールを自由選択」する方式(詰まり防止)。
 ・phase は「今どこか」を示すソフトな目安で、system prompt のヒントに使う。
-・堅牢化: パース失敗リトライ / 上限到達で安全停止+REPORT / 不正tool_callフォールバック。
+・堅牢化: 不正tool_callフォールバック / 上限到達で安全停止+REPORT。
+
+v2: フル async 化 + Ollama ネイティブ /api/chat 形式。
+    tool_calls の arguments は dict で届く(JSONパース不要)。
+    並列実行は Toolbox(per-run サンドボックス)と async 承認コールバックで安全化。
 
 CLI:
   python agent.py "projects/todo-cli に 追加/一覧/完了 のTODO CLIを作って動かして"
   python agent.py --model smart --yes "..."   # モデル指定 / 承認スキップ(自走)
 
-GUI 等から使う場合は run_agent(goal, model, max_iter, approve, emit, should_stop) を呼ぶ。
+サーバ/オーケストレーターからは run_agent(...) を await で呼ぶ。
 """
-import sys
-import json
 import argparse
-from llm import load_config, chat, resolve
-from tools import TOOLS_SCHEMA, run_tool
+import asyncio
+
+import llm
+from tools import TOOLS_SCHEMA, Toolbox
 
 SYSTEM = """あなたは自律型のコーディングエージェント。与えられた目標を、人手を借りずに完成させる。
 
@@ -28,7 +32,7 @@ SYSTEM = """あなたは自律型のコーディングエージェント。与�
 5. 目標を満たし検証が通ったら finish を summary 付きで呼ぶ。
 
 規則:
-- ファイル/コマンドは projects 配下のみ。パスは projects からの相対で、必ず同じプロジェクトフォルダ内にまとめる。
+- ファイル/コマンドは作業ディレクトリ配下のみ。パスは相対で、必ず同じプロジェクトフォルダ内にまとめる。
 - ファイル入出力するコードを書くときは encoding='utf-8' を明示する(Windowsの文字化け回避)。
 - 一度に欲張らず、1〜数ツールずつ着実に。結果を見て次を決める。
 - 不明点は仮定を置いて前進する。停止・質問はしない。
@@ -51,82 +55,90 @@ def advance_state(phase, tool_names, last_run_ok):
     return phase
 
 
-def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
-              should_stop=None, on_status=None):
-    """エージェント本体(インポート可能)。
+async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
+                    should_stop=None, on_status=None, toolbox=None,
+                    extra_system=""):
+    """エージェント本体(await 可能)。
 
-    emit(str): 出力先(既定 print / GUI ではログ widget へ)。
-    should_stop(): True を返すと各反復の先頭で協調停止する(GUI の停止ボタン用)。
-    on_status(dict): 構造化イベント通知(GUI の状態表示用)。任意。
+    emit(str): 出力先(既定 print / サーバでは EventBus のログへ)。
+    should_stop(): True を返すと各反復の先頭で協調停止する。
+    on_status(dict): 構造化イベント通知。任意。
       {'type':'start','model':key,'tag':tag}
       {'type':'iter','iter':i,'max':max_iter,'phase':phase}
       {'type':'end','reason':'done'|'stopped'|'maxiter'}
+    toolbox: Toolbox インスタンス(per-run サンドボックス+承認)。None なら既定。
+    extra_system: system prompt への追記(swarm のサブタスク指示等)。
+    返り値: finish の summary / REPORT 本文 / None(停止時)。
     """
-    cfg = load_config()
+    cfg = llm.load_config()
     key = model or cfg.get("default", "coder")
-    tag, _ = resolve(cfg, key)
-    messages = [{"role": "system", "content": SYSTEM},
+    info = llm.resolve(cfg, key)
+    if not info["tools"]:
+        raise ValueError(f"モデル '{key}' ({info['tag']}) は tools 非対応のためエージェント実行不可")
+    tb = toolbox or Toolbox(approve=approve)
+    system = SYSTEM + ("\n\n" + extra_system if extra_system else "")
+    messages = [{"role": "system", "content": system},
                 {"role": "user", "content": goal}]
     phase = "PLAN"
-    if on_status:
-        on_status({"type": "start", "model": key, "tag": tag})
-    emit(f"[agent] model={key} ({tag})  approve={approve}  max_iter={max_iter}")
-    emit(f"[goal] {goal}\n")
 
     def _status(d):
         if on_status:
             on_status(d)
 
+    _status({"type": "start", "model": key, "tag": info["tag"]})
+    emit(f"[agent] model={key} ({info['tag']})  approve={tb.approve}  max_iter={max_iter}")
+    emit(f"[goal] {goal}\n")
+
     for i in range(1, max_iter + 1):
         if should_stop and should_stop():
             emit("\n[停止] ユーザーにより中断されました。")
             _status({"type": "end", "reason": "stopped"})
-            return
+            return None
         _status({"type": "iter", "iter": i, "max": max_iter, "phase": phase})
         emit(f"=== iter {i}/{max_iter}  phase={phase} ===")
         messages.append({"role": "system", "content": PHASE_HINT[phase]})
-        resp = _chat_with_retry(cfg, key, messages, emit)
-        msg = resp.choices[0].message
-        messages.append(msg.model_dump(exclude_none=True))
+        msg = await _chat_with_retry(cfg, key, messages, emit)
+        messages.append(msg)
 
         # AI の思考/発話を可視化(空なら出さない)
-        if msg.content and msg.content.strip():
-            text = msg.content.strip()
-            emit("  [AI] " + (text if len(text) <= 500 else text[:500] + " …"))
+        content = (msg.get("content") or "").strip()
+        if content:
+            emit("  [AI] " + (content if len(content) <= 500 else content[:500] + " …"))
 
-        if not msg.tool_calls:
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
             messages.append({"role": "user",
                              "content": "ツールを使って前進して。完了なら finish を呼んで。"})
             continue
 
-        tool_names, last_run_ok, finished = [], True, False
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            try:
-                a = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                messages.append({"role": "tool", "tool_call_id": tc.id,
-                                 "content": "[引数JSONが不正] 正しいJSONで同じツールを呼び直して"})
+        tool_names, last_run_ok, summary = [], True, None
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args = fn.get("arguments") or {}
+            if not isinstance(args, dict):
+                messages.append({"role": "tool", "tool_name": name,
+                                 "content": "[引数が不正] JSONオブジェクトで同じツールを呼び直して"})
                 continue
             tool_names.append(name)
-            emit(f"  -> {name}({_short(a)})")
+            emit(f"  -> {name}({_short(args)})")
 
             if name == "finish":
-                emit("\n[FINISH] " + a.get("summary", ""))
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": "done"})
-                finished = True
+                summary = args.get("summary", "")
+                emit("\n[FINISH] " + summary)
+                messages.append({"role": "tool", "tool_name": name, "content": "done"})
                 break
 
-            result = run_tool(name, a, approve=approve)
-            if name == "run_command" and "exit=0" not in str(result):
+            result = await tb.run(name, args)
+            if name == "run_command" and not str(result).startswith("exit=0"):
                 last_run_ok = False
             emit(f"     {str(result)[:400]}")
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)})
+            messages.append({"role": "tool", "tool_name": name, "content": str(result)})
 
-        if finished:
+        if summary is not None:
             emit("\n=== 完了 ===")
             _status({"type": "end", "reason": "done"})
-            return
+            return summary
         phase = advance_state(phase, tool_names, last_run_ok)
 
     # ---- 上限到達: 安全停止 + REPORT ----
@@ -135,17 +147,20 @@ def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     messages.append({"role": "user",
                      "content": "反復上限に達した。ここまでの成果・動くもの・残課題を簡潔に日本語でREPORTして。"})
     try:
-        rep = chat(cfg, key, messages)
-        emit("\n=== REPORT ===\n" + (rep.choices[0].message.content or ""))
+        rep = await llm.chat(cfg, key, messages)
+        report = rep.get("content") or ""
+        emit("\n=== REPORT ===\n" + report)
+        return report
     except Exception as e:
         emit(f"  [report error] {e}")
+        return None
 
 
-def _chat_with_retry(cfg, key, messages, emit=print, tries=3):
+async def _chat_with_retry(cfg, key, messages, emit=print, tries=3):
     last = None
     for _ in range(tries):
         try:
-            return chat(cfg, key, messages, tools=TOOLS_SCHEMA)
+            return await llm.chat(cfg, key, messages, tools=TOOLS_SCHEMA)
         except Exception as e:
             last = e
             emit(f"  [retry] {e}")
@@ -153,6 +168,7 @@ def _chat_with_retry(cfg, key, messages, emit=print, tries=3):
 
 
 def _short(d):
+    import json
     s = json.dumps(d, ensure_ascii=False)
     return s if len(s) <= 120 else s[:117] + "..."
 
@@ -164,7 +180,8 @@ def main():
     ap.add_argument("--max-iter", type=int, default=25)
     ap.add_argument("--yes", action="store_true", help="run_command の承認を省略(自走)")
     args = ap.parse_args()
-    run_agent(args.goal, model=args.model, max_iter=args.max_iter, approve=not args.yes)
+    asyncio.run(run_agent(args.goal, model=args.model, max_iter=args.max_iter,
+                          approve=not args.yes))
 
 
 if __name__ == "__main__":
