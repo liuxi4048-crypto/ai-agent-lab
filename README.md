@@ -17,6 +17,25 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 - `run_command` は**実行前承認**(モーダル+自動却下までのカウントダウン)が既定ON
 - 実行状況はツリー表示+coderノードは色分きライブログ。完了タスクは `runs/` に永続化
 
+### 成果物の形式(deliverable)
+
+「ソースコード一式」ではなく**そのまま動かせるもの**を出力させる。`code` / `swarm-code`
+モードで選択でき、既定の `auto` はタスク文から判定する。
+
+| 形式 | 出力されるもの | 実行方法 |
+|---|---|---|
+| `html` | 単一HTMLアプリ(外部CDN禁止・自己完結) | ダッシュボードの成果物リンクを**クリックで即実行** |
+| `exe` | PyInstallerで単一exe化 | ダウンロードして**ダブルクリック** |
+| `script` | ソース + `run.bat` ランチャー | `run.bat` をダブルクリック |
+| `auto` | 上記から自動判定 | ゲーム・UI系→html / CLI・ライブラリ系→script |
+
+- 成果物は種別(`html`/`exe`/`bat`/`entry`/`doc`)で分類され、実行できるものが
+  「すぐ実行できる成果物」として最上位に表示される
+- HTMLアプリは「開いても何も起きない」を防ぐため、読み込み直後に自動でループを
+  開始することをプロンプトで強制している
+- HTML内のインラインJSと `.js` は書き込み後に Node で構文チェックされる
+  (Node が無い環境では自動スキップ)
+
 ### ダッシュボードの機能
 
 - **一覧**: 「実行中・待機中」と「履歴」を分離表示。実行中カードには現在ステップ
@@ -126,10 +145,14 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 ## 構成
 
 ```
+frontend/         新UI(Vite+React+Tailwind)のソース。`npm run build` で static-react/ へ出力
+static-react/     新UIのビルド成果物(`/` で配信。旧UIは `/legacy`)
 llm.py            Ollamaネイティブ/api/chatクライアント(async, tools, per-request num_ctx)
 models.yaml       モデルマトリクス(family/placement/strengths)+critique_pairs
 agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX)
 tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
+                  ツール: list_dir / read_file / search_files / write_file /
+                  edit_file / run_command / finish + 構文チェック(py/json/js)
 router.py         model=auto ルーティング+異ファミリー批評ペア
 events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上,
                   from_snapshot/resume=会話継続用の復元)
