@@ -13,9 +13,18 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 | 🎼 **orchestra** | Planner分解 → チャット型サブエージェント並列 → 統合(旧agent-orchestra) |
 | 🔁 **critique** | 作成者モデル ⇄ レビュアーモデルが最大3ラウンド批評改善(既定で**異ファミリーペア**) |
 
-- タスクは**3件まで並列実行**、超過分はキューイング(`queued`→自動開始)
-- `run_command` は**実行前承認**(ダッシュボードにモーダル表示)が既定ON
+- タスクは**3件まで並列実行**、超過分はキューイング(`queued`→自動開始。待機理由も表示)
+- `run_command` は**実行前承認**(モーダル+自動却下までのカウントダウン)が既定ON
 - 実行状況はツリー表示+coderノードは色分きライブログ。完了タスクは `runs/` に永続化
+
+### ダッシュボードの機能
+
+- **一覧**: 「実行中・待機中」と「履歴」を分離表示。実行中カードには現在ステップ
+  (どのエージェントが何をしているか)、待機中カードには待機理由を表示
+- **履歴カード**: 🔁再実行(元の設定を継承)/ 🗑削除。中断・削除は2段階クリック確認
+- **完了バナー**: 所要時間・トークン数・成果物件数を集約表示。クリックで結果へジャンプ
+- **入力**: 複数行対応(Enter=実行 / Shift+Enter=改行)
+- **異常系**: SSE切断・存在しないRun・サーバー停止による中断(`interrupted`)を明示表示
 
 ## 起動
 
@@ -117,8 +126,9 @@ models.yaml       モデルマトリクス(family/placement/strengths)+critique_
 agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX)
 tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
 router.py         model=auto ルーティング+異ファミリー批評ペア
-events.py         EventBus(ノード状態→SSE, log_line, 承認イベント)
-runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future, 永続化)
+events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上)
+runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
+                  10秒チェックポイント+起動時interrupted回復)
 orchestrator.py   4モードのオーケストレーター
 server.py         FastAPI(/run /events SSE /approvals /models /health)
 static/index.html ダッシュボード(単一HTML, 依存CDNなし)
