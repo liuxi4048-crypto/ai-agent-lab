@@ -84,6 +84,38 @@ class EventBus:
             "approvals": [a for a in self.approvals.values() if not a["resolved"]],
         }
 
+    # ---- 復元(会話継続用) ----
+    @classmethod
+    def from_snapshot(cls, snapshot: dict) -> "EventBus":
+        """保存済みsnapshot(正規化済み)からノード木を復元する。
+
+        継続実行(continue_task)は既存の木にノードを追加していくため、
+        bus.reset()せずここから作る。running は呼び出し側が明示的に立てる。
+        """
+        bus = cls()
+        bus.run_started_at = snapshot.get("run_started_at")
+        bus.artifacts = list(snapshot.get("artifacts") or [])
+        for nd in snapshot.get("nodes", []):
+            node = Node(nd["id"], nd.get("parent_id"), nd["kind"], nd["title"], nd.get("detail", ""))
+            node.status = nd.get("status", "done")
+            node.tokens = nd.get("tokens", 0)
+            node.preview = nd.get("preview", "")
+            node.output = nd.get("output", "")
+            node.prompt = nd.get("prompt", "")
+            node.log = list(nd.get("log") or [])
+            node.started_at = nd.get("started_at")
+            node.finished_at = nd.get("finished_at")
+            p = nd.get("progress")
+            node.progress = tuple(p) if p else None
+            bus.nodes[node.id] = node
+            bus.order.append(node.id)
+        return bus
+
+    def resume(self) -> None:
+        """継続実行の開始: reset()と違いツリー・成果物は保持したまま実行中フラグだけ立てる。"""
+        self.running = True
+        self._publish({"type": "resumed", "run_started_at": self.run_started_at})
+
     # ---- オーケストレーターから呼ぶAPI ----
     def reset(self) -> None:
         self.nodes.clear()

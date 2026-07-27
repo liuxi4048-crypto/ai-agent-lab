@@ -447,13 +447,56 @@ class CodeOrchestrator:
         return toolbox, emit, on_status
 
     async def _one_round(self, goal: str, node_id: str, root_id: str,
-                         extra_system: str = "", max_iter: int | None = None) -> str | None:
+                         extra_system: str = "", max_iter: int | None = None,
+                         history: list | None = None) -> tuple[str | None, list | None]:
+        """1回分のエージェント実行。(要約, 最終メッセージ列)を返す。
+
+        history を渡すとその続きとして実行する(会話継続)。
+        """
         toolbox, emit, on_status = self._wire(node_id, root_id)
-        return await run_agent(
+        history_out: list = []
+        summary = await run_agent(
             goal, model=self.run.model, max_iter=max_iter or self.run.max_iter,
             approve=self.run.approve, emit=emit,
             should_stop=lambda: self.run.cancelled,
-            on_status=on_status, toolbox=toolbox, extra_system=extra_system)
+            on_status=on_status, toolbox=toolbox, extra_system=extra_system,
+            history=history, history_out=history_out)
+        return summary, (history_out or None)
+
+    async def _maybe_review_and_fix(self, task_desc: str, summary: str | None,
+                                    history: list | None, root_id: str,
+                                    root_dir: str) -> tuple[str | None, list | None, str, list[dict]]:
+        """critiqueオプション時: レビュー→(要改善なら)FIXラウンド。
+
+        戻り値: (summary, history, digest, artifacts)。critique無効/未承認不要時は
+        レビューをスキップしてそのまま返す。
+        """
+        bus, run = self.bus, self.run
+        digest, artifacts = _collect_files(root_dir)
+        if not (self.critique and summary and self.reviewer_model and not run.cancelled):
+            return summary, history, digest, artifacts
+
+        rev_id = bus.create_node("reviewer", "🔍 コードレビュアー: 批評中…",
+                                 f"モデル: {self.reviewer_model}", root_id)
+        messages = [
+            {"role": "system", "content": CODE_REVIEWER_SYSTEM},
+            {"role": "user",
+             "content": f"{task_desc}\n\nエージェントの要約:\n{summary}\n\n成果ファイル:\n{digest}"},
+        ]
+        verdict, critique_text = await _review_json(bus, rev_id, messages,
+                                                    self.cfg, self.reviewer_model)
+        if verdict["approved"] or run.cancelled:
+            return summary, history, digest, artifacts
+
+        fix_id = bus.create_node("coder", "🛠 FIXラウンド(批評反映)", critique_text[:200], root_id)
+        extra = ("前回の成果に対するレビュー指摘:\n" + critique_text +
+                 "\n\n指摘を修正し、再検証して finish すること。")
+        fix_summary, fix_history = await self._one_round(
+            "レビュー指摘の修正ラウンド", fix_id, root_id,
+            extra_system=extra, max_iter=max(6, run.max_iter // 2), history=history)
+        bus.complete(fix_id, fix_summary or "(中断または上限到達)")
+        digest, artifacts = _collect_files(root_dir)
+        return (fix_summary or summary), (fix_history or history), digest, artifacts
 
     async def run_task(self, task: str) -> None:
         bus, run = self.bus, self.run
@@ -463,39 +506,53 @@ class CodeOrchestrator:
         try:
             node_id = bus.create_node("coder", f"🛠 コーディングエージェント ({run.model})",
                                       task, root_id)
-            summary = await self._one_round(task, node_id, root_id)
+            summary, history = await self._one_round(task, node_id, root_id)
             bus.complete(node_id, summary or "(中断または上限到達)")
+            run.history = history or []
 
-            root = Toolbox(subdir=f"run_{run.id}", approve=False).root
-            digest, artifacts = _collect_files(root)
-
-            if self.critique and summary and self.reviewer_model and not run.cancelled:
-                rev_id = bus.create_node("reviewer", "🔍 コードレビュアー: 批評中…",
-                                         f"モデル: {self.reviewer_model}", root_id)
-                messages = [
-                    {"role": "system", "content": CODE_REVIEWER_SYSTEM},
-                    {"role": "user",
-                     "content": f"元のタスク: {task}\n\nエージェントの要約:\n{summary}\n\n成果ファイル:\n{digest}"},
-                ]
-                verdict, critique_text = await _review_json(bus, rev_id, messages,
-                                                            self.cfg, self.reviewer_model)
-                if not verdict["approved"] and not run.cancelled:
-                    fix_id = bus.create_node("coder", "🛠 FIXラウンド(批評反映)",
-                                             critique_text[:200], root_id)
-                    extra = ("前回の成果に対するレビュー指摘:\n" + critique_text +
-                             "\n\n指摘を修正し、再検証して finish すること。")
-                    fix_summary = await self._one_round(
-                        f"{task}\n(レビュー指摘の修正ラウンド)", fix_id, root_id,
-                        extra_system=extra, max_iter=max(6, self.run.max_iter // 2))
-                    bus.complete(fix_id, fix_summary or "(中断または上限到達)")
-                    summary = fix_summary or summary
-                    digest, artifacts = _collect_files(root)
+            root_dir = Toolbox(subdir=f"run_{run.id}", approve=False).root
+            summary, run.history, digest, artifacts = await self._maybe_review_and_fix(
+                f"元のタスク: {task}", summary, run.history, root_id, root_dir)
 
             if artifacts:
                 bus.set_artifacts(artifacts)
             answer_id = bus.create_node("answer", "⭐ 最終サマリ", "", root_id)
             bus.complete(answer_id, summary or "(要約なし)")
             bus.complete(root_id, "全工程が完了しました")
+            bus.run_finished()
+        except asyncio.CancelledError:
+            bus.cancel_all("ユーザーによって中断されました")
+            raise
+        except Exception as e:
+            bus.complete(root_id, error=f"実行エラー: {e}")
+            bus.run_finished(error=str(e))
+            raise
+
+    async def continue_task(self, message: str) -> None:
+        """完了済みRunに追加指示を送り、同じ会話・同じワークスペースで継続する
+        (成果物の修正等)。既存のツリーは消さず、新しいノードを追加していく。
+        """
+        bus, run = self.bus, self.run
+        root_id = next((i for i in bus.order if bus.nodes[i].kind == "task"), None)
+        if root_id is None:
+            root_id = bus.create_node("task", "ユーザータスク", run.task)
+        bus.resume()
+        bus.set_status(root_id, "running")
+        try:
+            node_id = bus.create_node("coder", f"🛠 追加指示: {message[:40]}", message, root_id)
+            summary, history = await self._one_round(message, node_id, root_id, history=run.history)
+            bus.complete(node_id, summary or "(中断または上限到達)")
+            run.history = history or run.history
+
+            root_dir = Toolbox(subdir=f"run_{run.id}", approve=False).root
+            summary, run.history, digest, artifacts = await self._maybe_review_and_fix(
+                f"元のタスク: {run.task}\n追加指示: {message}", summary, run.history, root_id, root_dir)
+
+            if artifacts:
+                bus.set_artifacts(artifacts)
+            answer_id = bus.create_node("answer", "⭐ 追加指示への対応", "", root_id)
+            bus.complete(answer_id, summary or "(要約なし)")
+            bus.complete(root_id, "追加指示への対応が完了しました")
             bus.run_finished()
         except asyncio.CancelledError:
             bus.cancel_all("ユーザーによって中断されました")

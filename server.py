@@ -26,7 +26,7 @@ import router
 from artifacts import WORKSPACE as ARTIFACT_DIR
 from orchestrator import (CodeOrchestrator, CritiqueOrchestrator, Orchestrator,
                           SwarmCodeOrchestrator)
-from runs import manager
+from runs import manager, normalize_snapshot
 from tools import WORKSPACE as PROJECTS_DIR
 
 app = FastAPI(title="AI Agent Lab")
@@ -165,24 +165,53 @@ async def resolve_approval(run_id: str, aid: str, req: ApprovalRequest) -> dict:
     return {"status": "ok"}
 
 
+class ContinueRequest(BaseModel):
+    message: str
+
+
+@app.post("/run/{run_id}/continue")
+async def continue_run(run_id: str, req: ContinueRequest) -> dict:
+    """完了済みcodeモードRunに追加指示を送り、同じ会話・同じワークスペースで継続する。
+
+    成果物の修正・追加機能の指示などに使う。継続の度に同じRun記録(同じ run_id)へ
+    ノードが積み重なり、runs/{run_id}.json も上書き更新される。
+    """
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(400, "message が空です")
+    if manager.get_live(run_id) is not None:
+        raise HTTPException(409, "実行中のタスクには追加指示を送れません(完了後に送信してください)")
+    if not await llm.is_alive():
+        raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
+
+    run = manager.reopen(run_id)
+    if run is None:
+        raise HTTPException(404, "継続可能なRunが見つかりません(codeモードの完了済みタスクのみ対応)")
+    cfg = llm.load_config()
+
+    def factory():
+        return CodeOrchestrator(run, cfg, critique=run.critique,
+                                reviewer_model=run.reviewer_model).continue_task(message)
+
+    manager.start(run, factory)
+    return {"status": "started", "run_id": run.id}
+
+
 @app.get("/events/{run_id}")
 async def events(run_id: str) -> StreamingResponse:
     live = manager.get_live(run_id)
     bus = live.bus if live else None
+    mode = live.mode if live else None
 
     if bus is None:
         # 終了・保存済みRun: スナップショットを1回送って保持
         record = manager.get_record(run_id)
         if record is None or record.get("snapshot") is None:
             raise HTTPException(404, "指定されたタスクが見つかりません")
-        snapshot = record["snapshot"]
-        # チェックポイント由来のsnapshotは running:true のまま残っていることがある
-        # (プロセス死→interrupted)。表示が事実と食い違わないよう正規化する
-        snapshot["running"] = False
-        snapshot["run_status"] = record.get("status", "done")
-        for n in snapshot.get("nodes", []):
-            if n.get("status") not in ("done", "error", "cancelled"):
-                n["status"] = "cancelled"
+        mode = record.get("mode")
+        snapshot = normalize_snapshot(record["snapshot"], record.get("status", "done"))
+        snapshot["mode"] = mode
+        snapshot["resumable"] = (mode == "code")
 
         async def replay():
             yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
@@ -197,7 +226,10 @@ async def events(run_id: str) -> StreamingResponse:
 
     async def stream():
         try:
-            yield f"data: {json.dumps(bus.full_snapshot(), ensure_ascii=False)}\n\n"
+            first = bus.full_snapshot()
+            first["mode"] = mode
+            first["resumable"] = False  # ライブ中(実行中/待機中)は継続不可
+            yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=15.0)

@@ -23,6 +23,26 @@ APPROVAL_TIMEOUT = 900   # 承認待ちの上限秒。放置時は自動却下(�
 CHECKPOINT_SEC = 10      # 実行中Runの定期スナップショット間隔(プロセス死対策)
 
 
+def normalize_snapshot(snapshot: dict, run_status: str) -> dict:
+    """保存済み(終了/中断)Runのsnapshotを事実と一致させる。
+
+    チェックポイントは running:true・ノードが thinking/generating/running のまま
+    保存されることがある(プロセス死・中断)。/events の再生表示と、継続実行のための
+    EventBus.from_snapshot 復元の両方で使う共通の正規化。
+    """
+    snapshot = dict(snapshot)
+    snapshot["running"] = False
+    snapshot["run_status"] = run_status
+    nodes = []
+    for n in snapshot.get("nodes", []):
+        n = dict(n)
+        if n.get("status") not in ("done", "error", "cancelled"):
+            n["status"] = "cancelled"
+        nodes.append(n)
+    snapshot["nodes"] = nodes
+    return snapshot
+
+
 class Run:
     def __init__(self, task: str, mode: str, model: str,
                  reviewer_model: str | None = None, approve: bool = True,
@@ -44,6 +64,7 @@ class Run:
         self.queued = True
         self.task_obj: asyncio.Task | None = None
         self.pending_approvals: dict[str, asyncio.Future] = {}
+        self.history: list = []  # codeモード: 会話継続用の最終メッセージ列
 
     def status(self) -> str:
         if self.cancelled:
@@ -176,7 +197,7 @@ class RunManager:
         if final:
             run.finished_at = time.time()
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        data = {**run.summary(), "snapshot": run.bus.full_snapshot()}
+        data = {**run.summary(), "snapshot": run.bus.full_snapshot(), "history": run.history}
         tmp = RUNS_DIR / f"{run.id}.json.tmp"
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(RUNS_DIR / f"{run.id}.json")
@@ -246,6 +267,30 @@ class RunManager:
         run.reject_pending()
         run.task_obj.cancel()
         return True
+
+    def reopen(self, run_id: str) -> Run | None:
+        """完了済みcodeモードRunをディスクから復元し、続きの会話を実行できる状態にする。
+
+        実行中/待機中(self.live に存在)なら None(呼び出し側で判定・拒否)。
+        中断・失敗ケースの会話履歴末尾に未応答の tool_calls が残っていれば
+        合成応答を補ってから復元する(次のターンが壊れないように)。
+        """
+        if run_id in self.live:
+            return None
+        data = self.get_record(run_id)
+        if data is None or data.get("mode") != "code" or data.get("snapshot") is None:
+            return None
+        run = Run(data["task"], data["mode"], data["model"], data.get("reviewer_model"),
+                  data.get("approve", True), data.get("max_iter", 18),
+                  data.get("hybrid", False), data.get("critique", False))
+        run.id = run_id
+        run.created_at = data.get("created_at", run.created_at)
+        from agent import _patch_dangling_tool_calls
+        run.history = _patch_dangling_tool_calls(data.get("history") or [])
+        snapshot = normalize_snapshot(data["snapshot"], data.get("status", "done"))
+        run.bus = EventBus.from_snapshot(snapshot)
+        self.live[run.id] = run
+        return run
 
     def delete(self, run_id: str) -> str:
         """終了済みRunの記録を削除する。返り値: ok / running / not_found。"""

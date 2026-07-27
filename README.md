@@ -25,6 +25,11 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 - **完了バナー**: 所要時間・トークン数・成果物件数を集約表示。クリックで結果へジャンプ
 - **入力**: 複数行対応(Enter=実行 / Shift+Enter=改行)
 - **異常系**: SSE切断・存在しないRun・サーバー停止による中断(`interrupted`)を明示表示
+- **会話継続(成果物の修正)**: `code`モードの完了済みRunは詳細画面下部に入力欄が出て、
+  追加指示を送ると同じ会話・同じワークスペース(`projects/run_<id>/`)の続きとして
+  実行される。ツリーは消えずにノードが積み重なっていく。何度でも継続可能。
+  スコープは`code`モードのみ(`swarm-code`は継続対象のサブエージェントが曖昧になるため対象外)。
+  中断時に応答未完了のtool_callが残っていた場合は合成応答を補ってから再開する。
 
 ## 起動
 
@@ -126,9 +131,10 @@ models.yaml       モデルマトリクス(family/placement/strengths)+critique_
 agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX)
 tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
 router.py         model=auto ルーティング+異ファミリー批評ペア
-events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上)
+events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上,
+                  from_snapshot/resume=会話継続用の復元)
 runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
-                  10秒チェックポイント+起動時interrupted回復)
+                  10秒チェックポイント+起動時interrupted回復, reopen=会話継続用復元)
 orchestrator.py   4モードのオーケストレーター
 server.py         FastAPI(/run /events SSE /approvals /models /health)
 static/index.html ダッシュボード(単一HTML, 依存CDNなし)

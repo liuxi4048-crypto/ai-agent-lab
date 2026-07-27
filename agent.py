@@ -57,7 +57,7 @@ def advance_state(phase, tool_names, last_run_ok):
 
 async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                     should_stop=None, on_status=None, toolbox=None,
-                    extra_system=""):
+                    extra_system="", history=None, history_out=None):
     """エージェント本体(await 可能)。
 
     emit(str): 出力先(既定 print / サーバでは EventBus のログへ)。
@@ -67,7 +67,11 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
       {'type':'iter','iter':i,'max':max_iter,'phase':phase}
       {'type':'end','reason':'done'|'stopped'|'maxiter'}
     toolbox: Toolbox インスタンス(per-run サンドボックス+承認)。None なら既定。
-    extra_system: system prompt への追記(swarm のサブタスク指示等)。
+    extra_system: system prompt への追記(swarmのサブタスク指示・継続時の批評文等)。
+    history: 既存の会話履歴(継続実行)。指定時はこれに goal をユーザーターンとして
+      追加する形で再開する(system prompt は history[0] に既に含まれている前提)。
+    history_out: 渡すと、実行後(正常終了・停止・例外いずれでも)最終的な
+      messages 全体で置き換わる。呼び出し側が会話を継続保存するために使う。
     返り値: finish の summary / REPORT 本文 / None(停止時)。
     """
     cfg = llm.load_config()
@@ -76,92 +80,124 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     if not info["tools"]:
         raise ValueError(f"モデル '{key}' ({info['tag']}) は tools 非対応のためエージェント実行不可")
     tb = toolbox or Toolbox(approve=approve)
-    system = SYSTEM + ("\n\n" + extra_system if extra_system else "")
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": goal}]
-    phase = "PLAN"
+    if history:
+        # 継続実行: 既存の会話(system prompt含む)に新指示をユーザーターンとして追加
+        messages = list(history)
+        if extra_system:
+            messages.append({"role": "system", "content": extra_system})
+        messages.append({"role": "user", "content": goal})
+    else:
+        system = SYSTEM + ("\n\n" + extra_system if extra_system else "")
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": goal}]
+    phase = "BUILD" if history else "PLAN"  # 継続時は既存成果への追加作業から始める
 
     def _status(d):
         if on_status:
             on_status(d)
 
-    _status({"type": "start", "model": key, "tag": info["tag"]})
-    emit(f"[agent] model={key} ({info['tag']})  approve={tb.approve}  max_iter={max_iter}")
-    emit(f"[goal] {goal}\n")
-
-    for i in range(1, max_iter + 1):
-        if should_stop and should_stop():
-            emit("\n[停止] ユーザーにより中断されました。")
-            _status({"type": "end", "reason": "stopped"})
-            return None
-        _status({"type": "iter", "iter": i, "max": max_iter, "phase": phase})
-        emit(f"=== iter {i}/{max_iter}  phase={phase} ===")
-        _compress_history(messages, info["num_ctx"], emit)
-        # フェーズヒントは履歴に残さず、このリクエストの末尾にだけ一時付与する
-        # (毎iterのsystem追記はnum_ctx溢れ時に古いヒントがピン留めされノイズ化するため)
-        msg = await _chat_with_retry(
-            cfg, key,
-            messages + [{"role": "system", "content": PHASE_HINT[phase]}],
-            emit)
-        usage = msg.pop("_usage", 0)
-        if usage:
-            _status({"type": "usage", "tokens": usage})
-        messages.append(msg)
-
-        # AI の思考/発話を可視化(空なら出さない)
-        content = (msg.get("content") or "").strip()
-        if content:
-            emit("  [AI] " + (content if len(content) <= 500 else content[:500] + " …"))
-
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
-            messages.append({"role": "user",
-                             "content": "ツールを使って前進して。完了なら finish を呼んで。"})
-            continue
-
-        tool_names, last_run_ok, summary = [], True, None
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            name = fn.get("name", "")
-            args = fn.get("arguments") or {}
-            if not isinstance(args, dict):
-                messages.append({"role": "tool", "tool_name": name,
-                                 "content": "[引数が不正] JSONオブジェクトで同じツールを呼び直して"})
-                continue
-            tool_names.append(name)
-            emit(f"  -> {name}({_short(args)})")
-
-            if name == "finish":
-                summary = args.get("summary", "")
-                emit("\n[FINISH] " + summary)
-                messages.append({"role": "tool", "tool_name": name, "content": "done"})
-                break
-
-            result = await tb.run(name, args)
-            if name == "run_command" and not str(result).startswith("exit=0"):
-                last_run_ok = False
-            emit(f"     {str(result)[:400]}")
-            messages.append({"role": "tool", "tool_name": name, "content": str(result)})
-
-        if summary is not None:
-            emit("\n=== 完了 ===")
-            _status({"type": "end", "reason": "done"})
-            return summary
-        phase = advance_state(phase, tool_names, last_run_ok)
-
-    # ---- 上限到達: 安全停止 + REPORT ----
-    _status({"type": "end", "reason": "maxiter"})
-    emit("\n[MAX_ITER 到達] 安全停止。最終レポートを生成します。")
-    messages.append({"role": "user",
-                     "content": "反復上限に達した。ここまでの成果・動くもの・残課題を簡潔に日本語でREPORTして。"})
     try:
-        rep = await llm.chat(cfg, key, messages)
-        report = rep.get("content") or ""
-        emit("\n=== REPORT ===\n" + report)
-        return report
-    except Exception as e:
-        emit(f"  [report error] {e}")
-        return None
+        _status({"type": "start", "model": key, "tag": info["tag"]})
+        emit(f"[agent] model={key} ({info['tag']})  approve={tb.approve}  max_iter={max_iter}"
+             + ("  (継続)" if history else ""))
+        emit(f"[goal] {goal}\n")
+
+        for i in range(1, max_iter + 1):
+            if should_stop and should_stop():
+                emit("\n[停止] ユーザーにより中断されました。")
+                _status({"type": "end", "reason": "stopped"})
+                return None
+            _status({"type": "iter", "iter": i, "max": max_iter, "phase": phase})
+            emit(f"=== iter {i}/{max_iter}  phase={phase} ===")
+            _compress_history(messages, info["num_ctx"], emit)
+            # フェーズヒントは履歴に残さず、このリクエストの末尾にだけ一時付与する
+            # (毎iterのsystem追記はnum_ctx溢れ時に古いヒントがピン留めされノイズ化するため)
+            msg = await _chat_with_retry(
+                cfg, key,
+                messages + [{"role": "system", "content": PHASE_HINT[phase]}],
+                emit)
+            usage = msg.pop("_usage", 0)
+            if usage:
+                _status({"type": "usage", "tokens": usage})
+            messages.append(msg)
+
+            # AI の思考/発話を可視化(空なら出さない)
+            content = (msg.get("content") or "").strip()
+            if content:
+                emit("  [AI] " + (content if len(content) <= 500 else content[:500] + " …"))
+
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                messages.append({"role": "user",
+                                 "content": "ツールを使って前進して。完了なら finish を呼んで。"})
+                continue
+
+            tool_names, last_run_ok, summary = [], True, None
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                name = fn.get("name", "")
+                args = fn.get("arguments") or {}
+                if not isinstance(args, dict):
+                    messages.append({"role": "tool", "tool_name": name,
+                                     "content": "[引数が不正] JSONオブジェクトで同じツールを呼び直して"})
+                    continue
+                tool_names.append(name)
+                emit(f"  -> {name}({_short(args)})")
+
+                if name == "finish":
+                    summary = args.get("summary", "")
+                    emit("\n[FINISH] " + summary)
+                    messages.append({"role": "tool", "tool_name": name, "content": "done"})
+                    break
+
+                result = await tb.run(name, args)
+                if name == "run_command" and not str(result).startswith("exit=0"):
+                    last_run_ok = False
+                emit(f"     {str(result)[:400]}")
+                messages.append({"role": "tool", "tool_name": name, "content": str(result)})
+
+            if summary is not None:
+                emit("\n=== 完了 ===")
+                _status({"type": "end", "reason": "done"})
+                return summary
+            phase = advance_state(phase, tool_names, last_run_ok)
+
+        # ---- 上限到達: 安全停止 + REPORT ----
+        _status({"type": "end", "reason": "maxiter"})
+        emit("\n[MAX_ITER 到達] 安全停止。最終レポートを生成します。")
+        messages.append({"role": "user",
+                         "content": "反復上限に達した。ここまでの成果・動くもの・残課題を簡潔に日本語でREPORTして。"})
+        try:
+            rep = await llm.chat(cfg, key, messages)
+            report = rep.get("content") or ""
+            emit("\n=== REPORT ===\n" + report)
+            return report
+        except Exception as e:
+            emit(f"  [report error] {e}")
+            return None
+    finally:
+        if history_out is not None:
+            history_out[:] = messages
+
+
+def _patch_dangling_tool_calls(history):
+    """中断復元時のガード: 直前の assistant が tool_calls を出したまま
+    tool 応答が付いていない場合、合成の応答を補って次のターンが壊れないようにする。
+    """
+    if not history:
+        return history
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return history
+    calls = last.get("tool_calls") or []
+    if not calls:
+        return history
+    patched = list(history)
+    for tc in calls:
+        name = tc.get("function", {}).get("name", "")
+        patched.append({"role": "tool", "tool_name": name,
+                        "content": "[中断のため未実行。必要なら再度呼び出してください]"})
+    return patched
 
 
 KEEP_RECENT = 8       # 直近メッセージは圧縮しない

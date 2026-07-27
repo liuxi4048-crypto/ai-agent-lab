@@ -237,6 +237,12 @@
   #artifacts a:hover { text-decoration: underline; }
   #artifacts .no-link { color: var(--red); font-size: 13px; }
 
+  /* ---- 会話継続(成果物の修正) ---- */
+  #continue-box { display: none; max-width: 960px; margin: 4px auto 60px; padding: 0 20px; }
+  #continue-box h3 { font-size: 12.5px; color: var(--dim); font-weight: 600;
+    letter-spacing: .04em; margin-bottom: 8px; }
+  #continue-box .input-row { margin-top: 0; }
+
   /* ---- 承認モーダル ---- */
   #approve-overlay {
     display: none; position: fixed; inset: 0; z-index: 100;
@@ -324,6 +330,14 @@
   <div id="banner"></div>
   <div id="tree"></div>
   <div id="artifacts"><h3>📦 成果物(クリックで表示・保存)</h3><div id="artifact-list"></div></div>
+  <div id="continue-box">
+    <h3>💬 会話を続ける(成果物の修正・追加指示)</h3>
+    <div class="input-row">
+      <textarea id="continue-input" rows="1"
+        placeholder="追加の指示を入力(Enterで送信/Shift+Enterで改行)"></textarea>
+      <button id="continue-btn" onclick="sendContinue()">送信</button>
+    </div>
+  </div>
 </div>
 
 <!-- 承認モーダル -->
@@ -756,6 +770,8 @@ let esFailures = 0;
 let currentRunId = null;
 let artifactsCount = 0;
 let followScroll = true;   // 自動追従: 最下部付近にいる間だけ有効
+let currentRunMode = null;
+let runIsActive = false;   // false かつ mode=code のとき継続入力欄を出す
 
 window.addEventListener("scroll", () => {
   followScroll = window.innerHeight + window.scrollY >= document.body.scrollHeight - 150;
@@ -964,6 +980,48 @@ function tick() {
 }
 setInterval(tick, 1000);
 
+function updateContinueBox() {
+  const show = currentRunMode === "code" && !runIsActive && !!currentRunId;
+  $("continue-box").style.display = show ? "block" : "none";
+}
+
+$("continue-input").addEventListener("input", function() {
+  this.style.height = "auto";
+  this.style.height = Math.min(this.scrollHeight, 160) + "px";
+});
+$("continue-input").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); sendContinue(); }
+});
+
+async function sendContinue() {
+  const ta = $("continue-input");
+  const message = ta.value.trim();
+  if (!message || !currentRunId) return;
+  $("continue-btn").disabled = true;
+  try {
+    const resp = await fetch(`/run/${currentRunId}/continue`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      ta.value = ""; ta.style.height = "auto";
+      toast("📨 追加指示を送信しました");
+      runIsActive = true;
+      updateContinueBox();
+      setCancelVisible(true);
+      // サーバー側で新しいEventBusが作られたため、SSEを繋ぎ直す(ツリーは保持される)
+      connectStream(currentRunId);
+    } else {
+      toast(data.detail || resp.statusText, true);
+    }
+  } catch {
+    toast("サーバーに接続できません", true);
+  } finally {
+    $("continue-btn").disabled = false;
+  }
+}
+
 function scrollToResult() {
   const answer = [...nodes.values()].find(x => x.data.kind === "answer");
   const target = ($("artifacts").style.display === "block") ? $("artifacts")
@@ -993,6 +1051,9 @@ function handleEvent(e) {
     case "snapshot":
       tree.innerHTML = ""; nodes.clear();
       approvalQueue = [];
+      currentRunMode = e.mode || currentRunMode;
+      runIsActive = !!e.running;
+      updateContinueBox();
       runStartedAt = e.run_started_at;
       runFinishedAt = e.running ? null
         : Math.max(0, ...e.nodes.map(n => n.finished_at || 0)) || null;
@@ -1034,6 +1095,17 @@ function handleEvent(e) {
       $("banner").className = ""; $("banner").textContent = "";
       renderArtifacts([]);
       setCancelVisible(true);
+      runIsActive = true;
+      updateContinueBox();
+      break;
+    case "resumed":
+      // continue_task開始: ツリーは維持したまま実行中に戻す(reset と違い消さない)
+      runStartedAt = runStartedAt || e.run_started_at;
+      runFinishedAt = null;
+      $("banner").className = ""; $("banner").textContent = "";
+      setCancelVisible(true);
+      runIsActive = true;
+      updateContinueBox();
       break;
     case "node_created":
       renderNode(e.node);
@@ -1102,6 +1174,8 @@ function handleEvent(e) {
       showNextApproval();
       finishBanner(e.error);
       if (followScroll) scrollToResult();
+      runIsActive = false;
+      updateContinueBox();
       break;
     }
   }
@@ -1109,25 +1183,11 @@ function handleEvent(e) {
 }
 
 /* ================= 画面切り替え ================= */
-function enterDetail(runId) {
-  if (es) { es.close(); es = null; }  // run→run 直接遷移で旧SSEを閉じる
-  currentRunId = runId;
+function connectStream(runId) {
   esFailures = 0;
-  $("home-view").style.display = "none";
-  $("detail-view").style.display = "block";
-  $("back-btn").style.display = "inline-block";
-  $("stat-detail-wrap").style.display = "";
-  tree.innerHTML = ""; nodes.clear();
-  approvalQueue = [];
-  showNextApproval();
-  runStartedAt = runFinishedAt = null;
-  followScroll = true;
-  $("banner").className = ""; $("banner").textContent = "";
-  renderArtifacts([]);
-  setCancelVisible(false);
   es = new EventSource("/events/" + runId);
   es.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
-  es.onerror = async () => {
+  es.onerror = () => {
     esFailures++;
     const b = $("banner");
     if (es && es.readyState === EventSource.CLOSED) {
@@ -1143,9 +1203,32 @@ function enterDetail(runId) {
   };
 }
 
+function enterDetail(runId) {
+  if (es) { es.close(); es = null; }  // run→run 直接遷移で旧SSEを閉じる
+  currentRunId = runId;
+  currentRunMode = null;
+  runIsActive = false;
+  $("home-view").style.display = "none";
+  $("detail-view").style.display = "block";
+  $("back-btn").style.display = "inline-block";
+  $("stat-detail-wrap").style.display = "";
+  tree.innerHTML = ""; nodes.clear();
+  approvalQueue = [];
+  showNextApproval();
+  runStartedAt = runFinishedAt = null;
+  followScroll = true;
+  $("banner").className = ""; $("banner").textContent = "";
+  renderArtifacts([]);
+  setCancelVisible(false);
+  updateContinueBox();
+  connectStream(runId);
+}
+
 function enterHome() {
   if (es) { es.close(); es = null; }
   currentRunId = null;
+  currentRunMode = null;
+  runIsActive = false;
   approvalQueue = [];
   showNextApproval();
   setCancelVisible(false);
