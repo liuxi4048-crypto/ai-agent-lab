@@ -40,7 +40,7 @@ models.yaml の各モデルは `family` / `placement` / `strengths` を持つ:
 | smart | qwen3.6:35b | qwen | hybrid | 上位(SWE-bench 73.4%) |
 | reasoner | deepseek-r1:14b | deepseek | vram | 深い推論・数学。批評レビュアー(tools非対応) |
 | deep | deepseek-r1:70b | deepseek | hybrid | DeepSeek最大(dense・低速だが最深) |
-| next | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | Qwen最大(**未導入**: 2026-07-24時点でHF CDNのstream errorによりpull失敗が続く。partialは保持されるので後日 `ollama pull` 再実行で再開可。導入までは heavy がhybrid筆頭) |
+| (next) | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | **無効化中**。48GB GGUFの導入は完了したが、Ollama 0.32.x の qwen3next アーキ対応が不完全で空応答になる(FA/KV設定無関係と切り分け済み・[類似報告](https://github.com/ollama/ollama/issues/16282)多数)。Ollama対応後に models.yaml のコメントを外して再評価。それまでは heavy がhybrid筆頭 |
 | heavy | gpt-oss:120b | gpt-oss | hybrid | **最大モデル**(65GB, MoE) |
 | fast | gemma3:12b | gemma | vram | 高速チャット(tools非対応) |
 
@@ -89,7 +89,7 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 
 ### GPUバックエンド(RX 9070 XT / gfx1201)
 
-- Ollama 0.32.1 は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**(実測50 tok/s @ qwen3:30b)
+- Ollama 0.32.x は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**(実測50 tok/s @ qwen3:30b)
 - `ollama ps` の PROCESSOR が全CPUなら: ①デバイスマネージャーでdGPUが無効化されていないか
   ②`OLLAMA_VULKAN=1` を試す
 - ネイティブ `/api/chat` は `options.num_ctx` をリクエスト単位で尊重(0.32.1実測)。

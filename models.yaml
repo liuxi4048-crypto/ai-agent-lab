@@ -46,14 +46,18 @@ models:
     num_ctx: 8192
     strengths: [reasoning, math]
     use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
-  next:
-    tag: "hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M"
-    family: qwen
-    placement: hybrid        # 48GB MoE(活性≈3B) → hybrid筆頭候補
-    tools: true              # 要検証: import失敗/tools不可なら false に変更
-    num_ctx: 16384
-    strengths: [coding, tool, reasoning]
-    use: "Qwen最大 / VRAM+RAM筆頭 / 高品質エージェント"
+  # next(Qwen3-Next-80B-A3B)は 2026-07-27 時点で無効化。
+  # 48GB の GGUF 導入自体は成功したが、Ollama 0.32.1/0.32.4 とも qwen3next アーキの
+  # 推論が空応答(1トークン即EOS)になる既知の互換問題(FA/KV設定無関係と切り分け済み)。
+  # Ollamaが対応したらコメントを外して再評価する。それまでの hybrid 筆頭は heavy。
+  # next:
+  #   tag: "hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M"
+  #   family: qwen
+  #   placement: hybrid
+  #   tools: true
+  #   num_ctx: 16384
+  #   strengths: [coding, tool, reasoning]
+  #   use: "Qwen最大 / VRAM+RAM筆頭 / 高品質エージェント"
   heavy:
     tag: "gpt-oss:120b"
     family: gpt-oss
