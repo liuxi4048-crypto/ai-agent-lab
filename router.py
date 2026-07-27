@@ -75,6 +75,37 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None) -> str:
     return "worker" if ok("worker") else cfg.get("default", "coder")
 
 
+# 成果物形式の自動判定。「そのまま遊べる/使える」ものになりやすい形式を選ぶ。
+# 判定順は exe → script → html。明示的な指定(exe/CLI等)を汎用語より優先する。
+# 日本語は文字境界が効かないため、英単語は前後のASCII文字で挟まれていないかで判定する。
+_EXE_RE = re.compile(
+    r"\.exe|(?<![a-zA-Z])exe(?![a-zA-Z])|実行ファイル|インストーラ|"
+    r"デスクトップアプリ|スタンドアロン", re.IGNORECASE)
+_SCRIPT_RE = re.compile(
+    r"(?<![a-zA-Z])(?:CLI|API)(?![a-zA-Z])|コマンドライン|スクリプト|バッチ処理|"
+    r"ライブラリ|モジュール|サーバ|パーサ|関数を", re.IGNORECASE)
+_HTML_RE = re.compile(
+    r"ゲーム|(?<![a-zA-Z])game(?![a-zA-Z])|アプリ|画面|(?<![a-zA-Z])(?:UI|GUI)(?![a-zA-Z])|"
+    r"ブラウザ|(?<![a-zA-Z])web(?![a-zA-Z])|ウェブ|サイト|ページ|"
+    r"可視化|グラフ|チャート|ダッシュボード|アニメーション|お絵かき|時計|電卓|"
+    r"パズル|クイズ|シミュレー", re.IGNORECASE)
+
+
+def pick_deliverable(task: str) -> str:
+    """タスク文から成果物形式(html / exe / script)を推定する。
+
+    ゲーム・UI系は html(クリックで即動く)に寄せる。ソース一式だけ渡されるより
+    実際に動かせる方が実用的なため。判断がつかないものは script(+run.bat)。
+    """
+    if _EXE_RE.search(task):
+        return "exe"
+    if _SCRIPT_RE.search(task):
+        return "script"
+    if _HTML_RE.search(task):
+        return "html"
+    return "script"
+
+
 def critique_pair(cfg, author_key: str) -> str:
     """作成者キー → レビュアーキー。既定は models.yaml の critique_pairs。
 

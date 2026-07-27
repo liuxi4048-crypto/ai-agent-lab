@@ -90,22 +90,52 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     return "".join(out)
 
 
+def _classify_artifact(rel: str) -> tuple[str, int]:
+    """成果物ファイルの種別と表示優先度を返す。
+
+    「そのまま動かせるもの」(HTMLアプリ・exe・ランチャー)を先頭に出すための分類。
+    優先度は小さいほど上位。
+    """
+    name = rel.rsplit("/", 1)[-1].lower()
+    ext = os.path.splitext(name)[1]
+    if name == "index.html":
+        return "html", 0          # 単一HTMLアプリのエントリポイント
+    if ext == ".exe":
+        return "exe", 1
+    if ext in (".bat", ".cmd"):
+        return "bat", 2
+    if ext in (".html", ".htm"):
+        return "html", 3
+    if name in ("main.py", "app.py", "run.py", "game.py"):
+        return "entry", 4
+    if name.startswith("readme"):
+        return "doc", 5
+    return "file", 6
+
+
 def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
     """run ディレクトリ配下のファイル一覧と(上限付き)内容ダイジェストを返す。
 
-    返り値: (レビュー用テキスト, artifacts用 [{name, path}])
-    path は /projects/ 配下の静的配信URL。
+    返り値: (レビュー用テキスト, artifacts用 [{name, path, kind, runnable}])
+    path は /projects/ 配下の静的配信URL。runnable=True のものはダッシュボードで
+    「▶ 実行」として最上位に表示される。
     """
     from tools import WORKSPACE
     listing, artifacts, used = [], [], 0
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", ".git", "node_modules")]
+        dirnames[:] = [d for d in dirnames
+                       if d not in ("__pycache__", ".git", "node_modules", "build")]
         for fn in sorted(filenames):
+            if fn.endswith((".pyc", ".pyo")):
+                continue
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root).replace("\\", "/")
             rel_ws = os.path.relpath(full, WORKSPACE).replace("\\", "/")
-            artifacts.append({"name": rel, "path": f"/projects/{rel_ws}"})
-            if used < cap_bytes:
+            kind, prio = _classify_artifact(rel)
+            artifacts.append({"name": rel, "path": f"/projects/{rel_ws}",
+                              "kind": kind, "runnable": kind in ("html", "exe", "bat"),
+                              "_prio": prio})
+            if used < cap_bytes and kind != "exe":  # exeはバイナリなのでダイジェスト対象外
                 try:
                     with open(full, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read(min(4000, cap_bytes - used))
@@ -113,6 +143,9 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
                     listing.append(f"### {rel}\n```\n{content}\n```")
                 except OSError:
                     listing.append(f"### {rel}\n(読み取り不可)")
+    artifacts.sort(key=lambda a: (a["_prio"], a["name"]))
+    for a in artifacts:
+        a.pop("_prio", None)
     return "\n\n".join(listing), artifacts
 
 
@@ -460,7 +493,8 @@ class CodeOrchestrator:
             approve=self.run.approve, emit=emit,
             should_stop=lambda: self.run.cancelled,
             on_status=on_status, toolbox=toolbox, extra_system=extra_system,
-            history=history, history_out=history_out)
+            history=history, history_out=history_out,
+            deliverable=self.run.deliverable)
         return summary, (history_out or None)
 
     async def _maybe_review_and_fix(self, task_desc: str, summary: str | None,
@@ -628,7 +662,7 @@ class SwarmCodeOrchestrator:
                 sub["instruction"], model=self.worker, max_iter=run.max_iter,
                 approve=run.approve, emit=lambda line: bus.emit_log(node_id, str(line)),
                 should_stop=lambda: run.cancelled, on_status=on_status,
-                toolbox=toolbox,
+                toolbox=toolbox, deliverable=run.deliverable,
                 extra_system=f"これは大きなタスクの一部(担当: {sub['title']})。担当分だけを完成させること。")
             bus.complete(node_id, summary or "(中断または上限到達)")
             return sub["title"], summary or "(未完)"

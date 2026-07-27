@@ -55,6 +55,57 @@ PHASE_HINT = {
     "FIX": "現在フェーズ: FIX。直近のエラーを直して再実行。",
 }
 
+# 成果物形式。「ソースコード一式」ではなく「そのまま動かせるもの」を出させるための指示。
+DELIVERABLE_PROMPTS = {
+    "html": """【成果物の形式: 単一HTMLアプリ】
+最終成果物は、クリックするだけで動く単一のHTMLファイルにすること。
+- エントリポイントは必ず index.html という名前で、プロジェクトフォルダ直下に置く。
+- HTML/CSS/JavaScript は index.html の中に全て含める(別ファイルに分けない)。
+- **外部CDN・外部URLの読み込みは禁止**(ネット接続なしで動く必要がある)。
+  ライブラリを使わず素のJavaScriptで実装すること。画像が要るなら CSS/canvas/絵文字で描く。
+
+必ず守る実装ルール(動かない成果物を防ぐため):
+- **ページを開いた直後に自動で動き出すこと**。ゲームなら読み込み後すぐループを開始する。
+  「スペースを押したら開始」のように最初の入力を待つ作りにしてはいけない
+  (開いても何も起きない成果物になりやすい)。
+- <script> は </body> の直前に置く。DOM取得は要素が存在してから行う。
+- キー操作は document または window の 'keydown' で受ける。
+  ゲーム中は e.preventDefault() で画面スクロールを止める。
+- 状態のリセット処理と初期化処理は同じ関数にまとめ、読み込み時にもそれを呼ぶ。
+- 操作方法とスコア等の状態を画面内に常時表示する。
+
+検証:
+- write_file 後に「⚠ JavaScriptの構文エラー」が出たら必ず直す。
+- read_file で index.html を読み返し、(1)ループ開始が読み込み時に呼ばれているか
+  (2)キーイベントが登録されているか (3)外部URLを参照していないか を自分で確認する。
+- README.md に遊び方/使い方を書く。""",
+
+    "exe": """【成果物の形式: Windows実行ファイル(.exe)】
+最終成果物は、ダブルクリックで起動する .exe にすること。
+- まず Python で本体(例 main.py)を作り、run_command で実行して動作確認する。
+- 動作確認できたら PyInstaller で単一exe化する:
+  1. run_command で `pip install pyinstaller`(timeout=600 を指定すること)
+  2. run_command で `pyinstaller --onefile --noconsole main.py`(timeout=600 を指定すること)
+     ※コンソールアプリなら --noconsole は付けない
+  3. `dist/main.exe` が生成されたことを list_dir で確認する
+- ビルドに失敗したら、エラーを読んで直し、再ビルドする。
+- README.md に dist/main.exe をダブルクリックで起動する旨を書く。""",
+
+    "script": """【成果物の形式: すぐ実行できるスクリプト】
+ソースを置くだけで終わらせず、「起動導線」まで必ず用意すること。
+- エントリポイントを1つに決める(例 main.py)。
+- **run.bat を必ず作る**(Windowsでダブルクリックすれば起動するランチャー)。
+  内容例:
+  @echo off
+  cd /d "%~dp0"
+  python main.py %*
+  pause
+- 依存ライブラリがあるなら requirements.txt を作り、run.bat の先頭で
+  `pip install -r requirements.txt` を実行するようにする。
+- run_command で実際に実行し、動くことを確認してから finish する。
+- README.md に run.bat をダブルクリックで起動する旨を書く。""",
+}
+
 
 def advance_state(phase, tool_names, last_run_ok):
     """ソフトな遷移。厳密な強制はせず、プロンプトのヒント更新に使う。"""
@@ -67,7 +118,8 @@ def advance_state(phase, tool_names, last_run_ok):
 
 async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                     should_stop=None, on_status=None, toolbox=None,
-                    extra_system="", history=None, history_out=None):
+                    extra_system="", history=None, history_out=None,
+                    deliverable=None):
     """エージェント本体(await 可能)。
 
     emit(str): 出力先(既定 print / サーバでは EventBus のログへ)。
@@ -82,6 +134,8 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
       追加する形で再開する(system prompt は history[0] に既に含まれている前提)。
     history_out: 渡すと、実行後(正常終了・停止・例外いずれでも)最終的な
       messages 全体で置き換わる。呼び出し側が会話を継続保存するために使う。
+    deliverable: 成果物の形式(html / exe / script)。指定すると
+      「そのまま動かせるもの」を作らせる指示が system prompt に追加される。
     返り値: finish の summary / REPORT 本文 / None(停止時)。
     """
     cfg = llm.load_config()
@@ -90,6 +144,9 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     if not info["tools"]:
         raise ValueError(f"モデル '{key}' ({info['tag']}) は tools 非対応のためエージェント実行不可")
     tb = toolbox or Toolbox(approve=approve)
+    spec = DELIVERABLE_PROMPTS.get(deliverable or "")
+    if spec:
+        extra_system = (extra_system + "\n\n" + spec) if extra_system else spec
     if history:
         # 継続実行: 既存の会話(system prompt含む)に新指示をユーザーターンとして追加
         messages = list(history)
@@ -274,9 +331,11 @@ def main():
     ap.add_argument("--model", default=None, help="models.yaml のキー(既定=default)")
     ap.add_argument("--max-iter", type=int, default=25)
     ap.add_argument("--yes", action="store_true", help="run_command の承認を省略(自走)")
+    ap.add_argument("--deliverable", choices=sorted(DELIVERABLE_PROMPTS),
+                    default=None, help="成果物の形式(html=単一HTMLアプリ / exe / script)")
     args = ap.parse_args()
     asyncio.run(run_agent(args.goal, model=args.model, max_iter=args.max_iter,
-                          approve=not args.yes))
+                          approve=not args.yes, deliverable=args.deliverable))
 
 
 if __name__ == "__main__":

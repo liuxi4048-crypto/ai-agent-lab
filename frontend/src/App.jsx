@@ -109,6 +109,7 @@ export default function App() {
     handleStart({
       task: currentRun.task, mode: currentRun.mode, model: currentRun.model,
       critique: currentRun.critique, approve: currentRun.approve, max_iter: currentRun.max_iter,
+      deliverable: currentRun.deliverable ?? "auto",
     }).catch(() => {});
   };
 

@@ -57,6 +57,8 @@
   .opt-row label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
   .opt-row input[type=number] { width: 60px; background: var(--panel); color: var(--text);
     border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+  .opt-row select { background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12.5px; }
 
   .cards-section { margin-top: 22px; }
   .cards-section h2 { font-size: 12.5px; color: var(--dim); font-weight: 600;
@@ -236,6 +238,17 @@
     text-decoration: none; padding: 3px 0; }
   #artifacts a:hover { text-decoration: underline; }
   #artifacts .no-link { color: var(--red); font-size: 13px; }
+  /* 実行できる成果物(HTMLアプリ/exe/ランチャー)は大きく目立たせる */
+  #run-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+  .run-chip {
+    display: inline-flex; align-items: center; gap: 7px; text-decoration: none;
+    background: #12261a; border: 1px solid var(--green); color: var(--green) !important;
+    border-radius: 8px; padding: 8px 14px !important; font-size: 13.5px; font-weight: 600;
+  }
+  .run-chip:hover { background: #17351f; text-decoration: none !important; }
+  .run-chip small { color: var(--dim); font-weight: 400; }
+  #artifacts .files-head { font-size: 12px; color: var(--dim); margin: 10px 0 2px;
+    border-top: 1px dashed var(--border); padding-top: 8px; }
 
   /* ---- 会話継続(成果物の修正) ---- */
   #continue-box { display: none; max-width: 960px; margin: 4px auto 60px; padding: 0 20px; }
@@ -310,6 +323,14 @@
     <button id="run-btn" onclick="startRun()">実行</button>
   </div>
   <div class="opt-row" id="code-opts">
+    <label title="成果物の形式。そのまま動かせる形で出力させる">成果物
+      <select id="deliverable-select">
+        <option value="auto">🎯 auto(内容から判定)</option>
+        <option value="html">▶ HTMLアプリ(クリックで即実行)</option>
+        <option value="exe">🖥 exe(ダブルクリック起動)</option>
+        <option value="script">📜 スクリプト+run.bat</option>
+      </select>
+    </label>
     <label title="run_command をユーザー承認してから実行する(15分無応答で自動却下)"><input type="checkbox" id="approve-check" checked> 実行前に承認</label>
     <label id="critique-label" title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check" onchange="onModeChange()"> レビュー+FIX</label>
     <label>最大反復 <input type="number" id="maxiter-input" value="18" min="4" max="50"></label>
@@ -329,7 +350,11 @@
 <div id="detail-view">
   <div id="banner"></div>
   <div id="tree"></div>
-  <div id="artifacts"><h3>📦 成果物(クリックで表示・保存)</h3><div id="artifact-list"></div></div>
+  <div id="artifacts">
+    <h3>📦 成果物</h3>
+    <div id="run-list"></div>
+    <div id="artifact-list"></div>
+  </div>
   <div id="continue-box">
     <h3>💬 会話を続ける(成果物の修正・追加指示)</h3>
     <div class="input-row">
@@ -464,6 +489,9 @@ async function loadModels() {
     modelCatalog = await (await fetch("/models")).json();
   } catch { /* Ollama未接続時はヘルス表示に任せる */ }
   $("mode-select").value = localStorage.getItem("mode") || "code";
+  const dsel = $("deliverable-select");
+  dsel.value = localStorage.getItem("deliverable") || "auto";
+  dsel.onchange = () => localStorage.setItem("deliverable", dsel.value);
   onModeChange();
 }
 
@@ -501,8 +529,9 @@ function cardMeta(r) {
   const modelLbl = r.mode === "critique"
     ? `${icon} ✍️ ${r.model || ""} ⇄ 🔍 ${r.reviewer_model || ""}`
     : `${icon} ${r.model || ""}` + (r.reviewer_model ? ` +🔍 ${r.reviewer_model}` : "");
+  const dlv = { html: "▶HTML", exe: "🖥exe", script: "📜script" }[r.deliverable] || "";
   return `🕐 ${fmtTime(r.created_at)} ・ ⏱ ${elapsed} ・ ${modelLbl} ・ ${r.tokens || 0} tok` +
-    (prog ? ` ・ ${prog}` : "");
+    (dlv ? ` ・ ${dlv}` : "") + (prog ? ` ・ ${prog}` : "");
 }
 
 function buildActions(r) {
@@ -642,7 +671,7 @@ async function rerun(r) {
         task: r.task, mode: r.mode, model: r.model || "auto",
         reviewer_model: r.reviewer_model || "",
         approve: r.approve !== false, critique: !!r.critique,
-        max_iter: r.max_iter || 18,
+        max_iter: r.max_iter || 18, deliverable: r.deliverable || "auto",
       }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -670,6 +699,7 @@ async function startRun() {
       approve: $("approve-check").checked,
       critique,
       max_iter: parseInt($("maxiter-input").value) || 18,
+      deliverable: $("deliverable-select").value,
     };
     const resp = await fetch("/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -679,7 +709,10 @@ async function startRun() {
     if (resp.ok) {
       $("task-input").value = "";
       autoGrow();
-      if ($("model-select").value === "auto") toast(`🎯 auto → ${data.model} を選択`);
+      const picks = [];
+      if ($("model-select").value === "auto") picks.push(`モデル: ${data.model}`);
+      if (body.deliverable === "auto" && data.deliverable) picks.push(`成果物: ${data.deliverable}`);
+      if (picks.length) toast("🎯 auto → " + picks.join(" / "));
       await refreshRuns();
       location.hash = "run/" + data.run_id;
     } else {
@@ -935,12 +968,40 @@ function updateNode(entry) {
   el.querySelector(".log-output").textContent = d.output || "(なし)";
 }
 
+const RUN_CHIP = {
+  html: { icon: "▶", label: "ブラウザで開く", newTab: true },
+  exe:  { icon: "⬇", label: "ダウンロードして実行", newTab: false },
+  bat:  { icon: "⬇", label: "ダウンロードして実行", newTab: false },
+};
+
 function renderArtifacts(list) {
-  const box = $("artifacts"), out = $("artifact-list");
-  out.innerHTML = "";
+  const box = $("artifacts"), out = $("artifact-list"), runBox = $("run-list");
+  out.innerHTML = ""; runBox.innerHTML = "";
   artifactsCount = list.length;
   box.style.display = list.length ? "block" : "none";
-  for (const a of list) {
+
+  // 「そのまま動かせるもの」を上部にチップとして大きく出す
+  const runnable = list.filter(a => a.runnable && a.path);
+  for (const a of runnable) {
+    const spec = RUN_CHIP[a.kind] || RUN_CHIP.html;
+    const chip = document.createElement("a");
+    chip.className = "run-chip";
+    chip.href = a.path;
+    if (spec.newTab) chip.target = "_blank";
+    else chip.download = a.name.split("/").pop();
+    chip.innerHTML = `${spec.icon} <span></span> <small>${spec.label}</small>`;
+    chip.querySelector("span").textContent = a.name;
+    runBox.appendChild(chip);
+  }
+
+  const rest = list.filter(a => !(a.runnable && a.path));
+  if (runnable.length && rest.length) {
+    const h = document.createElement("div");
+    h.className = "files-head";
+    h.textContent = "そのほかのファイル";
+    out.appendChild(h);
+  }
+  for (const a of rest) {
     if (a.path) {
       const link = document.createElement("a");
       link.href = a.path; link.target = "_blank"; link.textContent = "📄 " + a.name;

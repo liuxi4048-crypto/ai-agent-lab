@@ -53,6 +53,60 @@ MAX_TIMEOUT = 600    # run_command でモデルが指定できるタイムアウ
 SEARCH_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
 
 
+_SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=", re.IGNORECASE)
+_node_available = None  # None=未判定 / True / False
+
+
+async def _js_syntax_check(path, content):
+    """HTML内のインラインJS・.js を Node で構文チェックする。
+
+    Node が無い環境では黙ってスキップする(必須依存にしない)。
+    HTMLアプリはエージェントが実行して確かめられないため、せめて構文崩れは
+    書いた直後に気づけるようにする。
+    """
+    global _node_available
+    if _node_available is False:
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".js", ".mjs"):
+        js = content
+    elif ext in (".html", ".htm"):
+        blocks = [m.group(1) for m in _SCRIPT_BLOCK_RE.finditer(content)
+                  if not _SCRIPT_SRC_RE.match(m.group(0))]
+        js = "\n;\n".join(b for b in blocks if b.strip())
+    else:
+        return None
+    if not js.strip():
+        return None
+
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_check_{os.getpid()}.js")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(js)
+        proc = await asyncio.create_subprocess_exec(
+            "node", "--check", tmp,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except FileNotFoundError:
+        _node_available = False   # Node未導入。以後スキップ
+        return None
+    except (OSError, asyncio.TimeoutError):
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    _node_available = True
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
+        head = next((ln for ln in detail if "Error" in ln or "error" in ln), "")
+        return f"⚠ JavaScriptの構文エラー: {head[:200]}。直して書き直すこと"
+    return None
+
+
 def _syntax_check(path, content):
     """書き込み直後の即時フィードバック。問題があれば警告文字列、無ければ None。
 
@@ -275,6 +329,17 @@ class Toolbox:
         err = stderr.decode("utf-8", errors="replace")[-2000:]
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
 
+    async def _check_js_after_write(self, path):
+        """書き込み直後のファイルを読み直してJS構文を検査する。"""
+        if not path:
+            return None
+        try:
+            p = self._safe_path(path)
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                return await _js_syntax_check(path, f.read())
+        except (OSError, ValueError):
+            return None
+
     async def run(self, name, args):
         """ツール名 + 引数(dict)を実行して文字列結果を返す。finish は None。
 
@@ -303,6 +368,12 @@ class Toolbox:
         except Exception as e:
             return f"[実行エラー] {name}: {e}"
         result = str(result)
+        # HTML/JS はエージェントが実行して確かめられないので、書いた直後に構文だけ検査する
+        # (write_file/edit_file の同期チェックは py/json 用。ここは非同期の Node 検査)
+        if name in ("write_file", "edit_file") and not result.startswith(("[", "(")):
+            warn = await self._check_js_after_write(args.get("path", ""))
+            if warn:
+                result += "\n" + warn
         if len(result) > RESULT_CAP:
             result = result[:RESULT_CAP] + f"\n…(結果が長いため{RESULT_CAP}字で切り詰め)…"
         return result

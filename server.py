@@ -49,6 +49,7 @@ if (STATIC_REACT / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=STATIC_REACT / "assets"), name="assets")
 
 MODES = ("orchestra", "critique", "code", "swarm-code")
+DELIVERABLES = ("auto", "html", "exe", "script")
 
 
 class RunRequest(BaseModel):
@@ -59,6 +60,7 @@ class RunRequest(BaseModel):
     approve: bool = True           # run_command の実行前承認(code / swarm-code)
     critique: bool = False         # code モード: 完走後にレビュー→FIXラウンド
     max_iter: int = 18
+    deliverable: str = "auto"      # 成果物形式 auto / html / exe / script
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -113,6 +115,8 @@ async def start_run(req: RunRequest) -> dict:
         raise HTTPException(400, "task が空です")
     if req.mode not in MODES:
         raise HTTPException(400, f"mode は {MODES} のいずれか")
+    if req.deliverable not in DELIVERABLES:
+        raise HTTPException(400, f"deliverable は {DELIVERABLES} のいずれか")
     if not await llm.is_alive():
         raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
 
@@ -129,10 +133,16 @@ async def start_run(req: RunRequest) -> dict:
     if req.mode in ("code", "swarm-code") and not info["tools"]:
         raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {req.mode} で使えません")
 
+    # 成果物形式: コード生成モードでのみ意味を持つ(orchestra/critiqueは文章生成)
+    deliverable = None
+    if req.mode in ("code", "swarm-code"):
+        deliverable = (router.pick_deliverable(task) if req.deliverable == "auto"
+                       else req.deliverable)
+
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     run = manager.create(task, req.mode, model, reviewer,
                          approve=req.approve, max_iter=req.max_iter, hybrid=hybrid,
-                         critique=req.critique)
+                         critique=req.critique, deliverable=deliverable)
 
     def factory():
         if run.mode == "critique":
@@ -146,7 +156,7 @@ async def start_run(req: RunRequest) -> dict:
 
     manager.start(run, factory)
     return {"status": "started", "run_id": run.id, "model": model,
-            "reviewer_model": reviewer, "hybrid": hybrid}
+            "reviewer_model": reviewer, "hybrid": hybrid, "deliverable": deliverable}
 
 
 @app.post("/run/{run_id}/cancel")

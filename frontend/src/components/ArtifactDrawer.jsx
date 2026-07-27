@@ -1,7 +1,15 @@
 import { useState } from "react";
-import { Star, FileCode2, ExternalLink, Copy, Check, MessageSquarePlus, Loader2 } from "lucide-react";
+import { Star, FileCode2, ExternalLink, Copy, Check, MessageSquarePlus, Loader2,
+         Play, Download } from "lucide-react";
 import Drawer from "./Drawer.jsx";
 import { continueRun } from "../api.js";
+
+// 「そのまま動かせる成果物」の見せ方。html はその場で開き、exe/bat は保存させる。
+const RUN_KIND = {
+  html: { icon: Play, label: "ブラウザで開く", download: false },
+  exe: { icon: Download, label: "保存して実行", download: true },
+  bat: { icon: Download, label: "保存して実行", download: true },
+};
 
 /**
  * 最終成果物ペイン(ドロワー)。保存された成果物ファイルと最終回答を表示。
@@ -12,6 +20,10 @@ export default function ArtifactDrawer({ open, onClose, runId, artifacts, answer
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const list = artifacts ?? [];
+  const runnable = list.filter((a) => a.runnable && a.path);
+  const rest = list.filter((a) => !(a.runnable && a.path));
 
   const submitContinue = async () => {
     if (!msg.trim() || busy) return;
@@ -42,13 +54,42 @@ export default function ArtifactDrawer({ open, onClose, runId, artifacts, answer
       }
     >
       <div className="space-y-5 p-4">
-        {artifacts?.length > 0 && (
+        {runnable.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-green-500">
+              すぐ実行できる成果物
+            </h3>
+            <ul className="space-y-2">
+              {runnable.map((a, i) => {
+                const spec = RUN_KIND[a.kind] ?? RUN_KIND.html;
+                const Icon = spec.icon;
+                return (
+                  <li key={i}>
+                    <a
+                      href={a.path}
+                      {...(spec.download
+                        ? { download: a.name.split("/").pop() }
+                        : { target: "_blank", rel: "noreferrer" })}
+                      className="flex items-center gap-2.5 rounded-lg border border-green-600 bg-green-950/40 px-3 py-2.5 text-sm font-semibold text-green-300 hover:bg-green-900/40"
+                    >
+                      <Icon size={16} className="shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                      <span className="shrink-0 text-[11px] font-normal text-zinc-400">{spec.label}</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
+        {rest.length > 0 && (
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-              保存されたファイル ({artifacts.length})
+              {runnable.length > 0 ? "そのほかのファイル" : "保存されたファイル"} ({rest.length})
             </h3>
             <ul className="space-y-1.5">
-              {artifacts.map((a, i) => (
+              {rest.map((a, i) => (
                 <li key={i}>
                   {a.path ? (
                     <a
@@ -94,7 +135,7 @@ export default function ArtifactDrawer({ open, onClose, runId, artifacts, answer
           </section>
         )}
 
-        {!artifacts?.length && !answerNode?.output && (
+        {!list.length && !answerNode?.output && (
           <p className="text-sm text-zinc-500">成果物はまだありません。</p>
         )}
 
