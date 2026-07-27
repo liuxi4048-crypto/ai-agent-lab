@@ -26,7 +26,7 @@ CHECKPOINT_SEC = 10      # 実行中Runの定期スナップショット間隔(�
 class Run:
     def __init__(self, task: str, mode: str, model: str,
                  reviewer_model: str | None = None, approve: bool = True,
-                 max_iter: int = 18, hybrid: bool = False):
+                 max_iter: int = 18, hybrid: bool = False, critique: bool = False):
         self.id = uuid.uuid4().hex[:10]
         self.task = task
         self.mode = mode                  # orchestra / critique / code / swarm-code
@@ -35,6 +35,7 @@ class Run:
         self.approve = approve
         self.max_iter = max_iter
         self.hybrid = hybrid              # True なら直列強制
+        self.critique = critique          # codeモード: レビュー+FIXラウンド
         self.bus = EventBus()
         self.created_at = time.time()
         self.finished_at: float | None = None
@@ -56,18 +57,30 @@ class Run:
     def summary(self) -> dict:
         root = next((self.bus.nodes[i] for i in self.bus.order
                      if self.bus.nodes[i].kind == "task"), None)
+        # 「今どのエージェントが何をしているか」をカードに出すための現在ステップ
+        step = None
+        for i in reversed(self.bus.order):
+            n = self.bus.nodes[i]
+            if n.kind != "task" and n.status in ("thinking", "generating", "running"):
+                step = n.title
+                break
         return {
+            "current_step": step,
             "id": self.id,
             "task": self.task,
             "model": self.model,
             "mode": self.mode,
             "reviewer_model": self.reviewer_model,
             "hybrid": self.hybrid,
+            "approve": self.approve,
+            "critique": self.critique,
+            "max_iter": self.max_iter,
             "status": self.status(),
             "created_at": self.created_at,
             "finished_at": self.finished_at,
             "progress": list(root.progress) if root and root.progress else None,
             "tokens": sum(self.bus.nodes[i].tokens for i in self.bus.order),
+            "pending_approvals": len(self.pending_approvals),
         }
 
     # ---- 承認フロー ----
@@ -115,8 +128,8 @@ class RunManager:
 
     def create(self, task: str, mode: str, model: str,
                reviewer_model: str | None = None, approve: bool = True,
-               max_iter: int = 18, hybrid: bool = False) -> Run:
-        run = Run(task, mode, model, reviewer_model, approve, max_iter, hybrid)
+               max_iter: int = 18, hybrid: bool = False, critique: bool = False) -> Run:
+        run = Run(task, mode, model, reviewer_model, approve, max_iter, hybrid, critique)
         self.live[run.id] = run
         return run
 
@@ -175,7 +188,15 @@ class RunManager:
             return None
 
     def list_runs(self) -> list[dict]:
-        items = [r.summary() for r in self.live.values()]
+        items = []
+        for r in self.live.values():
+            s = r.summary()
+            if s["status"] == "queued":
+                s["queue_reason"] = (
+                    "hybrid直列待ち(大型モデルの同時実行を防止)"
+                    if r.hybrid and self.hybrid_lock.locked()
+                    else f"並列上限{MAX_CONCURRENT}件に到達")
+            items.append(s)
         seen = {r["id"] for r in items}
         if RUNS_DIR.is_dir():
             for path in RUNS_DIR.glob("*.json"):
@@ -189,8 +210,12 @@ class RunManager:
         """ライブ実行ならその場のスナップショット、終了済みなら保存済みを返す。"""
         if run_id in self.live:
             return self.live[run_id].bus.full_snapshot()
-        data = self._load_file(RUNS_DIR / f"{run_id}.json")
-        return data.get("snapshot") if data else None
+        record = self.get_record(run_id)
+        return record.get("snapshot") if record else None
+
+    def get_record(self, run_id: str) -> dict | None:
+        """保存済みRunのレコード全体(summary+snapshot)を返す。"""
+        return self._load_file(RUNS_DIR / f"{run_id}.json")
 
     def get_live(self, run_id: str) -> Run | None:
         return self.live.get(run_id)
@@ -221,6 +246,16 @@ class RunManager:
         run.reject_pending()
         run.task_obj.cancel()
         return True
+
+    def delete(self, run_id: str) -> str:
+        """終了済みRunの記録を削除する。返り値: ok / running / not_found。"""
+        if run_id in self.live:
+            return "running"
+        path = RUNS_DIR / f"{run_id}.json"
+        if not path.is_file():
+            return "not_found"
+        path.unlink()
+        return "ok"
 
 
 manager = RunManager()

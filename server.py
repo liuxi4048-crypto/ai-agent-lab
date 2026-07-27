@@ -116,7 +116,8 @@ async def start_run(req: RunRequest) -> dict:
 
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     run = manager.create(task, req.mode, model, reviewer,
-                         approve=req.approve, max_iter=req.max_iter, hybrid=hybrid)
+                         approve=req.approve, max_iter=req.max_iter, hybrid=hybrid,
+                         critique=req.critique)
 
     def factory():
         if run.mode == "critique":
@@ -140,6 +141,16 @@ async def cancel_run(run_id: str) -> dict:
     return {"status": "cancelling"}
 
 
+@app.delete("/run/{run_id}")
+async def delete_run(run_id: str) -> dict:
+    result = manager.delete(run_id)
+    if result == "running":
+        raise HTTPException(409, "実行中のタスクは削除できません(先に中断してください)")
+    if result == "not_found":
+        raise HTTPException(404, "指定されたタスクが見つかりません")
+    return {"status": "deleted"}
+
+
 class ApprovalRequest(BaseModel):
     approved: bool
 
@@ -161,9 +172,17 @@ async def events(run_id: str) -> StreamingResponse:
 
     if bus is None:
         # 終了・保存済みRun: スナップショットを1回送って保持
-        snapshot = manager.get_snapshot(run_id)
-        if snapshot is None:
+        record = manager.get_record(run_id)
+        if record is None or record.get("snapshot") is None:
             raise HTTPException(404, "指定されたタスクが見つかりません")
+        snapshot = record["snapshot"]
+        # チェックポイント由来のsnapshotは running:true のまま残っていることがある
+        # (プロセス死→interrupted)。表示が事実と食い違わないよう正規化する
+        snapshot["running"] = False
+        snapshot["run_status"] = record.get("status", "done")
+        for n in snapshot.get("nodes", []):
+            if n.get("status") not in ("done", "error", "cancelled"):
+                n["status"] = "cancelled"
 
         async def replay():
             yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"

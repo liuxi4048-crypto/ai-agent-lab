@@ -130,6 +130,12 @@ class EventBus:
         self._publish({"type": "token_progress", "id": node_id,
                        "tokens": node.tokens, "preview": node.preview})
 
+    def add_tokens(self, node_id: str, n: int) -> None:
+        """非ストリーミング呼び出し(coderノード等)のトークン計上。"""
+        node = self.nodes[node_id]
+        node.tokens += n
+        self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens})
+
     def emit_log(self, node_id: str, line: str) -> None:
         """coder ノードの逐次ログ1行。"""
         node = self.nodes[node_id]

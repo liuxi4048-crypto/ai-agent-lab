@@ -119,7 +119,11 @@ async def chat(cfg, key, messages, tools=None, temperature=0.2,
                     data = resp.json()
                     if data.get("error"):
                         raise OllamaError(data["error"])
-                    return data.get("message", {})
+                    msg = data.get("message", {})
+                    # 生成トークン数を観測用に添付(呼び出し側は履歴追加前に pop する)
+                    if data.get("eval_count"):
+                        msg["_usage"] = data["eval_count"]
+                    return msg
             except (httpx.ConnectError, httpx.ReadTimeout) as e:
                 last_err = OllamaError(
                     f"Ollamaに接続/応答できません ({OLLAMA_BASE})。ollama serve の起動を確認: {e}")

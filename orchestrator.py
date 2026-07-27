@@ -439,6 +439,8 @@ class CodeOrchestrator:
             if d.get("type") == "iter":
                 bus.set_title(node_id, f"🛠 コーディングエージェント iter {d['iter']}/{d['max']} [{d['phase']}]")
                 bus.set_progress(root_id, d["iter"], d["max"])
+            elif d.get("type") == "usage":
+                bus.add_tokens(node_id, d["tokens"])
             elif d.get("type") == "start":
                 bus.set_status(node_id, "running")
 
@@ -561,6 +563,8 @@ class SwarmCodeOrchestrator:
             if d.get("type") == "iter":
                 bus.set_title(node_id,
                               f"🛠 サブコーダー{i+1}: {sub['title']} iter {d['iter']}/{d['max']} [{d['phase']}]")
+            elif d.get("type") == "usage":
+                bus.add_tokens(node_id, d["tokens"])
 
         try:
             summary = await run_agent(

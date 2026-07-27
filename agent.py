@@ -103,6 +103,9 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
             cfg, key,
             messages + [{"role": "system", "content": PHASE_HINT[phase]}],
             emit)
+        usage = msg.pop("_usage", 0)
+        if usage:
+            _status({"type": "usage", "tokens": usage})
         messages.append(msg)
 
         # AI の思考/発話を可視化(空なら出さない)
