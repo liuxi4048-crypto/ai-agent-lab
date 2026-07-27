@@ -40,10 +40,13 @@ except OSError as _e:
     print(f"[recover] 失敗(継続): {_e}")
 
 STATIC = Path(__file__).parent / "static"
+STATIC_REACT = Path(__file__).parent / "static-react"  # 新UI(frontend/ のビルド成果物)
 ARTIFACT_DIR.mkdir(exist_ok=True)
 Path(PROJECTS_DIR).mkdir(exist_ok=True)
 app.mount("/workspace", StaticFiles(directory=ARTIFACT_DIR), name="workspace")
 app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
+if (STATIC_REACT / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=STATIC_REACT / "assets"), name="assets")
 
 MODES = ("orchestra", "critique", "code", "swarm-code")
 
@@ -64,7 +67,19 @@ def _is_hybrid(cfg, *keys: str) -> bool:
 
 @app.get("/")
 async def index() -> FileResponse:
+    """新UI(React)がビルド済みならそちらを配信。/legacy で旧UIも残す。"""
+    new_ui = STATIC_REACT / "index.html"
+    return FileResponse(new_ui if new_ui.is_file() else STATIC / "index.html")
+
+
+@app.get("/legacy")
+async def legacy() -> FileResponse:
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/gpu")
+async def gpu() -> dict:
+    return await llm.gpu_status()
 
 
 @app.get("/health")

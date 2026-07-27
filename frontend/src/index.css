@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+/* Stalled(応答停止警告)カードの枠線点滅 */
+@keyframes stall-blink {
+  0%, 100% { border-color: rgb(249 115 22); box-shadow: 0 0 0 1px rgb(249 115 22 / 0.55); }
+  50%      { border-color: rgb(249 115 22 / 0.25); box-shadow: none; }
+}
+.stall-blink { animation: stall-blink 1s ease-in-out infinite; }
+
+@keyframes soft-pulse { 50% { opacity: 0.45; } }
+.soft-pulse { animation: soft-pulse 1.3s ease-in-out infinite; }
+
+/* ダークテーマ用スクロールバー */
+* { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+body { background-color: #09090b; }

@@ -186,3 +186,24 @@ async def is_alive():
             return resp.status_code == 200
     except httpx.HTTPError:
         return False
+
+
+# ダッシュボードのVRAMメーター用。物理VRAM総量はOllama APIから取れないため環境変数で設定
+VRAM_TOTAL_BYTES = int(float(os.environ.get("VRAM_TOTAL_GB", "16")) * 1024**3)
+
+
+async def gpu_status():
+    """Ollama /api/ps からロード中モデルのVRAM使用量を集計する(GET /gpu 用)。"""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/ps")
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return {"available": False, "total_bytes": VRAM_TOTAL_BYTES, "used_bytes": 0, "models": []}
+    return {
+        "available": True,
+        "total_bytes": VRAM_TOTAL_BYTES,
+        "used_bytes": sum(m.get("size_vram", 0) for m in models),
+        "models": [{"name": m.get("name", ""), "size_vram": m.get("size_vram", 0)} for m in models],
+    }
