@@ -90,8 +90,22 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 ### GPUバックエンド(RX 9070 XT / gfx1201)
 
 - Ollama 0.32.x は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**(実測50 tok/s @ qwen3:30b)
-- `ollama ps` の PROCESSOR が全CPUなら: ①デバイスマネージャーでdGPUが無効化されていないか
-  ②`OLLAMA_VULKAN=1` を試す
+- **`ollama ps` の PROCESSOR が `100% CPU` になっていたらまず dGPU の状態を疑う**。
+  このマシンでは RX 9070 XT が突発的に脱落する事象が発生している(Ollamaは
+  エラーを出さず黙ってCPUにフォールバックするため、症状は「異様に遅い」だけ):
+
+  ```powershell
+  Get-PnpDevice -Class Display | Select-Object FriendlyName, Status, Problem
+  ```
+
+  `CM_PROB_DISABLED` なら管理者権限で復旧できる(`CM_PROB_FAILED_POST_START` まで
+  進んだ場合はOS再起動が必要):
+
+  ```powershell
+  pnputil /enable-device "PCI\VEN_1002&DEV_7550&SUBSYS_54141849&REV_C0\6&31E3CDBB&0&00000009"
+  ```
+
+- それでもGPUを掴まない場合は `OLLAMA_VULKAN=1` を試す
 - ネイティブ `/api/chat` は `options.num_ctx` をリクエスト単位で尊重(0.32.1実測)。
   旧v1の「派生モデルにnum_ctx焼き込み」(modelfiles/)は不要になったがフォールバックとして残置
 
