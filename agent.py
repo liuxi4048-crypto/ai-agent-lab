@@ -31,9 +31,19 @@ SYSTEM = """あなたは自律型のコーディングエージェント。与�
 4. FIX: エラーや不足を読み、ファイルを直して再度 RUN。動くまで繰り返す。
 5. 目標を満たし検証が通ったら finish を summary 付きで呼ぶ。
 
+ツールの使い分け(重要):
+- 新規ファイルの作成 = write_file。
+- **既存ファイルの修正 = 必ず edit_file**(変更箇所だけを置換する)。
+  write_file で書き直すと既存コードを失うので、修正で write_file を使ってはいけない。
+  edit_file の old_string は、周囲の行を含めてそのファイル内で一意になるように指定する。
+- 修正前に対象箇所が不確かなら read_file で現在の内容を確認してから edit_file する。
+- コードの場所を探すときは search_files(正規表現)を使う。全文を read_file しない。
+- 時間のかかるコマンド(pip install 等)は run_command の timeout を長めに指定する。
+
 規則:
 - ファイル/コマンドは作業ディレクトリ配下のみ。パスは相対で、必ず同じプロジェクトフォルダ内にまとめる。
 - ファイル入出力するコードを書くときは encoding='utf-8' を明示する(Windowsの文字化け回避)。
+- 書き込み結果に「⚠ 構文エラー」が出たら、次の手で必ずそれを直す。
 - 一度に欲張らず、1〜数ツールずつ着実に。結果を見て次を決める。
 - 不明点は仮定を置いて前進する。停止・質問はしない。
 - 日本語で簡潔に考える。"""
@@ -230,10 +240,13 @@ def _compress_history(messages, num_ctx, emit=print):
             for tc in m.get("tool_calls") or []:
                 fn = tc.get("function", {})
                 args = fn.get("arguments")
-                if (isinstance(args, dict) and fn.get("name") == "write_file"
-                        and len(args.get("content") or "") > 200):
-                    args["content"] = "[本文省略: 書き込み済み。read_fileで再取得可]"
-                    compressed += 1
+                if not isinstance(args, dict):
+                    continue
+                # 書き込み系の本文はディスクに実体があるので履歴からは落とせる
+                for field in ("content", "old_string", "new_string"):
+                    if len(args.get(field) or "") > 200:
+                        args[field] = "[本文省略: 適用済み。read_fileで再取得可]"
+                        compressed += 1
     if compressed:
         emit(f"  [履歴圧縮] コンテキスト節約のため古いメッセージ{compressed}件を要約化")
 

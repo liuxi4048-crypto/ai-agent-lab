@@ -9,8 +9,16 @@
 - subdir 指定で projects/<run_id>/... をルートにでき、並列コーダー同士の
   ファイル衝突を防ぐ(swarm-code は sub_0/ sub_1/ ... を割り当てる)。
 - run_command は asyncio.create_subprocess_shell + wait_for(タイムアウト)。
+
+出力品質向上(v3):
+- edit_file: 部分置換。小型モデルの「全文書き直しで既存コードを削る」事故を防ぐ。
+- search_files: grep相当。全文readでコンテキストを潰さずにコードを探せる。
+- write_file/edit_file 後に構文チェック(py/json)を自動実行し、その場で気づかせる。
 """
+import ast
 import asyncio
+import fnmatch
+import json
 import os
 import re
 
@@ -40,7 +48,31 @@ ESCAPE_PATTERNS = [
 ]
 ESCAPE_RE = re.compile("|".join(ESCAPE_PATTERNS))
 
-RESULT_CAP = 12000  # ツール結果の履歴挿入上限(コンテキスト保護の最終防衛線)
+RESULT_CAP = 12000   # ツール結果の履歴挿入上限(コンテキスト保護の最終防衛線)
+MAX_TIMEOUT = 600    # run_command でモデルが指定できるタイムアウトの上限秒
+SEARCH_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
+
+
+def _syntax_check(path, content):
+    """書き込み直後の即時フィードバック。問題があれば警告文字列、無ければ None。
+
+    小型モデルは「書けた」と思い込んで次に進みやすいので、壊れた構文をその場で
+    知らせてフィードバックループを最短にする。subprocess を起こさず純Pythonで
+    完結するものだけを対象にする(py / json)。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".py":
+            ast.parse(content)
+        elif ext == ".json":
+            json.loads(content)
+    except SyntaxError as e:
+        return f"⚠ 構文エラー: {e.msg} (行 {e.lineno})。直して書き直すこと"
+    except json.JSONDecodeError as e:
+        return f"⚠ JSONが不正: {e.msg} (行 {e.lineno})。直して書き直すこと"
+    except ValueError as e:
+        return f"⚠ 構文チェック失敗: {e}"
+    return None
 
 
 class Toolbox:
@@ -114,9 +146,98 @@ class Toolbox:
         os.makedirs(os.path.dirname(p) or self.root, exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
-        return f"書き込み完了: {path} ({len(content)} 文字)"
+        msg = f"書き込み完了: {path} ({len(content)} 文字)"
+        # 構文が壊れていても書き込み自体は通す(モデルが直せるように結果で知らせる)
+        warn = _syntax_check(path, content)
+        return f"{msg}\n{warn}" if warn else msg
+
+    def edit_file(self, path, old_string, new_string, replace_all=False):
+        """既存ファイルの部分置換。全文を書き直させないための主力ツール。
+
+        old_string が見つからない/複数該当する場合は編集せずエラーを返す
+        (曖昧なまま置換して意図しない箇所を壊すより、モデルに直させる方が安全)。
+        """
+        p = self._safe_path(path)
+        if not os.path.isfile(p):
+            return f"(存在しない: {path}) — 新規作成なら write_file を使うこと"
+        if old_string == new_string:
+            return "[編集エラー] old_string と new_string が同一です"
+        if not old_string:
+            return "[編集エラー] old_string が空です(全文置換は write_file を使うこと)"
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        count = content.count(old_string)
+        if count == 0:
+            return (f"[編集エラー] old_string が {path} に見つかりません。"
+                    "read_file で現在の内容を確認し、空白・インデントまで完全に一致させること")
+        if count > 1 and not replace_all:
+            return (f"[編集エラー] old_string が {count} 箇所に一致し特定できません。"
+                    "前後の行を含めて一意になるまで広げるか、replace_all=true を指定すること")
+        updated = (content.replace(old_string, new_string) if replace_all
+                   else content.replace(old_string, new_string, 1))
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(updated)
+        msg = f"編集完了: {path} ({count if replace_all else 1} 箇所を置換)"
+        warn = _syntax_check(path, updated)
+        return f"{msg}\n{warn}" if warn else msg
+
+    def search_files(self, pattern, path=".", glob=None, max_results=50):
+        """作業ディレクトリ配下を正規表現で検索する(grep相当)。
+
+        全文 read_file でコンテキストを潰さずに「どこに何があるか」を掴むためのツール。
+        """
+        root = self._safe_path(path)
+        if not os.path.exists(root):
+            return f"(存在しない: {path})"
+        try:
+            rx = re.compile(pattern)
+        except re.error as e:
+            return f"[検索エラー] 正規表現が不正: {e}"
+        try:
+            cap = max(1, min(int(max_results), 200))
+        except (TypeError, ValueError):
+            cap = 50
+
+        hits, truncated = [], False
+        if os.path.isfile(root):
+            targets = [root]
+        else:
+            targets = []
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in SEARCH_SKIP_DIRS]
+                targets.extend(os.path.join(dirpath, fn) for fn in sorted(filenames))
+
+        for full in targets:
+            if glob and not fnmatch.fnmatch(os.path.basename(full), glob):
+                continue
+            try:
+                with open(full, "r", encoding="utf-8") as f:
+                    for i, line in enumerate(f, 1):
+                        if rx.search(line):
+                            rel = os.path.relpath(full, self.root).replace("\\", "/")
+                            hits.append(f"{rel}:{i}: {line.rstrip()[:200]}")
+                            if len(hits) >= cap:
+                                truncated = True
+                                break
+            except (OSError, UnicodeDecodeError):
+                continue  # バイナリ・読めないファイルは飛ばす
+            if truncated:
+                break
+
+        if not hits:
+            return f"(一致なし: /{pattern}/)"
+        out = "\n".join(hits)
+        if truncated:
+            out += f"\n…(上限{cap}件で打ち切り。パターンを絞ること)"
+        return out
 
     async def run_command(self, command, working_dir=".", timeout=120):
+        # timeout はモデルが指定できる(pip install 等は既定120秒では足りない)。
+        # 無限待ちを避けるため MAX_TIMEOUT でクランプする。
+        try:
+            timeout = max(1, min(int(timeout), MAX_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = 120
         if DENY_RE.search(command):
             return f"[拒否] 破壊的コマンドの疑い(denylist): {command}"
         if not self.approve and ESCAPE_RE.search(command):
@@ -144,6 +265,12 @@ class Toolbox:
             # timeout・Runキャンセル(CancelledError)いずれでも子プロセスを残さない
             if proc is not None and proc.returncode is None:
                 proc.kill()
+                try:
+                    # 刈り取らないとパイプ未クローズの警告が出る。キャンセル中でも
+                    # shield 側が後始末を続けるので、ここでの中断は無視してよい。
+                    await asyncio.shield(proc.wait())
+                except BaseException:
+                    pass
         out = stdout.decode("utf-8", errors="replace")[-4000:]
         err = stderr.decode("utf-8", errors="replace")[-2000:]
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
@@ -163,9 +290,11 @@ class Toolbox:
                 result = await self.run_command(**args)
             else:
                 fn = {"list_dir": self.list_dir, "read_file": self.read_file,
-                      "write_file": self.write_file}.get(name)
+                      "write_file": self.write_file, "edit_file": self.edit_file,
+                      "search_files": self.search_files}.get(name)
                 if fn is None:
-                    return f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, write_file, run_command, finish)"
+                    return (f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, "
+                            "search_files, write_file, edit_file, run_command, finish)")
                 result = fn(**args)
         except TypeError as e:
             return f"[引数エラー] {name}: {e}"
@@ -200,15 +329,41 @@ TOOLS_SCHEMA = [
             "end_line": {"type": "integer", "description": "読み終わる行(両端含む・省略可)"}},
             "required": ["path"]}}},
     {"type": "function", "function": {
-        "name": "write_file", "description": "ファイルを作成/上書き",
+        "name": "search_files",
+        "description": "作業ディレクトリ配下を正規表現で検索する(grep相当)。"
+                       "どのファイルに何があるかを、全文を読まずに把握するために使う",
+        "parameters": {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "検索する正規表現"},
+            "path": {"type": "string", "description": "検索対象のディレクトリ/ファイル。既定 '.'"},
+            "glob": {"type": "string", "description": "ファイル名フィルタ(例 '*.py')。省略可"},
+            "max_results": {"type": "integer", "description": "最大件数。既定50"}},
+            "required": ["pattern"]}}},
+    {"type": "function", "function": {
+        "name": "write_file",
+        "description": "ファイルを新規作成する(既存ファイルの一部を直す場合は edit_file を使うこと)。"
+                       "py/json は書き込み後に構文チェックされる",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}, "content": {"type": "string"}},
             "required": ["path", "content"]}}},
     {"type": "function", "function": {
+        "name": "edit_file",
+        "description": "既存ファイルの一部だけを置換する。既存コードを壊さずに直せるので、"
+                       "ファイル修正では write_file より必ずこちらを優先すること。"
+                       "old_string は周囲の行を含めて対象ファイル内で一意になるように指定する",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "old_string": {"type": "string", "description": "置換前の文字列(空白・インデントまで完全一致)"},
+            "new_string": {"type": "string", "description": "置換後の文字列"},
+            "replace_all": {"type": "boolean", "description": "一致する全箇所を置換する。既定false"}},
+            "required": ["path", "old_string", "new_string"]}}},
+    {"type": "function", "function": {
         "name": "run_command", "description": "作業ディレクトリ配下でシェルコマンドを実行(導入/実行/テスト)",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string"},
-            "working_dir": {"type": "string", "description": "作業ルートからの相対。既定 '.'"}},
+            "working_dir": {"type": "string", "description": "作業ルートからの相対。既定 '.'"},
+            "timeout": {"type": "integer",
+                        "description": f"秒。既定120、上限{MAX_TIMEOUT}。pip install 等の"
+                                       "時間がかかるコマンドでは長めに指定すること"}},
             "required": ["command"]}}},
     {"type": "function", "function": {
         "name": "finish", "description": "目標達成時に呼ぶ。要約を渡す",
