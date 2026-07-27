@@ -19,6 +19,8 @@ from events import EventBus
 RUNS_DIR = _BASE / "runs"
 
 MAX_CONCURRENT = 3
+APPROVAL_TIMEOUT = 900   # 承認待ちの上限秒。放置時は自動却下(スロット飢餓の防止)
+CHECKPOINT_SEC = 10      # 実行中Runの定期スナップショット間隔(プロセス死対策)
 
 
 class Run:
@@ -75,7 +77,13 @@ class Run:
         self.pending_approvals[aid] = fut
         self.bus.request_approval(aid, node_id, command, cwd)
         try:
-            return await fut
+            return await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
+        except asyncio.TimeoutError:
+            # 承認放置でスロット/hybridロックを永久占有しない。UIのカードも閉じる
+            self.bus.emit_log(node_id,
+                              f"[承認タイムアウト] {APPROVAL_TIMEOUT}s 応答なし → 自動却下: {command}")
+            self.bus.resolve_approval(aid, False)
+            return False
         finally:
             self.pending_approvals.pop(aid, None)
 
@@ -115,7 +123,14 @@ class RunManager:
     def start(self, run: Run, factory) -> None:
         """factory() -> coroutine(オーケストレーター本体)をゲート付きで起動する。"""
 
+        async def _checkpoint() -> None:
+            # プロセス死(ウィンドウクローズ・taskkill・電源断)でも直近状態が残るように
+            while True:
+                await asyncio.sleep(CHECKPOINT_SEC)
+                self.persist(run, final=False)
+
         async def _gated() -> None:
+            ck = asyncio.create_task(_checkpoint())
             try:
                 if run.hybrid:
                     # hybridロックを先に取る(ロック待ちで並列スロットを浪費しない)
@@ -132,18 +147,26 @@ class RunManager:
             except Exception as e:
                 run.error = str(e)
             finally:
+                ck.cancel()
                 run.reject_pending()
                 self.persist(run)
                 self.live.pop(run.id, None)  # 以後は runs/*.json から配信(メモリ解放)
 
         run.task_obj = asyncio.create_task(_gated())
 
-    def persist(self, run: Run) -> None:
-        run.finished_at = time.time()
+    def persist(self, run: Run, final: bool = True) -> None:
+        """Runの状態をディスクへ書く。final=False はチェックポイント(実行中のまま)。
+
+        tmp+replace の原子的書き込みにする(書き込み途中のクラッシュで
+        JSONが壊れると _load_file が黙って捨て「Run消失」が再発するため)。
+        """
+        if final:
+            run.finished_at = time.time()
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         data = {**run.summary(), "snapshot": run.bus.full_snapshot()}
-        (RUNS_DIR / f"{run.id}.json").write_text(
-            json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp = RUNS_DIR / f"{run.id}.json.tmp"
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(RUNS_DIR / f"{run.id}.json")
 
     def _load_file(self, path: Path) -> dict | None:
         try:
@@ -171,6 +194,23 @@ class RunManager:
 
     def get_live(self, run_id: str) -> Run | None:
         return self.live.get(run_id)
+
+    def recover_interrupted(self) -> int:
+        """起動時: 前回プロセス死で終了記録のないRunを interrupted として確定する。"""
+        n = 0
+        if not RUNS_DIR.is_dir():
+            return 0
+        for path in RUNS_DIR.glob("*.json"):
+            data = self._load_file(path)
+            if not data or data.get("finished_at") is not None:
+                continue
+            data["status"] = "interrupted"
+            data["finished_at"] = path.stat().st_mtime
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+            n += 1
+        return n
 
     def cancel(self, run_id: str) -> bool:
         """実行中/待機中のRunを中断する。対象がない/既に終了していればFalse。"""

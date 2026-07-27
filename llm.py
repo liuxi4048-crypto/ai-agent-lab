@@ -8,6 +8,7 @@
 tool_call_id は存在しない。ツール結果は role=tool を呼び出し順で対応付ける。
 """
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -33,6 +34,16 @@ class OllamaError(Exception):
     pass
 
 
+# hybrid(VRAM+RAMオフロード)モデルは、Run内部の並列呼び出し(orchestra/swarmの
+# asyncio.gather)もここで直列化する。runs.py の hybrid_lock はRun単位の直列化・
+# モデル再ロードスラッシング防止が役割で、両方必要。
+_HYBRID_GATE = asyncio.Lock()
+
+
+def _gate(info):
+    return _HYBRID_GATE if info["placement"] == "hybrid" else contextlib.nullcontext()
+
+
 def load_config(path=CONFIG_PATH):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -46,7 +57,8 @@ def resolve(cfg, key):
     m = cfg.get("models", {}).get(key)
     if m is None:
         return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
-                "tools": True, "num_ctx": DEFAULT_NUM_CTX, "strengths": [], "use": ""}
+                "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
+                "strengths": [], "use": ""}
     return {
         "key": key,
         "tag": m["tag"],
@@ -54,6 +66,7 @@ def resolve(cfg, key):
         "placement": m.get("placement", "vram"),
         "tools": m.get("tools", False),
         "num_ctx": m.get("num_ctx", DEFAULT_NUM_CTX),
+        "keep_alive": m.get("keep_alive", "30m"),
         "strengths": m.get("strengths", []),
         "use": m.get("use", ""),
     }
@@ -72,6 +85,9 @@ def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream):
         "model": info["tag"],
         "messages": messages,
         "stream": stream,
+        # 既定5分のアンロードを防ぐ(承認待ち・長いrun_command後の再ロード25〜65秒対策)。
+        # 大型hybridはmodels.yaml側で短め(10m)を指定してRAM占有を抑える。
+        "keep_alive": info["keep_alive"],
         "options": {
             "temperature": temperature,
             "num_ctx": num_ctx or info["num_ctx"],
@@ -93,23 +109,24 @@ async def chat(cfg, key, messages, tools=None, temperature=0.2,
     info = resolve(cfg, key)
     payload = _payload(info, messages, tools, temperature, num_ctx, json_mode, False)
     last_err = None
-    for attempt in range(RETRIES):
-        try:
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                resp = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
-                if resp.status_code != 200:
-                    raise OllamaError(f"Ollama HTTP {resp.status_code}: {resp.text[:500]}")
-                data = resp.json()
-                if data.get("error"):
-                    raise OllamaError(data["error"])
-                return data.get("message", {})
-        except (httpx.ConnectError, httpx.ReadTimeout) as e:
-            last_err = OllamaError(
-                f"Ollamaに接続/応答できません ({OLLAMA_BASE})。ollama serve の起動を確認: {e}")
-        except OllamaError as e:
-            last_err = e
-        if attempt < RETRIES - 1:
-            await asyncio.sleep(2 * (attempt + 1))
+    async with _gate(info):
+        for attempt in range(RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                    resp = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+                    if resp.status_code != 200:
+                        raise OllamaError(f"Ollama HTTP {resp.status_code}: {resp.text[:500]}")
+                    data = resp.json()
+                    if data.get("error"):
+                        raise OllamaError(data["error"])
+                    return data.get("message", {})
+            except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                last_err = OllamaError(
+                    f"Ollamaに接続/応答できません ({OLLAMA_BASE})。ollama serve の起動を確認: {e}")
+            except OllamaError as e:
+                last_err = e
+            if attempt < RETRIES - 1:
+                await asyncio.sleep(2 * (attempt + 1))
     raise last_err
 
 
@@ -118,27 +135,28 @@ async def chat_stream(cfg, key, messages, temperature=0.7,
     """ストリーミング呼び出し。生成トークン片を逐次yieldする(ツールなし用途)。"""
     info = resolve(cfg, key)
     payload = _payload(info, messages, None, temperature, num_ctx, json_mode, True)
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
-                if resp.status_code != 200:
-                    body = (await resp.aread()).decode("utf-8", errors="replace")
-                    raise OllamaError(f"Ollama HTTP {resp.status_code}: {body[:500]}")
-                async for line in resp.aiter_lines():
-                    if not line.strip():
-                        continue
-                    chunk = json.loads(line)
-                    if chunk.get("error"):
-                        raise OllamaError(chunk["error"])
-                    piece = chunk.get("message", {}).get("content", "")
-                    if piece:
-                        yield piece
-                    if chunk.get("done"):
-                        return
-    except httpx.ConnectError as e:
-        raise OllamaError(
-            f"Ollamaに接続できません ({OLLAMA_BASE})。`ollama serve` が起動しているか確認してください。"
-        ) from e
+    async with _gate(info):
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
+                    if resp.status_code != 200:
+                        body = (await resp.aread()).decode("utf-8", errors="replace")
+                        raise OllamaError(f"Ollama HTTP {resp.status_code}: {body[:500]}")
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        chunk = json.loads(line)
+                        if chunk.get("error"):
+                            raise OllamaError(chunk["error"])
+                        piece = chunk.get("message", {}).get("content", "")
+                        if piece:
+                            yield piece
+                        if chunk.get("done"):
+                            return
+        except httpx.ConnectError as e:
+            raise OllamaError(
+                f"Ollamaに接続できません ({OLLAMA_BASE})。`ollama serve` が起動しているか確認してください。"
+            ) from e
 
 
 def chat_sync(cfg, key, messages, **kwargs):

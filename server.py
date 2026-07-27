@@ -30,6 +30,15 @@ from runs import manager
 from tools import WORKSPACE as PROJECTS_DIR
 
 app = FastAPI(title="AI Agent Lab")
+
+# 起動時: 前回プロセス死で実行中のまま残ったRun記録を interrupted として確定
+try:
+    _n = manager.recover_interrupted()
+    if _n:
+        print(f"[recover] 前回中断のRun {_n}件を interrupted として確定")
+except OSError as _e:
+    print(f"[recover] 失敗(継続): {_e}")
+
 STATIC = Path(__file__).parent / "static"
 ARTIFACT_DIR.mkdir(exist_ok=True)
 Path(PROJECTS_DIR).mkdir(exist_ok=True)

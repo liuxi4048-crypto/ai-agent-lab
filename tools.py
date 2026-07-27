@@ -28,6 +28,20 @@ DENY_PATTERNS = [
 ]
 DENY_RE = re.compile("|".join(DENY_PATTERNS), re.IGNORECASE)
 
+# 承認OFF(自走)時のみ適用するワークスペース脱出検知。
+# working_dirは_safe_pathで制限済みだが、コマンド文字列自体はshellに素通しのため、
+# 絶対パス・UNC・環境変数展開・パス要素としての .. を無人実行では拒否する。
+# (承認ON時は人間の確認が最後の砦なのでスキャンしない)
+ESCAPE_PATTERNS = [
+    r"\b[A-Za-z]:(?=\\|/(?!/))",                    # ドライブ絶対パス C:\ / C:/(URLの :// は除外)
+    r"\\\\",                                          # UNCパス
+    r"%\w+%|\$env:",                                  # 環境変数展開
+    r"(?:^|[\s\"'=(\\/])\.\.(?=[\\/\s\"'&|;]|$)",  # パス要素としての ..
+]
+ESCAPE_RE = re.compile("|".join(ESCAPE_PATTERNS))
+
+RESULT_CAP = 12000  # ツール結果の履歴挿入上限(コンテキスト保護の最終防衛線)
+
 
 class Toolbox:
     """1つの Run(エージェント実行)が使うツール一式。
@@ -72,12 +86,28 @@ class Toolbox:
             items.append(name + ("/" if os.path.isdir(full) else ""))
         return "\n".join(items) or "(空)"
 
-    def read_file(self, path):
+    def read_file(self, path, start_line=None, end_line=None):
         p = self._safe_path(path)
         if not os.path.isfile(p):
             return f"(存在しない: {path})"
         with open(p, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+            lines = f.readlines()
+        total = len(lines)
+        if start_line or end_line:
+            s = max(1, int(start_line or 1))
+            e = min(total, int(end_line or total))
+            body = "".join(lines[s - 1:e])
+            prefix = f"(行 {s}-{e} / 全{total}行)\n"
+        else:
+            body = "".join(lines)
+            prefix = ""
+        # コードはヘッダ・import・定義が先頭にあるため「先頭優先+末尾少量」で切る
+        if len(body) > 8000:
+            body = (body[:6000]
+                    + f"\n…(省略: 全{total}行/{len(body)}字。"
+                    "start_line/end_line で範囲指定して続きを読める)…\n"
+                    + body[-1000:])
+        return prefix + body
 
     def write_file(self, path, content):
         p = self._safe_path(path)
@@ -89,6 +119,9 @@ class Toolbox:
     async def run_command(self, command, working_dir=".", timeout=120):
         if DENY_RE.search(command):
             return f"[拒否] 破壊的コマンドの疑い(denylist): {command}"
+        if not self.approve and ESCAPE_RE.search(command):
+            return ("[拒否] ワークスペース外参照の疑い(絶対パス/UNC/../環境変数)。"
+                    "作業ルートからの相対パスに書き直して再実行して")
         cwd = self._safe_path(working_dir)
         os.makedirs(cwd, exist_ok=True)
         if self.approve:
@@ -116,25 +149,34 @@ class Toolbox:
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
 
     async def run(self, name, args):
-        """ツール名 + 引数(dict)を実行して文字列結果を返す。finish は None。"""
+        """ツール名 + 引数(dict)を実行して文字列結果を返す。finish は None。
+
+        戻り値は RESULT_CAP で一括クランプする(read_file等の個別キャップの最終防衛線。
+        巨大な結果はそのまま会話履歴に恒久挿入されるため)。
+        """
         if name == "finish":
             return None  # 呼び出し側で終了扱い
         if not isinstance(args, dict):
             return f"[引数エラー] {name}: 引数がオブジェクトでない: {args!r}"
         try:
             if name == "run_command":
-                return await self.run_command(**args)
-            fn = {"list_dir": self.list_dir, "read_file": self.read_file,
-                  "write_file": self.write_file}.get(name)
-            if fn is None:
-                return f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, write_file, run_command, finish)"
-            return fn(**args)
+                result = await self.run_command(**args)
+            else:
+                fn = {"list_dir": self.list_dir, "read_file": self.read_file,
+                      "write_file": self.write_file}.get(name)
+                if fn is None:
+                    return f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, write_file, run_command, finish)"
+                result = fn(**args)
         except TypeError as e:
             return f"[引数エラー] {name}: {e}"
         except ValueError as e:
             return f"[パスエラー] {name}: {e}"
         except Exception as e:
             return f"[実行エラー] {name}: {e}"
+        result = str(result)
+        if len(result) > RESULT_CAP:
+            result = result[:RESULT_CAP] + f"\n…(結果が長いため{RESULT_CAP}字で切り詰め)…"
+        return result
 
 
 async def _console_approve(command, cwd):
@@ -150,9 +192,13 @@ TOOLS_SCHEMA = [
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string", "description": "作業ルートからの相対パス"}}}}},
     {"type": "function", "function": {
-        "name": "read_file", "description": "ファイル内容を読む",
+        "name": "read_file",
+        "description": "ファイル内容を読む(長いファイルは省略される。start_line/end_lineで範囲指定可)",
         "parameters": {"type": "object", "properties": {
-            "path": {"type": "string"}}, "required": ["path"]}}},
+            "path": {"type": "string"},
+            "start_line": {"type": "integer", "description": "読み始める行(1始まり・省略可)"},
+            "end_line": {"type": "integer", "description": "読み終わる行(両端含む・省略可)"}},
+            "required": ["path"]}}},
     {"type": "function", "function": {
         "name": "write_file", "description": "ファイルを作成/上書き",
         "parameters": {"type": "object", "properties": {

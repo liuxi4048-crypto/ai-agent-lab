@@ -96,8 +96,13 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
             return None
         _status({"type": "iter", "iter": i, "max": max_iter, "phase": phase})
         emit(f"=== iter {i}/{max_iter}  phase={phase} ===")
-        messages.append({"role": "system", "content": PHASE_HINT[phase]})
-        msg = await _chat_with_retry(cfg, key, messages, emit)
+        _compress_history(messages, info["num_ctx"], emit)
+        # フェーズヒントは履歴に残さず、このリクエストの末尾にだけ一時付与する
+        # (毎iterのsystem追記はnum_ctx溢れ時に古いヒントがピン留めされノイズ化するため)
+        msg = await _chat_with_retry(
+            cfg, key,
+            messages + [{"role": "system", "content": PHASE_HINT[phase]}],
+            emit)
         messages.append(msg)
 
         # AI の思考/発話を可視化(空なら出さない)
@@ -154,6 +159,44 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     except Exception as e:
         emit(f"  [report error] {e}")
         return None
+
+
+KEEP_RECENT = 8       # 直近メッセージは圧縮しない
+COMPRESS_RATIO = 0.7  # 概算トークンが num_ctx のこの割合を超えたら圧縮
+
+
+def _approx_tokens(messages):
+    import json
+    return sum(len(json.dumps(m, ensure_ascii=False)) for m in messages) // 3
+
+
+def _compress_history(messages, num_ctx, emit=print):
+    """コンテキスト予算管理。予算超過時、古いツール結果と write_file 本文を
+    1行要約に置換する(system・goal・直近 KEEP_RECENT 件は不可侵)。
+
+    Ollamaは超過時に古い非systemメッセージから黙って切り捨てるため、放置すると
+    goal(role=user)が最初に消えて自走が脱線する。ファイル実体はディスクにあるので
+    置換しても read_file で再取得でき、情報損失はない。
+    """
+    if _approx_tokens(messages) <= num_ctx * COMPRESS_RATIO:
+        return
+    compressed = 0
+    for m in messages[2:max(2, len(messages) - KEEP_RECENT)]:
+        role = m.get("role")
+        if role == "tool" and len(m.get("content") or "") > 200:
+            m["content"] = (m["content"][:160]
+                            + " …[古い結果は省略。必要なら read_file / 再実行で取得]")
+            compressed += 1
+        elif role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function", {})
+                args = fn.get("arguments")
+                if (isinstance(args, dict) and fn.get("name") == "write_file"
+                        and len(args.get("content") or "") > 200):
+                    args["content"] = "[本文省略: 書き込み済み。read_fileで再取得可]"
+                    compressed += 1
+    if compressed:
+        emit(f"  [履歴圧縮] コンテキスト節約のため古いメッセージ{compressed}件を要約化")
 
 
 async def _chat_with_retry(cfg, key, messages, emit=print, tries=3):

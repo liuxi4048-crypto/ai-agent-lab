@@ -62,11 +62,12 @@
     padding: 14px 16px; cursor: pointer; transition: border-color .15s;
   }
   .card:hover { border-color: var(--blue); }
-  .card.st-running   { border-left: 4px solid var(--amber); }
-  .card.st-queued    { border-left: 4px solid var(--purple); }
-  .card.st-done      { border-left: 4px solid var(--green); }
-  .card.st-error     { border-left: 4px solid var(--red); }
-  .card.st-cancelled { border-left: 4px solid var(--gray); }
+  .card.st-running     { border-left: 4px solid var(--amber); }
+  .card.st-queued      { border-left: 4px solid var(--purple); }
+  .card.st-done        { border-left: 4px solid var(--green); }
+  .card.st-error       { border-left: 4px solid var(--red); }
+  .card.st-cancelled   { border-left: 4px solid var(--gray); }
+  .card.st-interrupted { border-left: 4px solid var(--gray); }
   .card-head { display: flex; align-items: center; gap: 10px; }
   .card-task { font-weight: 600; font-size: 14px; flex: 1;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -311,7 +312,7 @@ const STATUS_LABEL = {
   running: "🚀 実行中", done: "✅ 完了", error: "❌ 失敗", cancelled: "⛔ 中断",
 };
 const CARD_LABEL = { running: "🚀 実行中", queued: "⏳ 待機中", done: "✅ 完了",
-  error: "❌ 失敗", cancelled: "⛔ 中断" };
+  error: "❌ 失敗", cancelled: "⛔ 中断", interrupted: "⚠ 中断(異常終了)" };
 const MODE_ICON = { orchestra: "🎼", critique: "🔁", code: "🛠", "swarm-code": "🐝" };
 const PLACEMENT_TAG = { vram: "▣VRAM", hybrid: "⬔RAM+VRAM" };
 

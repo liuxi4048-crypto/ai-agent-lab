@@ -41,9 +41,10 @@ models:
   deep:
     tag: "deepseek-r1:70b"
     family: deepseek
-    placement: hybrid        # 43GB dense → 2〜5 tok/s想定。時間をかけてよい推論専用
+    placement: hybrid        # 42GB dense → 1.6 tok/s実測。時間をかけてよい推論専用
     tools: false
     num_ctx: 8192
+    keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     strengths: [reasoning, math]
     use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
   # next(Qwen3-Next-80B-A3B)は 2026-07-27 時点で無効化。
@@ -61,9 +62,10 @@ models:
   heavy:
     tag: "gpt-oss:120b"
     family: gpt-oss
-    placement: hybrid        # 65GB MoE(活性5.1B) → 8〜18 tok/s想定
+    placement: hybrid        # 65GB MoE(活性5.1B) → 10.7 tok/s実測
     tools: true
     num_ctx: 16384
+    keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     strengths: [tool, reasoning]
     use: "最大モデル / VRAM+RAM / 難所のみ"
   fast:

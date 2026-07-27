@@ -65,19 +65,27 @@ def ensure_ollama() -> None:
         time.sleep(0.5)
 
 
-def start_server(port: int) -> None:
+def start_server(port: int) -> dict:
+    """uvicornをバックグラウンドスレッドで起動し、graceful shutdown用の参照を返す。"""
+    holder: dict = {}
+
     def _run() -> None:
         try:
             from server import app  # 起動を速くするため遅延import
 
             config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+            srv = uvicorn.Server(config)
+            holder["server"] = srv
             log(f"uvicorn starting on {port}")
-            uvicorn.Server(config).run()
+            srv.run()
             log("uvicorn exited")
         except Exception:
             log("server thread crashed:\n" + traceback.format_exc())
 
-    threading.Thread(target=_run, daemon=True).start()
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    holder["thread"] = t
+    return holder
 
 
 def wait_ready(url: str, timeout: float = 15.0) -> bool:
@@ -107,7 +115,7 @@ def main() -> None:
     log(f"ollama alive: {_port_open(11434)}")
     port = _free_port(8765)
     log(f"port chosen: {port}")
-    start_server(port)
+    holder = start_server(port)
     url = f"http://127.0.0.1:{port}"
 
     window = webview.create_window(
@@ -139,6 +147,13 @@ def main() -> None:
     log("starting webview (edgechromium)")
     webview.start(gui="edgechromium")
     log("webview closed")
+    # ウィンドウクローズ時にuvicornを正規シャットダウンし、実行中Runの
+    # CancelledError→persist(記録保存)を走らせてから終了する
+    srv = holder.get("server")
+    if srv is not None:
+        srv.should_exit = True
+        holder["thread"].join(timeout=10)
+        log("uvicorn shutdown complete")
 
 
 if __name__ == "__main__":
