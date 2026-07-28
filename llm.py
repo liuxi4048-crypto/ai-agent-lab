@@ -58,7 +58,7 @@ def resolve(cfg, key):
     if m is None:
         return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
-                "strengths": [], "use": ""}
+                "strengths": [], "for": "", "use": ""}
     return {
         "key": key,
         "tag": m["tag"],
@@ -68,6 +68,7 @@ def resolve(cfg, key):
         "num_ctx": m.get("num_ctx", DEFAULT_NUM_CTX),
         "keep_alive": m.get("keep_alive", "30m"),
         "strengths": m.get("strengths", []),
+        "for": m.get("for", ""),      # UI表示用の短い用途
         "use": m.get("use", ""),
     }
 

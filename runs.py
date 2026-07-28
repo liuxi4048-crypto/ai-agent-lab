@@ -58,6 +58,12 @@ class Run:
         self.hybrid = hybrid              # True なら直列強制
         self.critique = critique          # codeモード: レビュー+FIXラウンド
         self.deliverable = deliverable    # 成果物形式 html / exe / script
+        # 表示用の実モデル名(qwen3:30b 等)。キーだけだと何のモデルか分からないため
+        try:
+            import llm as _llm
+            self.model_tag = _llm.resolve(_llm.load_config(), model)["tag"]
+        except Exception:
+            self.model_tag = model
         self.bus = EventBus()
         self.created_at = time.time()
         self.finished_at: float | None = None
@@ -92,6 +98,7 @@ class Run:
             "id": self.id,
             "task": self.task,
             "model": self.model,
+            "model_tag": self.model_tag,
             "mode": self.mode,
             "reviewer_model": self.reviewer_model,
             "hybrid": self.hybrid,
@@ -213,6 +220,17 @@ class RunManager:
         except (OSError, json.JSONDecodeError):
             return None
 
+    @staticmethod
+    def _fill_tag(rec: dict) -> dict:
+        """model_tag 導入前に保存されたRunにも実モデル名を補う。"""
+        if not rec.get("model_tag") and rec.get("model"):
+            try:
+                import llm as _llm
+                rec["model_tag"] = _llm.resolve(_llm.load_config(), rec["model"])["tag"]
+            except Exception:
+                rec["model_tag"] = rec["model"]
+        return rec
+
     def list_runs(self) -> list[dict]:
         items = []
         for r in self.live.values():
@@ -228,7 +246,8 @@ class RunManager:
             for path in RUNS_DIR.glob("*.json"):
                 data = self._load_file(path)
                 if data and data["id"] not in seen:
-                    items.append({k: v for k, v in data.items() if k != "snapshot"})
+                    items.append(self._fill_tag(
+                        {k: v for k, v in data.items() if k != "snapshot"}))
         items.sort(key=lambda r: r["created_at"], reverse=True)
         return items
 

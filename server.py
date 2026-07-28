@@ -50,11 +50,13 @@ if (STATIC_REACT / "assets").is_dir():
 
 MODES = ("orchestra", "critique", "code", "swarm-code")
 DELIVERABLES = ("auto", "html", "exe", "script")
+# 仕分けに使う高速モデル(VRAM常駐・tools対応)。無ければ default にフォールバック
+TRIAGE_PREFERRED = ("worker", "coder", "smart")
 
 
 class RunRequest(BaseModel):
     task: str
-    mode: str = "code"
+    mode: str = "auto"             # auto = メインエージェントが進め方を決める
     model: str = "auto"            # models.yaml のキー or "auto"
     reviewer_model: str = ""       # critique / code+critique 用。空なら異ファミリー自動選定
     approve: bool = True           # run_command の実行前承認(code / swarm-code)
@@ -65,6 +67,11 @@ class RunRequest(BaseModel):
 
 def _is_hybrid(cfg, *keys: str) -> bool:
     return any(llm.resolve(cfg, k)["placement"] == "hybrid" for k in keys if k)
+
+
+def _installed(cfg, key: str, installed: set) -> bool:
+    tag = llm.resolve(cfg, key)["tag"]
+    return tag in installed or f"{tag}:latest" in installed
 
 
 @app.get("/")
@@ -113,8 +120,8 @@ async def start_run(req: RunRequest) -> dict:
     task = req.task.strip()
     if not task:
         raise HTTPException(400, "task が空です")
-    if req.mode not in MODES:
-        raise HTTPException(400, f"mode は {MODES} のいずれか")
+    if req.mode not in MODES and req.mode != "auto":
+        raise HTTPException(400, f"mode は 'auto' か {MODES} のいずれか")
     if req.deliverable not in DELIVERABLES:
         raise HTTPException(400, f"deliverable は {DELIVERABLES} のいずれか")
     if not await llm.is_alive():
@@ -122,25 +129,41 @@ async def start_run(req: RunRequest) -> dict:
 
     cfg = llm.load_config()
     installed = set(await llm.list_models())
+
+    # --- 進め方と成果物形式をメインエージェントに決めさせる -------------------
+    decided_by = "user"
+    reason = ""
+    mode, deliverable = req.mode, req.deliverable
+    if mode == "auto":
+        triage_key = next((k for k in TRIAGE_PREFERRED
+                           if k in cfg.get("models", {})
+                           and _installed(cfg, k, installed)), cfg.get("default", "coder"))
+        picked = await router.triage(cfg, task, triage_key)
+        mode = picked["mode"]
+        decided_by, reason = picked["by"], picked["reason"]
+        if deliverable == "auto":
+            deliverable = picked["deliverable"] or "auto"
+
     model = (req.model if req.model and req.model != "auto"
-             else router.pick_model(cfg, task, req.mode, installed=installed))
+             else router.pick_model(cfg, task, mode, installed=installed))
 
     reviewer = None
-    if req.mode == "critique" or (req.mode == "code" and req.critique):
+    if mode == "critique" or (mode == "code" and req.critique):
         reviewer = req.reviewer_model or router.critique_pair(cfg, model)
 
     info = llm.resolve(cfg, model)
-    if req.mode in ("code", "swarm-code") and not info["tools"]:
-        raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {req.mode} で使えません")
+    if mode in ("code", "swarm-code") and not info["tools"]:
+        raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {mode} で使えません")
 
     # 成果物形式: コード生成モードでのみ意味を持つ(orchestra/critiqueは文章生成)
-    deliverable = None
-    if req.mode in ("code", "swarm-code"):
-        deliverable = (router.pick_deliverable(task) if req.deliverable == "auto"
-                       else req.deliverable)
+    if mode in ("code", "swarm-code"):
+        if deliverable in (None, "auto"):
+            deliverable = router.pick_deliverable(task)
+    else:
+        deliverable = None
 
     hybrid = _is_hybrid(cfg, model, reviewer or "")
-    run = manager.create(task, req.mode, model, reviewer,
+    run = manager.create(task, mode, model, reviewer,
                          approve=req.approve, max_iter=req.max_iter, hybrid=hybrid,
                          critique=req.critique, deliverable=deliverable)
 
@@ -156,7 +179,9 @@ async def start_run(req: RunRequest) -> dict:
 
     manager.start(run, factory)
     return {"status": "started", "run_id": run.id, "model": model,
-            "reviewer_model": reviewer, "hybrid": hybrid, "deliverable": deliverable}
+            "model_tag": info["tag"], "mode": mode, "deliverable": deliverable,
+            "reviewer_model": reviewer, "hybrid": hybrid,
+            "decided_by": decided_by, "reason": reason}
 
 
 @app.post("/run/{run_id}/cancel")

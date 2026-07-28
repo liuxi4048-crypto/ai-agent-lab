@@ -9,6 +9,14 @@ const RUN_DOT = {
   interrupted: "bg-zinc-600",
 };
 
+// 内部のモード名は出さず、何をしたかが分かる日本語で見せる
+const MODE_LABEL = {
+  code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲",
+};
+const DELIVERABLE_LABEL = {
+  html: "HTMLアプリ", exe: "exe", script: "スクリプト",
+};
+
 /** Run切り替えストリップ(新しい順)。選択中Runのエージェント群がワークスペースに出る。 */
 export default function RunPicker({ runs, currentId, onSelect, onDelete }) {
   if (!runs.length) return null;
@@ -30,7 +38,11 @@ export default function RunPicker({ runs, currentId, onSelect, onDelete }) {
           >
             <span className={`h-2 w-2 shrink-0 rounded-full ${RUN_DOT[r.status] ?? "bg-zinc-500"}`} />
             <span className="max-w-48 truncate">{r.task}</span>
-            <span className="text-[10px] text-zinc-600">{r.mode}</span>
+            {/* メインエージェントが決めた進め方・成果物と、実際に使ったモデル名 */}
+            <span className="shrink-0 text-[10px] text-zinc-600">
+              {[r.model_tag || r.model, MODE_LABEL[r.mode] ?? r.mode,
+                DELIVERABLE_LABEL[r.deliverable]].filter(Boolean).join(" · ")}
+            </span>
             {finished && (
               <button
                 onClick={(e) => {

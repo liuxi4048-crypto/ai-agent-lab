@@ -1,20 +1,8 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, Pencil, Play, Loader2 } from "lucide-react";
 
-const MODES = [
-  { value: "code", label: "code (単独コーディング)" },
-  { value: "swarm-code", label: "swarm-code (並列コーディング)" },
-  { value: "orchestra", label: "orchestra (計画→並列→統合)" },
-  { value: "critique", label: "critique (執筆⇄レビュー)" },
-];
-
-// 成果物の形式。ソース一式ではなく「そのまま動かせるもの」を出させる。
-const DELIVERABLES = [
-  { value: "auto", label: "成果物: auto (内容から判定)" },
-  { value: "html", label: "成果物: HTMLアプリ (クリックで実行)" },
-  { value: "exe", label: "成果物: exe (ダブルクリック起動)" },
-  { value: "script", label: "成果物: スクリプト + run.bat" },
-];
+// 進め方(mode)と成果物形式(deliverable)はメインエージェントが自動で決めるため、
+// UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
 
 /**
  * 折りたたみ式タスク入力ペイン。実行開始で自動的に1行サマリーへ最小化。
@@ -23,24 +11,20 @@ const DELIVERABLES = [
 export default function TaskInput({ models, onStart, running, prefill }) {
   const [open, setOpen] = useState(true);
   const [task, setTask] = useState("");
-  const [mode, setMode] = useState("code");
   const [model, setModel] = useState("auto");
   const [critique, setCritique] = useState(false);
   const [approve, setApprove] = useState(true);
   const [maxIter, setMaxIter] = useState(18);
-  const [deliverable, setDeliverable] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!prefill) return;
     setTask(prefill.task ?? "");
-    setMode(prefill.mode ?? "code");
     setModel(prefill.model ?? "auto");
     setCritique(!!prefill.critique);
     setApprove(prefill.approve ?? true);
     setMaxIter(prefill.max_iter ?? 18);
-    setDeliverable(prefill.deliverable ?? "auto");
     setOpen(true);
   }, [prefill]);
 
@@ -49,8 +33,8 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     setBusy(true);
     setError(null);
     try {
-      await onStart({ task: task.trim(), mode, model, critique, approve,
-                      max_iter: maxIter, deliverable });
+      // mode / deliverable は送らない(auto = メインエージェントが決める)
+      await onStart({ task: task.trim(), model, critique, approve, max_iter: maxIter });
       setOpen(false); // 実行開始 → 1行サマリーへ自動最小化
     } catch (e) {
       setError(e.message);
@@ -66,7 +50,6 @@ export default function TaskInput({ models, onStart, running, prefill }) {
       <div className="flex items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2">
         <ChevronDown size={14} className="-rotate-90 text-zinc-500" />
         <span className="min-w-0 flex-1 truncate text-xs text-zinc-400">
-          <span className="mr-2 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-300">{mode}</span>
           {task || "(タスク未入力)"}
         </span>
         <button
@@ -94,35 +77,15 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           className="min-w-60 flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500"
         />
         <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
-        >
-          {MODES.map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
-          ))}
-        </select>
-        {(mode === "code" || mode === "swarm-code") && (
-          <select
-            value={deliverable}
-            onChange={(e) => setDeliverable(e.target.value)}
-            title="成果物の形式。そのまま動かせる形で出力させる"
-            className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
-          >
-            {DELIVERABLES.map((d) => (
-              <option key={d.value} value={d.value}>{d.label}</option>
-            ))}
-          </select>
-        )}
-        <select
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          className="max-w-52 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          title="使うモデル。auto ならタスク内容に合わせて自動で選ばれる"
+          className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
         >
-          <option value="auto">auto (自動選択)</option>
+          <option value="auto">auto (タスクに合わせて自動選択)</option>
           {modelOptions.map((m) => (
             <option key={m.key} value={m.key} disabled={!m.installed}>
-              {m.key}{m.installed ? "" : " (未導入)"}
+              {m.tag}{m.for ? ` (${m.for})` : ""}{m.installed ? "" : " ※未導入"}
             </option>
           ))}
         </select>

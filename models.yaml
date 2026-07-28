@@ -5,6 +5,7 @@
 # num_ctx はリクエスト毎に options.num_ctx で送る(ネイティブ/api/chatで有効・実測済み)。
 # tools: function calling 対応。false のモデルはチャット/批評専用(コーディングエージェント不可)。
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
+# for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
   worker:
     tag: "gpt-oss:20b"
@@ -13,6 +14,7 @@ models:
     tools: true
     num_ctx: 16384
     strengths: [tool, speed, reasoning]
+    for: "最速・軽快。普段づかい/並列作業"
     use: "並列ワーカー / VRAM全載りMoE(活性3.6B) / swarm・planner・merger向け"
   coder:
     tag: "qwen3:30b"
@@ -21,6 +23,7 @@ models:
     tools: true
     num_ctx: 16384
     strengths: [coding, tool]
+    for: "コーディング主力。バランス型"
     use: "主力コーダー / MoE(活性≈3B) / codeモード既定"
   smart:
     tag: "qwen3.6:35b"
@@ -29,6 +32,7 @@ models:
     tools: true
     num_ctx: 16384
     strengths: [coding, reasoning]
+    for: "高品質コーディング。難しい実装向け"
     use: "上位MoE(SWE-bench 73.4%) / 難しい実装・レビュアー"
   reasoner:
     tag: "deepseek-r1:14b"
@@ -37,6 +41,7 @@ models:
     tools: false             # R1系はfunction calling非対応(批評・推論専用)
     num_ctx: 16384
     strengths: [reasoning, math]
+    for: "推論・数学。考察向き(コード生成は不可)"
     use: "深い推論・数学(CoT) / 批評ループの異ファミリーレビュアー"
   deep:
     tag: "deepseek-r1:70b"
@@ -46,6 +51,7 @@ models:
     num_ctx: 8192
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     strengths: [reasoning, math]
+    for: "最も深い推論。非常に低速(コード生成は不可)"
     use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
   # next(Qwen3-Next-80B-A3B)は 2026-07-27 時点で無効化。
   # 48GB の GGUF 導入自体は成功したが、Ollama 0.32.1/0.32.4 とも qwen3next アーキの
@@ -67,6 +73,7 @@ models:
     num_ctx: 16384
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     strengths: [tool, reasoning]
+    for: "最大モデル。難所向け・低速"
     use: "最大モデル / VRAM+RAM / 難所のみ"
   fast:
     tag: "gemma3:12b"
@@ -75,6 +82,7 @@ models:
     tools: false             # gemma3はtools非対応=chat専用
     num_ctx: 16384
     strengths: [chat, speed]
+    for: "軽量チャット・多言語(コード生成は不可)"
     use: "高速チャット・多言語 / 非エージェント"
 
 default: coder

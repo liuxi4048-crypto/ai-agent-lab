@@ -312,28 +312,15 @@
   <div class="input-row">
     <textarea id="task-input" rows="1"
       placeholder="新しいタスクを入力(Enterで実行 / Shift+Enterで改行)"></textarea>
-    <select id="mode-select" title="実行モード" onchange="onModeChange()">
-      <option value="code">🛠 コード(エージェント)</option>
-      <option value="swarm-code">🐝 スウォーム(並列コーダー)</option>
-      <option value="orchestra">🎼 並列分解</option>
-      <option value="critique">🔁 批評ループ</option>
-    </select>
-    <select id="model-select" title="使用するモデル(批評ループでは作成者モデル)"></select>
+    <select id="model-select" title="使うモデル。auto ならタスク内容に合わせて自動で選ばれる"></select>
     <select id="reviewer-select" title="レビュアーモデル" style="display:none"></select>
     <button id="run-btn" onclick="startRun()">実行</button>
   </div>
   <div class="opt-row" id="code-opts">
-    <label title="成果物の形式。そのまま動かせる形で出力させる">成果物
-      <select id="deliverable-select">
-        <option value="auto">🎯 auto(内容から判定)</option>
-        <option value="html">▶ HTMLアプリ(クリックで即実行)</option>
-        <option value="exe">🖥 exe(ダブルクリック起動)</option>
-        <option value="script">📜 スクリプト+run.bat</option>
-      </select>
-    </label>
     <label title="run_command をユーザー承認してから実行する(15分無応答で自動却下)"><input type="checkbox" id="approve-check" checked> 実行前に承認</label>
-    <label id="critique-label" title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check" onchange="onModeChange()"> レビュー+FIX</label>
+    <label id="critique-label" title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check"> レビュー+FIX</label>
     <label>最大反復 <input type="number" id="maxiter-input" value="18" min="4" max="50"></label>
+    <span style="color:var(--dim)">進め方と成果物の形式はメインエージェントが自動で決めます</span>
   </div>
   <div class="cards-section" id="active-section" style="display:none">
     <h2>▶ 実行中・待機中</h2>
@@ -391,6 +378,9 @@ const STATUS_LABEL = {
 const CARD_LABEL = { running: "🚀 実行中", queued: "⏳ 待機中", done: "✅ 完了",
   error: "❌ 失敗", cancelled: "⛔ 中断", interrupted: "⚠ 中断(異常終了)" };
 const MODE_ICON = { orchestra: "🎼", critique: "🔁", code: "🛠", "swarm-code": "🐝" };
+// 内部のモード名ではなく「何をしたか」で見せる
+const MODE_LABEL_JA = { code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲" };
+const DLV_LABEL_JA = { html: "HTMLアプリ", exe: "exe", script: "スクリプト" };
 const PLACEMENT_TAG = { vram: "▣VRAM", hybrid: "⬔RAM+VRAM" };
 const ACTIVE_STATUSES = ["running", "queued"];
 const APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;  // サーバ側 APPROVAL_TIMEOUT と揃える
@@ -441,32 +431,26 @@ let ollamaAlive = false;
 const cardEls = new Map();   // run.id -> {el, json, status}
 
 function modelLabel(m) {
-  const parts = [`${m.key} · ${m.family}`, PLACEMENT_TAG[m.placement] || m.placement];
-  if (!m.tools) parts.push("toolsなし");
-  if (!m.installed) parts.push("未DL");
-  return parts.join(" ");
+  // 内部キーではなく実際のモデル名を出し、括弧で用途を添える
+  return m.tag + (m.for ? ` (${m.for})` : "") + (m.installed ? "" : " ※未導入");
 }
 
 function fillModels() {
-  const mode = $("mode-select").value;
-  const toolsRequired = (mode === "code" || mode === "swarm-code");
-
   const sel = $("model-select");
-  const saved = localStorage.getItem("model_" + mode);
+  const saved = localStorage.getItem("model");
   sel.innerHTML = "";
   const auto = document.createElement("option");
-  auto.value = "auto"; auto.textContent = "🎯 auto(強みで自動選択)";
+  auto.value = "auto"; auto.textContent = "auto(タスクに合わせて自動選択)";
   sel.appendChild(auto);
   for (const m of modelCatalog.models) {
     const opt = document.createElement("option");
     opt.value = m.key; opt.textContent = modelLabel(m);
     opt.title = m.use || "";
-    if (toolsRequired && !m.tools) opt.disabled = true;
     if (!m.installed) opt.disabled = true;
     sel.appendChild(opt);
   }
   sel.value = saved && [...sel.options].some(o => o.value === saved && !o.disabled) ? saved : "auto";
-  sel.onchange = () => localStorage.setItem("model_" + mode, sel.value);
+  sel.onchange = () => localStorage.setItem("model", sel.value);
 
   const rev = $("reviewer-select");
   rev.innerHTML = "";
@@ -488,22 +472,14 @@ async function loadModels() {
   try {
     modelCatalog = await (await fetch("/models")).json();
   } catch { /* Ollama未接続時はヘルス表示に任せる */ }
-  $("mode-select").value = localStorage.getItem("mode") || "code";
-  const dsel = $("deliverable-select");
-  dsel.value = localStorage.getItem("deliverable") || "auto";
-  dsel.onchange = () => localStorage.setItem("deliverable", dsel.value);
-  onModeChange();
-}
-
-function onModeChange() {
-  const mode = $("mode-select").value;
-  localStorage.setItem("mode", mode);
-  const critiqueOn = $("critique-check").checked;
-  $("reviewer-select").style.display =
-    (mode === "critique" || (mode === "code" && critiqueOn)) ? "" : "none";
-  $("code-opts").style.display = (mode === "code" || mode === "swarm-code") ? "flex" : "none";
-  $("critique-label").style.display = mode === "code" ? "" : "none";  // critiqueはcode専用
   fillModels();
+  // レビュアー選択は「レビュー+FIX」ON時だけ出す
+  const cc = $("critique-check");
+  const syncReviewer = () => {
+    $("reviewer-select").style.display = cc.checked ? "" : "none";
+  };
+  cc.onchange = syncReviewer;
+  syncReviewer();
 }
 
 async function refreshRuns() {
@@ -526,10 +502,10 @@ function cardMeta(r) {
     orchestra: "サブタスク" }[r.mode] || "";
   const prog = r.progress ? `${progLabel} ${r.progress[0]}/${r.progress[1]}` : "";
   const icon = MODE_ICON[r.mode] || "🤖";
-  const modelLbl = r.mode === "critique"
-    ? `${icon} ✍️ ${r.model || ""} ⇄ 🔍 ${r.reviewer_model || ""}`
-    : `${icon} ${r.model || ""}` + (r.reviewer_model ? ` +🔍 ${r.reviewer_model}` : "");
-  const dlv = { html: "▶HTML", exe: "🖥exe", script: "📜script" }[r.deliverable] || "";
+  const tag = r.model_tag || r.model || "";
+  const modelLbl = `${icon} ${MODE_LABEL_JA[r.mode] || r.mode} · ${tag}`
+    + (r.reviewer_model ? ` +🔍 ${r.reviewer_model}` : "");
+  const dlv = DLV_LABEL_JA[r.deliverable] || "";
   return `🕐 ${fmtTime(r.created_at)} ・ ⏱ ${elapsed} ・ ${modelLbl} ・ ${r.tokens || 0} tok` +
     (dlv ? ` ・ ${dlv}` : "") + (prog ? ` ・ ${prog}` : "");
 }
@@ -690,16 +666,15 @@ async function startRun() {
   if (!task) return;
   $("run-btn").disabled = true;
   try {
-    const mode = $("mode-select").value;
-    const critique = mode === "code" && $("critique-check").checked;
+    const critique = $("critique-check").checked;
+    // mode / deliverable は送らない(既定 auto = メインエージェントが決める)
     const body = {
-      task, mode,
+      task,
       model: $("model-select").value,
-      reviewer_model: (mode === "critique" || critique) ? $("reviewer-select").value : "",
+      reviewer_model: critique ? $("reviewer-select").value : "",
       approve: $("approve-check").checked,
       critique,
       max_iter: parseInt($("maxiter-input").value) || 18,
-      deliverable: $("deliverable-select").value,
     };
     const resp = await fetch("/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -709,10 +684,10 @@ async function startRun() {
     if (resp.ok) {
       $("task-input").value = "";
       autoGrow();
-      const picks = [];
-      if ($("model-select").value === "auto") picks.push(`モデル: ${data.model}`);
-      if (body.deliverable === "auto" && data.deliverable) picks.push(`成果物: ${data.deliverable}`);
-      if (picks.length) toast("🎯 auto → " + picks.join(" / "));
+      const parts = [MODE_LABEL_JA[data.mode] || data.mode];
+      if (data.deliverable) parts.push(DLV_LABEL_JA[data.deliverable] || data.deliverable);
+      parts.push(data.model_tag || data.model);
+      toast("🪄 " + parts.join(" / ") + (data.reason ? `(${data.reason})` : ""));
       await refreshRuns();
       location.hash = "run/" + data.run_id;
     } else {

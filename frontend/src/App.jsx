@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Star, Inbox } from "lucide-react";
+import { Star, Inbox, Wand2 } from "lucide-react";
 import Header from "./components/Header.jsx";
 import TaskInput from "./components/TaskInput.jsx";
 import RunPicker from "./components/RunPicker.jsx";
 import AgentCard from "./components/AgentCard.jsx";
 import LogDrawer from "./components/LogDrawer.jsx";
 import ArtifactDrawer from "./components/ArtifactDrawer.jsx";
+
+// 自動判定の結果表示用ラベル(内部名ではなく「何をするか」を見せる)
+const PLAN_MODE_LABEL = {
+  code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲",
+};
+const PLAN_DLV_LABEL = { html: "HTMLアプリ", exe: "exe", script: "スクリプト" };
 import ApprovalBar from "./components/ApprovalBar.jsx";
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf } from "./derive.js";
@@ -21,6 +27,7 @@ export default function App() {
   const [drawerNodeId, setDrawerNodeId] = useState(null);
   const [artifactOpen, setArtifactOpen] = useState(false);
   const [toast, setToast] = useState(false);
+  const [plan, setPlan] = useState(null);   // 起動時の自動判定結果(mode/deliverable/model)
   const [now, setNow] = useState(Date.now());
 
   const { state, speeds } = useRunEvents(currentId);
@@ -90,6 +97,9 @@ export default function App() {
     setPrefill(null);
     setCurrentId(res.run_id);
     setToast(false);
+    // メインエージェントが決めた進め方・成果物・モデルを短時間だけ知らせる
+    setPlan(res);
+    setTimeout(() => setPlan(null), 6000);
     refreshRuns();
   };
 
@@ -175,6 +185,20 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* 自動判定の結果表示(メインエージェントが何を選んだか) */}
+      {plan && (
+        <div className="fixed bottom-5 left-5 z-30 flex items-center gap-2 rounded-xl border border-blue-500/40 bg-zinc-900 px-4 py-2.5 text-xs shadow-2xl">
+          <Wand2 size={14} className="shrink-0 text-blue-400" />
+          <span className="text-zinc-300">
+            {PLAN_MODE_LABEL[plan.mode] ?? plan.mode}
+            {plan.deliverable ? ` / ${PLAN_DLV_LABEL[plan.deliverable] ?? plan.deliverable}` : ""}
+            <span className="mx-1.5 text-zinc-600">·</span>
+            <b className="text-blue-400">{plan.model_tag ?? plan.model}</b>
+            {plan.reason ? <span className="ml-1.5 text-zinc-500">({plan.reason})</span> : null}
+          </span>
+        </div>
+      )}
 
       {/* 成果物完成トースト(右下・自動展開はしない) */}
       {toast && (

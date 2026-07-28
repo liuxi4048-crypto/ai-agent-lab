@@ -1,10 +1,13 @@
-"""model="auto" のルーティングと、批評ループの異ファミリーペア選定。
+"""タスク文から「進め方(mode)・成果物(deliverable)・モデル」を決める振り分け役。
 
-LLM分類は使わず軽量ヒューリスティック(タスク文のキーワード)で決める。
-強み(models.yaml の strengths)とモードの制約(tools必須か)を尊重する。
+ユーザーに枠を選ばせず、メインエージェントが決める設計:
+- triage(): 高速モデルに1回だけ問い合わせて mode / deliverable を判断させる。
+  失敗時は軽量ヒューリスティック(pick_mode / pick_deliverable)へフォールバックする。
+- pick_model(): 強み(models.yaml の strengths)とモード制約(tools必須か)から選ぶ。
 """
 from __future__ import annotations
 
+import json
 import re
 
 import llm
@@ -104,6 +107,84 @@ def pick_deliverable(task: str) -> str:
     if _HTML_RE.search(task):
         return "html"
     return "script"
+
+
+# 進め方(mode)の自動判定用。
+_BUILD_RE = re.compile(
+    r"作って|作成|実装|開発|直して|修正|追加|書いて|生成|セットアップ|構築|"
+    r"ゲーム|アプリ|ツール|スクリプト|プログラム|コード|バグ|テスト", re.IGNORECASE)
+_BIG_RE = re.compile(
+    r"一式|フルスタック|複数の|いくつかの|それぞれ|同時に|まとめて|"
+    r"バックエンドとフロント|API.*と.*UI|大規模", re.IGNORECASE)
+_THINK_RE = re.compile(
+    r"考察|検討|比較|分析|評価|レビューして|意見|提案して|アイデア|"
+    r"どう思う|まとめて|要約|調査|説明して|教えて", re.IGNORECASE)
+_POLISH_RE = re.compile(
+    r"推敲|添削|ブラッシュアップ|磨いて|練り直|文章を直して|校正", re.IGNORECASE)
+
+
+def pick_mode(task: str) -> str:
+    """タスク文から進め方を推定する(LLM判定のフォールバック)。"""
+    if _POLISH_RE.search(task):
+        return "critique"
+    build = bool(_BUILD_RE.search(task))
+    if build and _BIG_RE.search(task):
+        return "swarm-code"
+    if build:
+        return "code"
+    if _THINK_RE.search(task):
+        return "orchestra"
+    return "code"
+
+
+TRIAGE_SYSTEM = """あなたは依頼を仕分ける司令塔です。ユーザーの依頼を読み、進め方と成果物の形式を決めてください。
+
+mode(進め方):
+- "code": 何かを作る/直す。ほとんどの依頼はこれ。
+- "swarm-code": 独立した部品が3つ程度に明確に分かれる大きめの制作物。迷ったら code にする。
+- "orchestra": 物を作らず、調査・比較・考察・要約などの文章で answer する依頼。
+- "critique": 文章を練り上げる依頼(企画書・記事などの推敲)。
+
+deliverable(成果物の形式。mode が code/swarm-code のときだけ意味を持つ):
+- "html": ゲーム・UI・可視化など、ブラウザで開けば動くもの。作る依頼では最優先で検討する。
+- "exe": Windowsの実行ファイルが明示的に求められている場合。
+- "script": CLIツール・ライブラリ・自動化スクリプトなど、コマンドで動かすもの。
+
+必ず次のJSON形式だけを出力してください(説明文は不要):
+{"mode": "...", "deliverable": "...", "reason": "20字以内の理由"}"""
+
+
+async def triage(cfg, task: str, model_key: str) -> dict:
+    """メインエージェントに mode と deliverable を決めさせる。
+
+    1回の短いLLM呼び出し。失敗・不正出力ならヒューリスティックへフォールバックする。
+    返り値: {"mode","deliverable","reason","by"} (by = "agent" | "heuristic")
+    """
+    fallback = {"mode": pick_mode(task), "deliverable": pick_deliverable(task),
+                "reason": "キーワードから判定", "by": "heuristic"}
+    try:
+        msg = await llm.chat(cfg, model_key, [
+            {"role": "system", "content": TRIAGE_SYSTEM},
+            {"role": "user", "content": task},
+        ], json_mode=True, temperature=0.0)
+        raw = msg.get("content") or ""
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return fallback
+        data = json.loads(m.group(0))
+        mode = data.get("mode")
+        deliverable = data.get("deliverable")
+        if mode not in ("code", "swarm-code", "orchestra", "critique"):
+            return fallback
+        if mode in ("code", "swarm-code"):
+            if deliverable not in ("html", "exe", "script"):
+                deliverable = pick_deliverable(task)
+        else:
+            deliverable = None
+        return {"mode": mode, "deliverable": deliverable,
+                "reason": str(data.get("reason") or "")[:40], "by": "agent"}
+    except Exception:
+        return fallback
 
 
 def critique_pair(cfg, author_key: str) -> str:
