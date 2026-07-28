@@ -293,16 +293,18 @@ class RunManager:
         return True
 
     def reopen(self, run_id: str) -> Run | None:
-        """完了済みcodeモードRunをディスクから復元し、続きの会話を実行できる状態にする。
+        """完了済みRunをディスクから復元し、続きの会話を実行できる状態にする。
 
         実行中/待機中(self.live に存在)なら None(呼び出し側で判定・拒否)。
-        中断・失敗ケースの会話履歴末尾に未応答の tool_calls が残っていれば
-        合成応答を補ってから復元する(次のターンが壊れないように)。
+        会話履歴を持つ(code/swarm-code)ならその続きとして、持たない
+        (orchestra/critique)なら同じワークスペースで新たにコーディングエージェントを
+        走らせる形で継続する。中断・失敗ケースの履歴末尾に未応答の tool_calls が
+        残っていれば合成応答を補ってから復元する(次のターンが壊れないように)。
         """
         if run_id in self.live:
             return None
         data = self.get_record(run_id)
-        if data is None or data.get("mode") != "code" or data.get("snapshot") is None:
+        if data is None or data.get("snapshot") is None:
             return None
         run = Run(data["task"], data["mode"], data["model"], data.get("reviewer_model"),
                   data.get("approve", True), data.get("max_iter", 18),

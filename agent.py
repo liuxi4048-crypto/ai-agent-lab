@@ -222,8 +222,11 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                 if name == "finish":
                     # 「手順書を書いて終わり」を防ぐゲート。実物が無ければ差し戻す。
                     # 何度も失敗する場合は max_iter に委ねてデッドロックさせない。
-                    reason = (tb.verify_deliverable(deliverable)
-                              if finish_rejects < MAX_FINISH_REJECTS else None)
+                    reason = None
+                    if finish_rejects < MAX_FINISH_REJECTS:
+                        # 構造(実物があるか)→ 実行時(開いて落ちないか)の順に検査
+                        reason = (tb.verify_deliverable(deliverable)
+                                  or await tb.verify_runtime(deliverable))
                     if reason:
                         finish_rejects += 1
                         emit("  " + reason)

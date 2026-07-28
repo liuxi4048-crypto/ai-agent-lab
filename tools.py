@@ -112,6 +112,97 @@ async def _js_syntax_check(path, content):
     return None
 
 
+_ID_RE = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_EXTERNAL_RE = re.compile(r"""<(?:script|link|img)\b[^>]*\b(?:src|href)\s*=\s*["']https?://""",
+                          re.IGNORECASE)
+_BOOT_RE = re.compile(
+    r"window\.onload|DOMContentLoaded|addEventListener\s*\(\s*['\"]load|"
+    r"setInterval\s*\(|requestAnimationFrame\s*\(|"
+    r"^\s*(?:init|main|start|loop|draw|render|setup|game|update)\s*\(\s*\)\s*;",
+    re.MULTILINE | re.IGNORECASE)
+
+# 最小DOMスタブ。実ブラウザではなく「読み込み時に落ちないか」だけを検査する。
+# 肝は getElementById/querySelector が HTML に実在しないIDでは null を返すこと
+# (存在しない要素を掴んで TypeError で即死する典型バグを捕まえる)。
+_DOM_HARNESS = r"""
+const KNOWN_IDS = new Set(__IDS__);
+const KNOWN_TAGS = new Set(__TAGS__);
+const HANDLERS = [];   // 登録されたイベントハンドラ(読み込み後に一度だけ発火させる)
+const rec = (type, fn) => { if (typeof fn === 'function') HANDLERS.push([String(type), fn]); };
+const mk = (name) => new Proxy(function(){}, {
+  get(t, p) {
+    if (p === Symbol.toPrimitive) return () => 0;
+    if (p === Symbol.iterator) return function*(){};
+    if (p === 'length') return 0;
+    if (p === 'then') return undefined;
+    if (p === 'getImageData') return () => ({ data: new Uint8ClampedArray(4) });
+    if (p === 'getContext') return () => mk(name + '.ctx');
+    if (p === 'toString') return () => name;
+    if (p === 'addEventListener') return (t, fn) => rec(t, fn);
+    return mk(name + '.' + String(p));
+  },
+  set() { return true; },
+  apply() { return mk(name + '()'); },
+  has() { return true; },
+});
+const el = (n) => mk(n);
+const sel = (s) => {
+  s = String(s || '').trim();
+  if (s.startsWith('#')) return KNOWN_IDS.has(s.slice(1)) ? el(s) : null;
+  const tag = s.split(/[ .:\[>]/)[0].toLowerCase();
+  return (!tag || KNOWN_TAGS.has(tag)) ? el(s) : null;
+};
+globalThis.document = new Proxy({
+  getElementById: (id) => (KNOWN_IDS.has(String(id)) ? el('#' + id) : null),
+  querySelector: sel,
+  querySelectorAll: (s) => (sel(s) ? [el(s)] : []),
+  getElementsByTagName: (t) => (KNOWN_TAGS.has(String(t).toLowerCase()) ? [el(t)] : []),
+  getElementsByClassName: () => [],
+  createElement: (t) => el(t),
+  createTextNode: () => el('#text'),
+  addEventListener: (t, fn) => rec(t, fn), removeEventListener: () => {},
+  body: el('body'), head: el('head'), documentElement: el('html'),
+  readyState: 'loading',
+}, { get(t, p) { return p in t ? t[p] : mk('document.' + String(p)); }, set(){ return true; } });
+globalThis.window = globalThis;
+globalThis.alert = () => {}; globalThis.confirm = () => true; globalThis.prompt = () => '';
+globalThis.addEventListener = (t, fn) => rec(t, fn);
+globalThis.removeEventListener = () => {};
+globalThis.requestAnimationFrame = () => 1;   // 読み込み時のみ検査するので回さない
+globalThis.cancelAnimationFrame = () => {};
+globalThis.setInterval = () => 1; globalThis.clearInterval = () => {};
+globalThis.setTimeout = () => 1; globalThis.clearTimeout = () => {};
+globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+globalThis.Image = function(){ return el('img'); };
+globalThis.Audio = function(){ return el('audio'); };
+try {
+__CODE__
+} catch (e) {
+  console.error('RUNTIME_ERROR:' + (e && e.message ? e.message : String(e)));
+  process.exit(3);
+}
+
+// 登録されたハンドラを一度だけ叩き、操作時に即死しないかを見る。
+// 状態依存で落ちる可能性があるため、ほぼ確実にバグである ReferenceError
+// (未定義の変数・関数の参照)だけを報告する。
+const ev = (type) => ({
+  type, key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39,
+  button: 0, clientX: 10, clientY: 10, offsetX: 10, offsetY: 10,
+  touches: [{ clientX: 10, clientY: 10 }], changedTouches: [{ clientX: 10, clientY: 10 }],
+  preventDefault(){}, stopPropagation(){}, target: el('target'), currentTarget: el('target'),
+});
+for (const [type, fn] of HANDLERS.slice(0, 40)) {
+  try { fn(ev(type)); }
+  catch (e) {
+    if (e instanceof ReferenceError) {
+      console.error('HANDLER_ERROR:' + type + ': ' + e.message);
+      process.exit(4);
+    }
+  }
+}
+"""
+
+
 def _syntax_check(path, content):
     """書き込み直後の即時フィードバック。問題があれば警告文字列、無ければ None。
 
@@ -345,6 +436,72 @@ class Toolbox:
                            .replace("\\", "/"))
         return out
 
+    async def verify_runtime(self, kind=None):
+        """HTMLアプリを最小DOMスタブ上で実際に読み込み、起動時に落ちないか検査する。
+
+        エージェントはブラウザで動かして確かめられないため、ここで代わりに走らせる。
+        Node が無ければスキップ(None)。問題があれば理由を返す。
+        """
+        global _node_available
+        if kind != "html" or _node_available is False:
+            return None
+        entry = next((f for f in self._all_files() if f.lower().endswith("index.html")), None)
+        if not entry:
+            return None
+        try:
+            with open(os.path.join(self.root, entry), "r",
+                      encoding="utf-8", errors="replace") as f:
+                html = f.read()
+        except OSError:
+            return None
+
+        blocks = [m.group(1) for m in _SCRIPT_BLOCK_RE.finditer(html)
+                  if not _SCRIPT_SRC_RE.match(m.group(0))]
+        code = "\n;\n".join(b for b in blocks if b.strip())
+        if not code.strip():
+            return None
+
+        ids = sorted(set(_ID_RE.findall(html)))
+        tags = sorted({m.lower() for m in re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", html)})
+        harness = (_DOM_HARNESS
+                   .replace("__IDS__", json.dumps(ids))
+                   .replace("__TAGS__", json.dumps(tags))
+                   .replace("__CODE__", code))
+
+        import tempfile
+        tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_run_{os.getpid()}.js")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(harness)
+            proc = await asyncio.create_subprocess_exec(
+                "node", tmp,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except FileNotFoundError:
+            _node_available = False
+            return None
+        except (OSError, asyncio.TimeoutError):
+            return None
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+        if proc.returncode == 0:
+            return None
+        err = stderr.decode("utf-8", errors="replace")
+        m = re.search(r"HANDLER_ERROR:(.*)", err)
+        if m:
+            return (f"[finish拒否] {entry} は開けますが、操作したとたんにエラーで止まります: "
+                    f"{m.group(1).strip()[:200]}\n"
+                    "未定義の変数・関数を参照しています。宣言し忘れがないか確認して直してください。")
+        m = re.search(r"RUNTIME_ERROR:(.*)", err)
+        detail = (m.group(1) if m else err.strip().splitlines()[-1] if err.strip() else "不明")
+        return (f"[finish拒否] {entry} をブラウザで読み込むと起動時にエラーで止まります: "
+                f"{detail.strip()[:200]}\n"
+                "存在しない要素を参照していないか等を確認し、直してから finish してください。")
+
     def verify_deliverable(self, kind=None):
         """finish 前の最終ゲート。実行できる成果物が無ければ理由(文字列)を返す。
 
@@ -366,6 +523,8 @@ class Toolbox:
             if not entries:
                 return (f"[finish拒否] index.html がありません(現在: {listing})。"
                         "単一HTMLアプリとして index.html を作ってから finish してください。")
+            best_err = ("[finish拒否] index.html に動作するJavaScriptが入っていません。"
+                        "実際に動くアプリとして中身を実装してから finish してください。")
             for rel in entries:
                 try:
                     with open(os.path.join(self.root, rel), "r",
@@ -373,10 +532,21 @@ class Toolbox:
                         c = f.read()
                 except OSError:
                     continue
-                if "<script" in c.lower() and len(c) > 300:
-                    return None
-            return ("[finish拒否] index.html に動作するJavaScriptが入っていません。"
-                    "実際に動くアプリとして中身を実装してから finish してください。")
+                if "<script" not in c.lower() or len(c) <= 300:
+                    continue
+                if _EXTERNAL_RE.search(c):
+                    best_err = (f"[finish拒否] {rel} が外部URL(CDN等)を読み込んでいます。"
+                                "ネット接続なしで動く必要があるため、外部参照をやめて"
+                                "素のJavaScriptで実装し直してください。")
+                    continue
+                if not _BOOT_RE.search(c):
+                    best_err = (f"[finish拒否] {rel} は読み込み時に何も起動していません"
+                                "(初期化・描画・ループの呼び出しが見つからない)。"
+                                "開いた瞬間に動き出すよう、スクリプト末尾で初期化処理を"
+                                "呼ぶか load イベントで開始してください。")
+                    continue
+                return None
+            return best_err
 
         if kind == "exe":
             if not has((".exe",)):

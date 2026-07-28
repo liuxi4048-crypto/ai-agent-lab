@@ -6,6 +6,7 @@ import RunPicker from "./components/RunPicker.jsx";
 import AgentCard from "./components/AgentCard.jsx";
 import LogDrawer from "./components/LogDrawer.jsx";
 import ArtifactDrawer from "./components/ArtifactDrawer.jsx";
+import ChatPanel from "./components/ChatPanel.jsx";
 
 // 自動判定の結果表示用ラベル(内部名ではなく「何をするか」を見せる)
 const PLAN_MODE_LABEL = {
@@ -186,6 +187,16 @@ export default function App() {
         )}
       </main>
 
+      {/* 会話で成果物を修正する(常設) */}
+      <ChatPanel
+        runId={currentId}
+        nodes={state.nodes}
+        order={state.order}
+        running={state.running}
+        resumable={state.resumable}
+        onSent={refreshRuns}
+      />
+
       {/* 自動判定の結果表示(メインエージェントが何を選んだか) */}
       {plan && (
         <div className="fixed bottom-5 left-5 z-30 flex items-center gap-2 rounded-xl border border-blue-500/40 bg-zinc-900 px-4 py-2.5 text-xs shadow-2xl">
@@ -239,11 +250,9 @@ export default function App() {
       <ArtifactDrawer
         open={artifactOpen}
         onClose={() => setArtifactOpen(false)}
-        runId={currentId}
         artifacts={state.artifacts}
         answerNode={answerNode}
         resumable={state.resumable}
-        onContinued={refreshRuns}
       />
     </div>
   );

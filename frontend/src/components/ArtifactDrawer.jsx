@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { Star, FileCode2, ExternalLink, Copy, Check, MessageSquarePlus, Loader2,
+import { Star, FileCode2, ExternalLink, Copy, Check, MessageSquarePlus,
          Play, Download } from "lucide-react";
 import Drawer from "./Drawer.jsx";
-import { continueRun } from "../api.js";
 
 // 「そのまま動かせる成果物」の見せ方。html はその場で開き、exe/bat は保存させる。
 const RUN_KIND = {
@@ -15,31 +14,12 @@ const RUN_KIND = {
  * 最終成果物ペイン(ドロワー)。保存された成果物ファイルと最終回答を表示。
  * codeモード完了Runには追加指示(会話継続)フォームも出す。
  */
-export default function ArtifactDrawer({ open, onClose, runId, artifacts, answerNode, resumable, onContinued }) {
+export default function ArtifactDrawer({ open, onClose, artifacts, answerNode, resumable }) {
   const [copied, setCopied] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
 
   const list = artifacts ?? [];
   const runnable = list.filter((a) => a.runnable && a.path);
   const rest = list.filter((a) => !(a.runnable && a.path));
-
-  const submitContinue = async () => {
-    if (!msg.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await continueRun(runId, msg.trim());
-      setMsg("");
-      onContinued?.();
-      onClose();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <Drawer
@@ -140,28 +120,10 @@ export default function ArtifactDrawer({ open, onClose, runId, artifacts, answer
         )}
 
         {resumable && (
-          <section className="border-t border-zinc-800 pt-4">
-            <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-              <MessageSquarePlus size={12} /> 追加指示(同じワークスペースで継続)
-            </h3>
-            <div className="flex gap-2">
-              <textarea
-                value={msg}
-                onChange={(e) => setMsg(e.target.value)}
-                rows={2}
-                placeholder="成果物の修正・追加機能の指示…"
-                className="flex-1 resize-none rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500"
-              />
-              <button
-                onClick={submitContinue}
-                disabled={busy || !msg.trim()}
-                className="self-end rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:bg-zinc-700 disabled:text-zinc-500"
-              >
-                {busy ? <Loader2 size={14} className="animate-spin" /> : "送信"}
-              </button>
-            </div>
-            {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
-          </section>
+          <p className="flex items-center gap-1.5 border-t border-zinc-800 pt-4 text-[11px] text-zinc-500">
+            <MessageSquarePlus size={12} />
+            修正したいときは、この画面を閉じて下部の「会話で修正する」から指示を送ってください。
+          </p>
         )}
       </div>
     </Drawer>

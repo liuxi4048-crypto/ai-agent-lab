@@ -574,7 +574,16 @@ class CodeOrchestrator:
         bus.set_status(root_id, "running")
         try:
             node_id = bus.create_node("coder", f"🛠 追加指示: {message[:40]}", message, root_id)
-            summary, history = await self._one_round(message, node_id, root_id, history=run.history)
+            # 会話履歴が無いRun(orchestra/critique等)は、直前の回答を文脈として渡し
+            # 同じワークスペースで新たに作業させる
+            extra = ""
+            if not run.history:
+                prev = next((bus.nodes[i].output for i in reversed(bus.order)
+                             if bus.nodes[i].kind == "answer" and bus.nodes[i].output), "")
+                extra = (f"元の依頼: {run.task}\n\nこれまでの結果:\n{prev[:4000]}\n\n"
+                         "この続きとして、以下の追加指示に対応すること。") if prev else ""
+            summary, history = await self._one_round(
+                message, node_id, root_id, extra_system=extra, history=run.history)
             bus.complete(node_id, summary or "(中断または上限到達)")
             run.history = history or run.history
 

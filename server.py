@@ -236,8 +236,13 @@ async def continue_run(run_id: str, req: ContinueRequest) -> dict:
 
     run = manager.reopen(run_id)
     if run is None:
-        raise HTTPException(404, "継続可能なRunが見つかりません(codeモードの完了済みタスクのみ対応)")
+        raise HTTPException(404, "継続可能なRunが見つかりません(完了済みのタスクを選んでください)")
     cfg = llm.load_config()
+    # 継続作業はツールを使うため、tools非対応モデルのRunはコーダーへ切り替える
+    if not llm.resolve(cfg, run.model)["tools"]:
+        installed = set(await llm.list_models())
+        run.model = router.pick_model(cfg, message, "code", installed=installed)
+        run.model_tag = llm.resolve(cfg, run.model)["tag"]
 
     def factory():
         return CodeOrchestrator(run, cfg, critique=run.critique,
@@ -261,7 +266,7 @@ async def events(run_id: str) -> StreamingResponse:
         mode = record.get("mode")
         snapshot = normalize_snapshot(record["snapshot"], record.get("status", "done"))
         snapshot["mode"] = mode
-        snapshot["resumable"] = (mode == "code")
+        snapshot["resumable"] = True  # 完了済みRunはどのモードでも会話を続けられる
 
         async def replay():
             yield f"data: {json.dumps(snapshot, ensure_ascii=False)}\n\n"
