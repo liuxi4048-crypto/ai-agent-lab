@@ -63,6 +63,7 @@ class RunRequest(BaseModel):
     critique: bool = False         # code モード: 完走後にレビュー→FIXラウンド
     max_iter: int = 18
     deliverable: str = "auto"      # 成果物形式 auto / html / exe / script
+    allow_ram: bool = False        # True でRAM併用の大型モデルも使う(既定はVRAMのみ)
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -105,8 +106,14 @@ async def models() -> dict:
     def _found(tag: str) -> bool:
         return tag in installed or f"{tag}:latest" in installed
 
+    free_ram = llm.free_ram_gb()
     for m in catalog["models"]:
         m["installed"] = _found(m["tag"])
+        # RAM併用が必要なモデルは、空きRAMが足りるかも返す(UIで注意表示に使う)
+        m["needs_ram"] = m["placement"] == "hybrid"
+        m["ram_ok"] = (free_ram is None or not m.get("ram_gb")
+                       or m["ram_gb"] <= free_ram)
+    catalog["free_ram_gb"] = round(free_ram, 1) if free_ram is not None else None
     return catalog
 
 
@@ -144,8 +151,20 @@ async def start_run(req: RunRequest) -> dict:
         if deliverable == "auto":
             deliverable = picked["deliverable"] or "auto"
 
+    free_ram = llm.free_ram_gb()
     model = (req.model if req.model and req.model != "auto"
-             else router.pick_model(cfg, task, mode, installed=installed))
+             else router.pick_model(cfg, task, mode, installed=installed,
+                                    allow_ram=req.allow_ram, free_ram_gb=free_ram))
+
+    # 明示指定のモデルがRAMを食い過ぎる場合は、黙って遅くならないよう先に弾く
+    chosen = llm.resolve(cfg, model)
+    if chosen["placement"] == "hybrid" and chosen["ram_gb"] and free_ram is not None:
+        if chosen["ram_gb"] > free_ram:
+            raise HTTPException(
+                400,
+                f"'{chosen['tag']}' は約{chosen['ram_gb']}GBのRAMが必要ですが、"
+                f"空きは{free_ram:.1f}GBです。他のアプリを閉じるか、VRAMに収まる"
+                "モデルを選んでください")
 
     reviewer = None
     if mode == "critique" or (mode == "code" and req.critique):

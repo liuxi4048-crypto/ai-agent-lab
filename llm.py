@@ -58,7 +58,7 @@ def resolve(cfg, key):
     if m is None:
         return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
-                "strengths": [], "for": "", "use": ""}
+                "num_gpu": None, "ram_gb": 0, "strengths": [], "for": "", "use": ""}
     return {
         "key": key,
         "tag": m["tag"],
@@ -67,8 +67,10 @@ def resolve(cfg, key):
         "tools": m.get("tools", False),
         "num_ctx": m.get("num_ctx", DEFAULT_NUM_CTX),
         "keep_alive": m.get("keep_alive", "30m"),
+        "num_gpu": m.get("num_gpu"),   # None=Ollama自動 / 0=CPU専用 / n=GPUへ載せる層数
+        "ram_gb": m.get("ram_gb", 0),  # RAM側に必要な概算容量
         "strengths": m.get("strengths", []),
-        "for": m.get("for", ""),      # UI表示用の短い用途
+        "for": m.get("for", ""),       # UI表示用の短い用途
         "use": m.get("use", ""),
     }
 
@@ -94,6 +96,9 @@ def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream):
             "num_ctx": num_ctx or info["num_ctx"],
         },
     }
+    # 層のGPU/CPU配分を明示指定する場合のみ送る(未指定はOllamaの自動判断に任せる)
+    if info.get("num_gpu") is not None:
+        payload["options"]["num_gpu"] = info["num_gpu"]
     if tools and info["tools"]:
         payload["tools"] = tools
     if json_mode:
@@ -191,6 +196,32 @@ async def is_alive():
 
 # ダッシュボードのVRAMメーター用。物理VRAM総量はOllama APIから取れないため環境変数で設定
 VRAM_TOTAL_BYTES = int(float(os.environ.get("VRAM_TOTAL_GB", "16")) * 1024**3)
+
+
+def free_ram_gb():
+    """空きシステムRAM(GB)。取得できなければ None。
+
+    RAM併用の大型モデルを選ぶ前に、ページングで極端に遅くならないかを判断するのに使う。
+    """
+    try:
+        import ctypes
+
+        class _Status(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        st = _Status()
+        st.dwLength = ctypes.sizeof(_Status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+            return None
+        return st.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        return None
 
 
 async def gpu_status():

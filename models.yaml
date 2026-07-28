@@ -3,6 +3,10 @@
 #   vram   = VRAMに全載り → 並列スロット(OLLAMA_NUM_PARALLEL)の対象にできる
 #   hybrid = VRAM+RAMオフロード(=本機での実用的な「RAM仮想VRAM」) → 直列実行を強制
 # num_ctx はリクエスト毎に options.num_ctx で送る(ネイティブ/api/chatで有効・実測済み)。
+# num_gpu: GPUへ載せる層数。省略=Ollama自動。0=CPU専用。大型modelでVRAM超過時に
+#   attention+KVだけVRAMへ置き、expert層をRAMへ逃がす調整に使う。
+# ram_gb: モデル本体がRAM側に必要とする概算容量(GB)。空きRAMが足りないモデルは
+#   選択肢から外し、ページング(極端な低速化)を避けるための目安。
 # tools: function calling 対応。false のモデルはチャット/批評専用(コーディングエージェント不可)。
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
@@ -22,6 +26,7 @@ models:
     placement: hybrid        # 18GB・77%GPU(50 tok/s実測)。spillするため並列不可
     tools: true
     num_ctx: 16384
+    ram_gb: 6                # 18GBのうちVRAMに載り切らない分だけRAMへ
     strengths: [coding, tool]
     for: "コーディング主力。バランス型"
     use: "主力コーダー / MoE(活性≈3B) / codeモード既定"
@@ -31,6 +36,7 @@ models:
     placement: hybrid
     tools: true
     num_ctx: 16384
+    ram_gb: 10
     strengths: [coding, reasoning]
     for: "高品質コーディング。難しい実装向け"
     use: "上位MoE(SWE-bench 73.4%) / 難しい実装・レビュアー"
@@ -50,6 +56,7 @@ models:
     tools: false
     num_ctx: 8192
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
+    ram_gb: 42               # dense 42GB。帯域律速で1.6 tok/s実測
     strengths: [reasoning, math]
     for: "最も深い推論。非常に低速(コード生成は不可)"
     use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
@@ -72,6 +79,7 @@ models:
     tools: true
     num_ctx: 16384
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
+    ram_gb: 61               # RAM 61.6GB にギリギリ。空きが少ないとページングする
     strengths: [tool, reasoning]
     for: "最大モデル。難所向け・低速"
     use: "最大モデル / VRAM+RAM / 難所のみ"

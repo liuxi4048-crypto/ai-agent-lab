@@ -29,11 +29,14 @@ def _tools_required(mode: str) -> bool:
     return mode in ("code", "swarm-code")
 
 
-def pick_model(cfg, task: str, mode: str, installed: set | None = None) -> str:
+def pick_model(cfg, task: str, mode: str, installed: set | None = None,
+               allow_ram: bool = False, free_ram_gb: float | None = None) -> str:
     """タスク文とモードから models.yaml のキーを選ぶ。
 
     installed が渡された場合、Ollamaに実在するタグのモデルだけを候補にする
     (未DLモデルへの自動ルーティングを防ぐ)。
+    allow_ram=False(既定)のときは VRAM に収まるモデルだけを使う。True なら
+    RAM併用の大型モデルも候補にするが、空きRAMが足りないものは除外する。
     """
     models = cfg.get("models", {})
 
@@ -42,8 +45,17 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None) -> str:
 
     def ok(key: str) -> bool:
         m = models.get(key)
-        return (m is not None and _found(m.get("tag", ""))
-                and (not _tools_required(mode) or m.get("tools", False)))
+        if m is None or not _found(m.get("tag", "")):
+            return False
+        if _tools_required(mode) and not m.get("tools", False):
+            return False
+        if m.get("placement") == "hybrid":
+            if not allow_ram:
+                return False
+            need = m.get("ram_gb", 0)
+            if free_ram_gb is not None and need and need > free_ram_gb:
+                return False   # ページングして極端に遅くなるので使わない
+        return True
 
     heavy = bool(_HEAVY_RE.search(task))
     code = bool(_CODE_RE.search(task))

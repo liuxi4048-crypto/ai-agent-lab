@@ -15,6 +15,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
   const [critique, setCritique] = useState(false);
   const [approve, setApprove] = useState(true);
   const [maxIter, setMaxIter] = useState(18);
+  const [allowRam, setAllowRam] = useState(false);   // 既定はVRAMのみ
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -25,6 +26,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     setCritique(!!prefill.critique);
     setApprove(prefill.approve ?? true);
     setMaxIter(prefill.max_iter ?? 18);
+    setAllowRam(!!prefill.allow_ram);
     setOpen(true);
   }, [prefill]);
 
@@ -34,7 +36,8 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     setError(null);
     try {
       // mode / deliverable は送らない(auto = メインエージェントが決める)
-      await onStart({ task: task.trim(), model, critique, approve, max_iter: maxIter });
+      await onStart({ task: task.trim(), model, critique, approve,
+                      max_iter: maxIter, allow_ram: allowRam });
       setOpen(false); // 実行開始 → 1行サマリーへ自動最小化
     } catch (e) {
       setError(e.message);
@@ -44,6 +47,12 @@ export default function TaskInput({ models, onStart, running, prefill }) {
   };
 
   const modelOptions = models?.models ?? [];
+
+  // RAM併用をOFFに戻したとき、選択中の大型モデルが残らないよう auto へ落とす
+  useEffect(() => {
+    const cur = modelOptions.find((m) => m.key === model);
+    if (cur?.needs_ram && (!allowRam || !cur.ram_ok)) setModel("auto");
+  }, [allowRam, model, modelOptions]);
 
   if (!open) {
     return (
@@ -83,11 +92,19 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
         >
           <option value="auto">auto (タスクに合わせて自動選択)</option>
-          {modelOptions.map((m) => (
-            <option key={m.key} value={m.key} disabled={!m.installed}>
-              {m.tag}{m.for ? ` (${m.for})` : ""}{m.installed ? "" : " ※未導入"}
-            </option>
-          ))}
+          {modelOptions.map((m) => {
+            // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない
+            const blocked = !m.installed || (m.needs_ram && (!allowRam || !m.ram_ok));
+            const note = !m.installed ? " ※未導入"
+              : m.needs_ram && !m.ram_ok ? " ※RAM不足"
+              : m.needs_ram && !allowRam ? " ※RAM併用をONに"
+              : m.needs_ram ? " ※低速" : "";
+            return (
+              <option key={m.key} value={m.key} disabled={blocked}>
+                {m.tag}{m.for ? ` (${m.for})` : ""}{note}
+              </option>
+            );
+          })}
         </select>
         <button
           onClick={submit}
@@ -108,6 +125,17 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           <input type="checkbox" checked={critique} onChange={(e) => setCritique(e.target.checked)}
                  className="accent-blue-500" />
           完了後レビュー(critique)
+        </label>
+        <label
+          className="flex cursor-pointer items-center gap-1.5"
+          title="ONにするとVRAMに収まらない大型モデル(RAM併用)も使えます。品質は上がりますが低速になります"
+        >
+          <input type="checkbox" checked={allowRam} onChange={(e) => setAllowRam(e.target.checked)}
+                 className="accent-blue-500" />
+          大きいモデルも使う(RAM併用・低速)
+          {models?.free_ram_gb != null && (
+            <span className="text-zinc-600">空き{models.free_ram_gb}GB</span>
+          )}
         </label>
         <label className="flex items-center gap-1.5">
           最大イテレーション
