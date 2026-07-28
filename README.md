@@ -17,10 +17,32 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 - `run_command` は**実行前承認**(モーダル+自動却下までのカウントダウン)が既定ON
 - 実行状況はツリー表示+coderノードは色分きライブログ。完了タスクは `runs/` に永続化
 
+### 使い方はシンプル: タスクを書いて実行するだけ
+
+進め方(制作 / 並列制作 / 調査・考察 / 推敲)と成果物の形式は、**メインエージェントが
+依頼文を読んで自動で決める**(`router.triage`)。ユーザーが選ぶのはモデルだけで、
+それも既定の `auto` で自動選択される。決まった内容は実行直後に表示される:
+
+```
+制作 / HTMLアプリ · qwen3:30b (ブラウザで遊べる)
+```
+
+モデル選択は内部キーではなく**実際のモデル名 + 用途**で並ぶ:
+
+| 表示 | 用途 |
+|---|---|
+| `gpt-oss:20b` | 最速・軽快。普段づかい/並列作業 |
+| `qwen3:30b` | コーディング主力。バランス型 |
+| `qwen3.6:35b` | 高品質コーディング。難しい実装向け |
+| `deepseek-r1:14b` | 推論・数学。考察向き(コード生成は不可) |
+| `gpt-oss:120b` | 最大モデル。難所向け・低速 |
+
+API から使う場合は `mode` / `deliverable` を明示指定することもできる(既定は `auto`)。
+
 ### 成果物の形式(deliverable)
 
-「ソースコード一式」ではなく**そのまま動かせるもの**を出力させる。`code` / `swarm-code`
-モードで選択でき、既定の `auto` はタスク文から判定する。
+「ソースコード一式」ではなく**そのまま動かせるもの**を出力させる。制作系の依頼で
+自動的に選ばれる。
 
 | 形式 | 出力されるもの | 実行方法 |
 |---|---|---|
@@ -157,7 +179,7 @@ agent.py          コーディングエージェント本体(async, PLAN→BUILD
 tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
                   ツール: list_dir / read_file / search_files / write_file /
                   edit_file / run_command / finish + 構文チェック(py/json/js)
-router.py         model=auto ルーティング+異ファミリー批評ペア
+router.py         triage(進め方・成果物の自動決定)+モデル選択+異ファミリー批評ペア
 events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上,
                   from_snapshot/resume=会話継続用の復元)
 runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
