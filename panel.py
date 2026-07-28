@@ -20,14 +20,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 
 import llm
@@ -93,11 +91,11 @@ SYSTEM_PROMPT = """あなたはコードレビュアーです。与えられた�
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 _OPEN_THINK_RE = re.compile(r"^\s*<think>.*", re.DOTALL | re.IGNORECASE)
 
-# codex CLI の起動コマンド。{prompt} が実際のプロンプト1引数に置換される。
+# codex CLI の起動コマンド。プロンプトは末尾の `-` により**標準入力**から渡す
+# (Windowsのコマンドライン長上限32767を避けるため)。`--sandbox read-only` で
+# レビュアーがファイルを書き換えないよう封じる。
 # 環境変数 PANEL_CODEX_CMD で上書き可能(codex のCLI仕様変更に追従するため)。
-DEFAULT_CODEX_CMD = "codex exec --skip-git-repo-check {prompt}"
-# Windowsのコマンドライン長上限(32767)対策。これを超えるプロンプトは一時ファイル経由で渡す。
-CODEX_ARGV_LIMIT = 30000
+DEFAULT_CODEX_CMD = "codex exec --skip-git-repo-check --sandbox read-only --color never -"
 
 
 def strip_think(text):
@@ -177,45 +175,49 @@ async def run_ollama_lens(cfg, model_key, lens_name, content, source, instructio
                 "output": "", "error": f"{type(e).__name__}: {e}"}
 
 
+def resolve_codex_argv(template):
+    """codex の実体をPATHから解決する。戻り値: (argv, 表示名)。未検出なら (None, 名前)。
+
+    npm製の shim は `.cmd` なので CreateProcess から直接起動できない(shutil.which では
+    見つかるのに subprocess が FileNotFoundError になる)。cmd /c 経由に包む。
+    """
+    tokens = template.split()
+    exe = shutil.which(tokens[0])
+    if exe is None:
+        return None, tokens[0]
+    if exe.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", exe] + tokens[1:], tokens[0]
+    return [exe] + tokens[1:], tokens[0]
+
+
 async def run_codex_lens(lens_name, content, source, instruction, cwd):
     started = time.monotonic()
     template = os.environ.get("PANEL_CODEX_CMD", DEFAULT_CODEX_CMD)
-    exe = template.split()[0]
-    prompt = SYSTEM_PROMPT + "\n\n" + build_prompt(
-        lens_name, LENSES[lens_name]["focus"], content, source, instruction)
+    argv, name = resolve_codex_argv(template)
 
     def result(output, error):
-        return {"lens": lens_name, "backend": "codex", "model": exe,
+        return {"lens": lens_name, "backend": "codex", "model": name,
                 "seconds": round(time.monotonic() - started, 1),
                 "output": output, "error": error}
 
-    # 長いプロンプトはコマンドライン長上限に引っかかるので一時ファイルに逃がす。
-    tmp = None
-    if len(prompt) > CODEX_ARGV_LIMIT:
-        fd, tmp = tempfile.mkstemp(prefix=f"panel-{lens_name}-", suffix=".md", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(prompt)
-        prompt = (f"{tmp} を読み、そこに書かれたレビュー指示に厳密に従って、"
-                  f"レビュー結果のMarkdownだけを出力してください。ファイルは変更しないこと。")
+    if argv is None:
+        return result("", f"{name} が見つかりません。`npm i -g @openai/codex` の後 `codex login` が必要。")
 
-    argv = [prompt if tok == "{prompt}" else tok for tok in template.split()]
+    # プロンプトは標準入力から渡す(codex exec の末尾 `-` がstdin読み取りを指示する)
+    prompt = SYSTEM_PROMPT + "\n\n" + build_prompt(
+        lens_name, LENSES[lens_name]["focus"], content, source, instruction)
 
     def _run():
-        return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", cwd=cwd, timeout=900)
+        return subprocess.run(argv, input=prompt, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", cwd=cwd, timeout=900)
 
     try:
         proc = await asyncio.to_thread(_run)
-    except FileNotFoundError:
-        return result("", "codex CLI が見つかりません。`npm i -g @openai/codex` の後 `codex login` が必要。")
     except subprocess.TimeoutExpired:
         return result("", "codex がタイムアウト(900秒)")
-    finally:
-        if tmp:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
 
-    err = None if proc.returncode == 0 else f"codex exit {proc.returncode}: {proc.stderr.strip()[:300]}"
+    # codexは起動バナーをstderrに出すため、実際の失敗理由が出る**末尾**を残す
+    err = None if proc.returncode == 0 else f"codex exit {proc.returncode}: ...{proc.stderr.strip()[-800:]}"
     return result(proc.stdout.strip(), err)
 
 
@@ -286,8 +288,13 @@ async def cmd_check(cfg):
             mark = "OK " if (info["tag"] in installed
                              or f"{info['tag']}:latest" in installed) else "未DL"
             print(f"  {mark} {key:9s} {info['tag']} ({info['placement']})")
-    codex = shutil.which((os.environ.get("PANEL_CODEX_CMD", DEFAULT_CODEX_CMD)).split()[0])
-    print(f"codex CLI: {codex or 'NOT FOUND (npm i -g @openai/codex && codex login)'}")
+    argv, name = resolve_codex_argv(os.environ.get("PANEL_CODEX_CMD", DEFAULT_CODEX_CMD))
+    if argv is None:
+        print(f"codex CLI: NOT FOUND ({name}) — npm i -g @openai/codex && codex login")
+    else:
+        print(f"codex CLI: {' '.join(argv[:3])}")
+        auth = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
+        print(f"  ログイン: {'済' if os.path.exists(auth) else '未 (codex login が必要)'}")
     print("\nlens:")
     for name, spec in LENSES.items():
         print(f"  {name:12s} -> {spec['model']}")
