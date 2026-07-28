@@ -51,6 +51,11 @@ ESCAPE_RE = re.compile("|".join(ESCAPE_PATTERNS))
 RESULT_CAP = 12000   # ツール結果の履歴挿入上限(コンテキスト保護の最終防衛線)
 MAX_TIMEOUT = 600    # run_command でモデルが指定できるタイムアウトの上限秒
 SEARCH_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
+# 成果物検証用。dist/ の exe を見つける必要があるのでビルド出力は除外しない
+VERIFY_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv"}
+# 「実際に動くもの」とみなす拡張子(.md 等の説明ファイルだけで終わらせないための判定用)
+CODE_EXT = (".py", ".js", ".mjs", ".ts", ".html", ".htm", ".java", ".c", ".cpp", ".cs",
+            ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".cmd", ".exe", ".ps1", ".jsx", ".tsx")
 
 
 _SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
@@ -328,6 +333,73 @@ class Toolbox:
         out = stdout.decode("utf-8", errors="replace")[-4000:]
         err = stderr.decode("utf-8", errors="replace")[-2000:]
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
+
+    def _all_files(self):
+        out = []
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = [d for d in dirnames if d not in VERIFY_SKIP_DIRS]
+            for fn in filenames:
+                if fn.endswith((".pyc", ".pyo")):
+                    continue
+                out.append(os.path.relpath(os.path.join(dirpath, fn), self.root)
+                           .replace("\\", "/"))
+        return out
+
+    def verify_deliverable(self, kind=None):
+        """finish 前の最終ゲート。実行できる成果物が無ければ理由(文字列)を返す。
+
+        「作り方の手順書だけ書いて終わる」失敗を構造的に防ぐための検査。
+        問題なければ None。
+        """
+        files = self._all_files()
+        if not files:
+            return ("[finish拒否] 成果物が1つもありません。"
+                    "説明ではなく、実際に動くファイルを write_file で作ってから finish してください。")
+        low = [f.lower() for f in files]
+        listing = ", ".join(files[:12])
+
+        def has(suffixes):
+            return any(f.endswith(suffixes) for f in low)
+
+        if kind == "html":
+            entries = [f for f in files if f.lower().endswith("index.html")]
+            if not entries:
+                return (f"[finish拒否] index.html がありません(現在: {listing})。"
+                        "単一HTMLアプリとして index.html を作ってから finish してください。")
+            for rel in entries:
+                try:
+                    with open(os.path.join(self.root, rel), "r",
+                              encoding="utf-8", errors="replace") as f:
+                        c = f.read()
+                except OSError:
+                    continue
+                if "<script" in c.lower() and len(c) > 300:
+                    return None
+            return ("[finish拒否] index.html に動作するJavaScriptが入っていません。"
+                    "実際に動くアプリとして中身を実装してから finish してください。")
+
+        if kind == "exe":
+            if not has((".exe",)):
+                return (f"[finish拒否] .exe が生成されていません(現在: {listing})。"
+                        "PyInstaller でビルドし dist/ に exe を作ってから finish してください。")
+            return None
+
+        if kind == "script":
+            if not has((".bat", ".cmd")):
+                return (f"[finish拒否] 起動用の run.bat がありません(現在: {listing})。"
+                        "ダブルクリックで起動できる run.bat を作ってから finish してください。")
+            # ランチャー自身は「本体」に数えない
+            body = tuple(e for e in CODE_EXT if e not in (".bat", ".cmd", ".exe"))
+            if not has(body):
+                return (f"[finish拒否] 起動スクリプトはありますが実行するコード本体がありません"
+                        f"(現在: {listing})。本体を実装してから finish してください。")
+            return None
+
+        # 形式指定なし: 説明ドキュメントだけで終わっていないかだけを見る
+        if not has(CODE_EXT):
+            return (f"[finish拒否] 説明ドキュメントしかありません(現在: {listing})。"
+                    "手順書ではなく、実際に動くコードを作ってから finish してください。")
+        return None
 
     async def _check_js_after_write(self, path):
         """書き込み直後のファイルを読み直してJS構文を検査する。"""

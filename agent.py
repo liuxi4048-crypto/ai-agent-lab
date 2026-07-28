@@ -23,13 +23,19 @@ from tools import TOOLS_SCHEMA, Toolbox
 
 SYSTEM = """あなたは自律型のコーディングエージェント。与えられた目標を、人手を借りずに完成させる。
 
-進め方(PLAN → BUILD → RUN → FIX):
-1. PLAN: 対象プロジェクトのフォルダ(例 todo-cli/)を決め、その中に PLAN.md を write_file で作る。
-   例: write_file(path="todo-cli/PLAN.md", ...)。要件分解・作るファイル・検証コマンドを書く。
-2. BUILD: PLAN に沿って、同じプロジェクトフォルダ内に必要なファイルを write_file で作る。
-3. RUN: run_command(working_dir="todo-cli") で実行/テストして動作を確認する。
-4. FIX: エラーや不足を読み、ファイルを直して再度 RUN。動くまで繰り返す。
-5. 目標を満たし検証が通ったら finish を summary 付きで呼ぶ。
+【最重要】「作り方の説明」ではなく「実際に動くもの」を作る。
+- 手順書・作成手順.md・チュートリアル・設計書・仕様書といった**説明ドキュメントを成果物にしてはいけない**。
+  「〜を作る手順」を書いて終わるのは失敗とみなす。実物を作ること。
+- 計画は**発言(テキスト)で1〜2行述べるだけ**にして、すぐ実装に入る。計画をファイルに書かない。
+- README や説明ファイルも作らない。使い方は finish の summary に書けばよい。
+- ドキュメントを作るのは、ユーザーが明示的にドキュメントを求めた場合だけ。
+
+進め方(BUILD → RUN → FIX):
+1. BUILD: プロジェクトフォルダ(例 snake-game/)を決め、その中に**実際に動くファイル**を write_file で作る。
+2. RUN: run_command(working_dir="snake-game") で実行/テストして動作を確認する。
+3. FIX: エラーや不足を読み、ファイルを直して再度 RUN。動くまで繰り返す。
+4. 目標を満たし検証が通ったら finish を summary 付きで呼ぶ。
+   ※ 実行できる成果物が無い状態で finish を呼んでも拒否される。まず実物を作ること。
 
 ツールの使い分け(重要):
 - 新規ファイルの作成 = write_file。
@@ -49,8 +55,9 @@ SYSTEM = """あなたは自律型のコーディングエージェント。与�
 - 日本語で簡潔に考える。"""
 
 PHASE_HINT = {
-    "PLAN": "現在フェーズ: PLAN。まだ PLAN.md が無ければ最初に作ること。",
-    "BUILD": "現在フェーズ: BUILD。PLAN に沿ってファイルを実装。",
+    "PLAN": "現在フェーズ: PLAN。作るものを1〜2行で述べたら、すぐ write_file で実物を作り始めること。"
+            "計画ファイル・手順書は作らない。",
+    "BUILD": "現在フェーズ: BUILD。動くファイル本体を実装。説明ドキュメントは作らない。",
     "RUN": "現在フェーズ: RUN。run_command で実行して検証。",
     "FIX": "現在フェーズ: FIX。直近のエラーを直して再実行。",
 }
@@ -78,7 +85,7 @@ DELIVERABLE_PROMPTS = {
 - write_file 後に「⚠ JavaScriptの構文エラー」が出たら必ず直す。
 - read_file で index.html を読み返し、(1)ループ開始が読み込み時に呼ばれているか
   (2)キーイベントが登録されているか (3)外部URLを参照していないか を自分で確認する。
-- README.md に遊び方/使い方を書く。""",
+- 操作方法は画面内に表示する。README等の説明ファイルは作らない(使い方は finish の summary に書く)。""",
 
     "exe": """【成果物の形式: Windows実行ファイル(.exe)】
 最終成果物は、ダブルクリックで起動する .exe にすること。
@@ -89,7 +96,7 @@ DELIVERABLE_PROMPTS = {
      ※コンソールアプリなら --noconsole は付けない
   3. `dist/main.exe` が生成されたことを list_dir で確認する
 - ビルドに失敗したら、エラーを読んで直し、再ビルドする。
-- README.md に dist/main.exe をダブルクリックで起動する旨を書く。""",
+- README等の説明ファイルは作らない(起動方法は finish の summary に書く)。""",
 
     "script": """【成果物の形式: すぐ実行できるスクリプト】
 ソースを置くだけで終わらせず、「起動導線」まで必ず用意すること。
@@ -103,7 +110,7 @@ DELIVERABLE_PROMPTS = {
 - 依存ライブラリがあるなら requirements.txt を作り、run.bat の先頭で
   `pip install -r requirements.txt` を実行するようにする。
 - run_command で実際に実行し、動くことを確認してから finish する。
-- README.md に run.bat をダブルクリックで起動する旨を書く。""",
+- README等の説明ファイルは作らない(起動方法は finish の summary に書く)。""",
 }
 
 
@@ -158,6 +165,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": goal}]
     phase = "BUILD" if history else "PLAN"  # 継続時は既存成果への追加作業から始める
+    finish_rejects = 0
 
     def _status(d):
         if on_status:
@@ -212,6 +220,15 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                 emit(f"  -> {name}({_short(args)})")
 
                 if name == "finish":
+                    # 「手順書を書いて終わり」を防ぐゲート。実物が無ければ差し戻す。
+                    # 何度も失敗する場合は max_iter に委ねてデッドロックさせない。
+                    reason = (tb.verify_deliverable(deliverable)
+                              if finish_rejects < MAX_FINISH_REJECTS else None)
+                    if reason:
+                        finish_rejects += 1
+                        emit("  " + reason)
+                        messages.append({"role": "tool", "tool_name": name, "content": reason})
+                        continue
                     summary = args.get("summary", "")
                     emit("\n[FINISH] " + summary)
                     messages.append({"role": "tool", "tool_name": name, "content": "done"})
@@ -267,6 +284,7 @@ def _patch_dangling_tool_calls(history):
     return patched
 
 
+MAX_FINISH_REJECTS = 3  # finish差し戻しの上限(超えたら通してmax_iterに委ねる)
 KEEP_RECENT = 8       # 直近メッセージは圧縮しない
 COMPRESS_RATIO = 0.7  # 概算トークンが num_ctx のこの割合を超えたら圧縮
 
