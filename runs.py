@@ -47,7 +47,7 @@ class Run:
     def __init__(self, task: str, mode: str, model: str,
                  reviewer_model: str | None = None, approve: bool = True,
                  max_iter: int = 18, hybrid: bool = False, critique: bool = False,
-                 deliverable: str | None = None):
+                 deliverable: str | None = None, claude_review: bool = False):
         self.id = uuid.uuid4().hex[:10]
         self.task = task
         self.mode = mode                  # orchestra / critique / code / swarm-code
@@ -58,6 +58,9 @@ class Run:
         self.hybrid = hybrid              # True なら直列強制
         self.critique = critique          # codeモード: レビュー+FIXラウンド
         self.deliverable = deliverable    # 成果物形式 html / exe / script
+        # 完了後にClaude(外部API)がレビュー→修正して最終成果物に仕上げる。
+        # ソースを外部送信するため既定OFF・Runごとの明示的なONでのみ有効。
+        self.claude_review = claude_review
         # 表示用の実モデル名(qwen3:30b 等)。キーだけだと何のモデルか分からないため
         try:
             import llm as _llm
@@ -104,6 +107,7 @@ class Run:
             "hybrid": self.hybrid,
             "approve": self.approve,
             "critique": self.critique,
+            "claude_review": self.claude_review,
             "deliverable": self.deliverable,
             "max_iter": self.max_iter,
             "status": self.status(),
@@ -160,9 +164,9 @@ class RunManager:
     def create(self, task: str, mode: str, model: str,
                reviewer_model: str | None = None, approve: bool = True,
                max_iter: int = 18, hybrid: bool = False, critique: bool = False,
-               deliverable: str | None = None) -> Run:
+               deliverable: str | None = None, claude_review: bool = False) -> Run:
         run = Run(task, mode, model, reviewer_model, approve, max_iter, hybrid,
-                  critique, deliverable)
+                  critique, deliverable, claude_review)
         self.live[run.id] = run
         return run
 
@@ -309,7 +313,7 @@ class RunManager:
         run = Run(data["task"], data["mode"], data["model"], data.get("reviewer_model"),
                   data.get("approve", True), data.get("max_iter", 18),
                   data.get("hybrid", False), data.get("critique", False),
-                  data.get("deliverable"))
+                  data.get("deliverable"), data.get("claude_review", False))
         run.id = run_id
         run.created_at = data.get("created_at", run.created_at)
         from agent import _patch_dangling_tool_calls

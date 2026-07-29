@@ -17,7 +17,7 @@ export const AGENT_STATES = {
 export const KIND_LABEL = {
   planner: "計画", subagent: "作業", aggregator: "統合", answer: "回答",
   coder: "コーディング", reviewer: "レビュー", author: "執筆", round: "ラウンド",
-  merger: "統合", task: "タスク",
+  merger: "統合", task: "タスク", claude: "Claudeレビュー",
 };
 
 // Stalled判定の閾値(ms)。generating=トークン生成が止まった場合は仕様どおり10秒。

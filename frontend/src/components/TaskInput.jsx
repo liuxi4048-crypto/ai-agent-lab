@@ -16,6 +16,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
   const [approve, setApprove] = useState(true);
   const [maxIter, setMaxIter] = useState(18);
   const [allowRam, setAllowRam] = useState(false);   // 既定はVRAMのみ
+  const [claudeReview, setClaudeReview] = useState(false);  // 既定OFF(外部送信のため)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -27,6 +28,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     setApprove(prefill.approve ?? true);
     setMaxIter(prefill.max_iter ?? 18);
     setAllowRam(!!prefill.allow_ram);
+    setClaudeReview(!!prefill.claude_review);
     setOpen(true);
   }, [prefill]);
 
@@ -37,7 +39,8 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     try {
       // mode / deliverable は送らない(auto = メインエージェントが決める)
       await onStart({ task: task.trim(), model, critique, approve,
-                      max_iter: maxIter, allow_ram: allowRam });
+                      max_iter: maxIter, allow_ram: allowRam,
+                      claude_review: claudeReview });
       setOpen(false); // 実行開始 → 1行サマリーへ自動最小化
     } catch (e) {
       setError(e.message);
@@ -47,6 +50,12 @@ export default function TaskInput({ models, onStart, running, prefill }) {
   };
 
   const modelOptions = models?.models ?? [];
+  const claude = models?.claude ?? null;
+
+  // APIキーが無い等で使えなくなったら、選択が残らないようOFFへ戻す
+  useEffect(() => {
+    if (claude && !claude.available && claudeReview) setClaudeReview(false);
+  }, [claude, claudeReview]);
 
   // RAM併用をOFFに戻したとき、選択中の大型モデルが残らないよう auto へ落とす
   useEffect(() => {
@@ -136,6 +145,21 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           {models?.free_ram_gb != null && (
             <span className="text-zinc-600">空き{models.free_ram_gb}GB</span>
           )}
+        </label>
+        <label
+          className={`flex items-center gap-1.5 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+          title={claude?.available
+            ? `完了後にClaude(${claude.model})が成果物をレビューし、その場で修正して最終成果物に仕上げます。`
+              + "\n※このときだけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかります"
+            : (claude?.reason || "Claudeレビューは利用できません")}
+        >
+          <input type="checkbox" checked={claudeReview} disabled={!claude?.available}
+                 onChange={(e) => setClaudeReview(e.target.checked)}
+                 className="accent-orange-500" />
+          <span className={claudeReview ? "text-orange-400" : ""}>
+            🤖 Claudeが最終レビュー
+          </span>
+          <span className="text-zinc-600">※外部API・課金あり</span>
         </label>
         <label className="flex items-center gap-1.5">
           最大イテレーション

@@ -2,7 +2,8 @@
 
 ローカルLLM(Ollama)だけで動く、並列マルチエージェント実行基盤 + コーディングエージェント。
 agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai-agent-lab v1(ツール実行型
-コーディングエージェント)を統合した v2。API課金なし・全処理ローカル完結。
+コーディングエージェント)を統合した v2。API課金なし・全処理ローカル完結
+(唯一の例外が任意機能の「Claudeが最終レビュー」。既定OFF)。
 
 ## 実行モード(ダッシュボードから選択)
 
@@ -60,6 +61,29 @@ API から使う場合は `mode` / `deliverable` を明示指定することも�
 - 空きRAMが必要量に足りないモデルは自動的に選択肢から外れる(ページングによる激遅化を回避)
 - モデル一覧には理由が出る: `※RAM併用をONに` / `※RAM不足`
 - `models.yaml` の `num_gpu` でGPUへ載せる層数を明示指定できる(未指定はOllama自動)
+
+### Claudeが最終レビューして仕上げる(任意・外部API)
+
+ローカルLLMが作った成果物を、最後に **Claude(Anthropic API)がレビューして直接修正**し、
+最終成果物として提出させられる。ローカルモデルが苦手な「作り切り・詰めの精度」を補うための工程。
+
+- 入力欄の「🤖 Claudeが最終レビュー」をONにしたRunだけで動く(**既定OFF**)
+- **この工程だけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかる**。
+  秘密情報を含む成果物では使わないこと
+- `ANTHROPIC_API_KEY` が未設定なら、UIのチェックは無効化されて理由が出る(実行して初めて失敗しない)
+- Claudeに渡すのは**読む・書く・直す**ツールのみ。`run_command`(シェル実行)は渡さない。
+  書き込み先も `projects/run_<id>/` から出られない
+- 修正後は既存のローカル検証(`verify_deliverable` / `verify_runtime`)を必ず通す。
+  通らなければClaudeに差し戻して直させる
+- レビューに失敗しても(キー切れ・通信断など)Run自体は落とさず、ローカルの成果物をそのまま最終成果物とする
+
+```bash
+pip install anthropic
+setx ANTHROPIC_API_KEY "sk-ant-..."   # 設定後にサーバーを再起動
+```
+
+環境変数 `CLAUDE_REVIEW_MODEL`(既定 `claude-opus-5`)、`CLAUDE_REVIEW_EFFORT`
+(既定 `xhigh`)で挙動を変えられる。
 
 ### 成果物の形式(deliverable)
 
@@ -207,7 +231,9 @@ events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, 
 runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
                   10秒チェックポイント+起動時interrupted回復, reopen=会話継続用復元)
 orchestrator.py   4モードのオーケストレーター
-server.py         FastAPI(/run /events SSE /approvals /models /health)
+claude_review.py  【任意・外部API】Claudeによる最終レビュー→直接修正。既定OFF、
+                  run_commandは渡さず、修正後はローカル検証を必ず通す
+server.py         FastAPI(/run /events SSE /approvals /models /claude /health)
 static/index.html ダッシュボード(単一HTML, 依存CDNなし)
 app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
 step1_chat.py     学習用: 最小チャット / step2_tool.py 学習用: 最小ツールループ
@@ -220,6 +246,8 @@ gui.py, web/      【非推奨・v1遺物】新UIは static/index.html(server.py
 - denylist(rm -rf / format / reset --hard 等)+ **実行前承認**(既定ON)。自走(`--yes`/承認OFF)は
   検証コマンド程度に留めるのを推奨
 - キャンセル時は保留中の承認Futureを自動却下(デッドロック防止)
+- **外部送信は「Claudeが最終レビュー」をONにしたRunだけ**。既定OFF・Runごとの明示的な選択が必要で、
+  外部モデルにシェル実行権(`run_command`)は渡さない
 
 ## 将来拡張
 

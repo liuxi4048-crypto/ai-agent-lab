@@ -121,6 +121,7 @@ export default function App() {
       task: currentRun.task, mode: currentRun.mode, model: currentRun.model,
       critique: currentRun.critique, approve: currentRun.approve, max_iter: currentRun.max_iter,
       deliverable: currentRun.deliverable ?? "auto",
+      claude_review: !!currentRun.claude_review,
     }).catch(() => {});
   };
 
@@ -206,6 +207,7 @@ export default function App() {
             {plan.deliverable ? ` / ${PLAN_DLV_LABEL[plan.deliverable] ?? plan.deliverable}` : ""}
             <span className="mx-1.5 text-zinc-600">·</span>
             <b className="text-blue-400">{plan.model_tag ?? plan.model}</b>
+            {plan.claude_review ? <b className="ml-1.5 text-orange-400">+🤖Claudeレビュー</b> : null}
             {plan.reason ? <span className="ml-1.5 text-zinc-500">({plan.reason})</span> : null}
           </span>
         </div>

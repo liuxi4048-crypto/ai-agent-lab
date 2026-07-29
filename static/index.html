@@ -142,6 +142,7 @@
   #tree .node.kind-reviewer { border-left: 4px solid var(--amber); }
   #tree .node.kind-coder { border-left: 4px solid var(--purple); }
   #tree .node.kind-merger { border-left: 4px solid var(--green); }
+  #tree .node.kind-claude { border-left: 4px solid #d97706; }
 
   .node.status-thinking { animation: glowBlue 1.6s ease-in-out infinite; }
   .node.status-generating { animation: glowGreen 1.6s ease-in-out infinite; }
@@ -319,6 +320,7 @@
   <div class="opt-row" id="code-opts">
     <label title="run_command をユーザー承認してから実行する(15分無応答で自動却下)"><input type="checkbox" id="approve-check" checked> 実行前に承認</label>
     <label id="critique-label" title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check"> レビュー+FIX</label>
+    <label id="claude-label" title="確認中…"><input type="checkbox" id="claude-check" disabled> 🤖 Claudeが最終レビュー<span style="color:var(--dim)">(外部API・課金あり)</span></label>
     <label>最大反復 <input type="number" id="maxiter-input" value="18" min="4" max="50"></label>
     <span style="color:var(--dim)">進め方と成果物の形式はメインエージェントが自動で決めます</span>
   </div>
@@ -473,6 +475,16 @@ async function loadModels() {
     modelCatalog = await (await fetch("/models")).json();
   } catch { /* Ollama未接続時はヘルス表示に任せる */ }
   fillModels();
+  // Claudeレビュー: APIキーが解決できるときだけ選べるようにする
+  const cl = modelCatalog?.claude;
+  const clCheck = $("claude-check"), clLabel = $("claude-label");
+  clCheck.disabled = !cl?.available;
+  clLabel.style.opacity = cl?.available ? "" : "0.5";
+  clLabel.title = cl?.available
+    ? `完了後にClaude(${cl.model})が成果物をレビューし、その場で修正して最終成果物に仕上げます。`
+      + "\n※このときだけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかります"
+    : (cl?.reason || "Claudeレビューは利用できません");
+  if (!cl?.available) clCheck.checked = false;
   // レビュアー選択は「レビュー+FIX」ON時だけ出す
   const cc = $("critique-check");
   const syncReviewer = () => {
@@ -648,6 +660,7 @@ async function rerun(r) {
         reviewer_model: r.reviewer_model || "",
         approve: r.approve !== false, critique: !!r.critique,
         max_iter: r.max_iter || 18, deliverable: r.deliverable || "auto",
+        claude_review: !!r.claude_review,
       }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -674,6 +687,7 @@ async function startRun() {
       reviewer_model: critique ? $("reviewer-select").value : "",
       approve: $("approve-check").checked,
       critique,
+      claude_review: $("claude-check").checked,
       max_iter: parseInt($("maxiter-input").value) || 18,
     };
     const resp = await fetch("/run", {
@@ -687,6 +701,7 @@ async function startRun() {
       const parts = [MODE_LABEL_JA[data.mode] || data.mode];
       if (data.deliverable) parts.push(DLV_LABEL_JA[data.deliverable] || data.deliverable);
       parts.push(data.model_tag || data.model);
+      if (data.claude_review) parts.push("🤖Claudeレビュー");
       toast("🪄 " + parts.join(" / ") + (data.reason ? `(${data.reason})` : ""));
       await refreshRuns();
       location.hash = "run/" + data.run_id;

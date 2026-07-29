@@ -15,6 +15,7 @@ import json
 import os
 import re
 
+import claude_review
 import llm
 from agent import run_agent
 from artifacts import save_artifacts
@@ -147,6 +148,39 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
     for a in artifacts:
         a.pop("_prio", None)
     return "\n\n".join(listing), artifacts
+
+
+async def claude_final_review(run, bus, root_id: str, task_desc: str,
+                              summary: str | None) -> tuple[str | None, list[dict] | None, bool]:
+    """Claude(外部API)に成果物をレビューさせ、その場で修正させて最終成果物に仕上げる。
+
+    ローカル完結の原則から外れる唯一の工程なので、Runで明示的にONにされたときだけ呼ぶ。
+    失敗してもRun全体は落とさず、ローカルの成果をそのまま最終成果物として扱う。
+    戻り値: (最終サマリ, 再収集したartifacts or None, レビューが成立したか)
+    """
+    node_id = bus.create_node(
+        "claude", f"🤖 Claudeレビュー ({claude_review.MODEL})",
+        "成果物をレビューし、問題を直接修正します(ソースを外部APIへ送信)", root_id)
+    bus.set_status(node_id, "running")
+    toolbox = Toolbox(subdir=f"run_{run.id}", approve=False)   # run_command は渡さない
+    res = await claude_review.review_and_fix(
+        task=task_desc, deliverable=run.deliverable, toolbox=toolbox,
+        emit=lambda line: bus.emit_log(node_id, str(line)),
+        should_stop=lambda: run.cancelled, summary_before=summary or "")
+
+    if res["tokens"]:
+        bus.add_tokens(node_id, res["tokens"])
+    if res["error"]:
+        # レビューできなくてもローカル成果物は有効。理由だけ見せて先へ進む
+        bus.complete(node_id, error=f"Claudeレビューを実行できませんでした: {res['error']}")
+        return summary, None, False
+
+    bus.set_title(node_id, f"🤖 Claudeレビュー — {res['edits']}ファイル修正")
+    bus.complete(node_id, res["summary"])
+    _, artifacts = _collect_files(toolbox.root)
+    merged = ((summary + "\n\n" if summary else "")
+              + "【Claudeレビュー】\n" + res["summary"])
+    return merged, artifacts, True
 
 
 # ============================================================ orchestra ----
@@ -532,6 +566,16 @@ class CodeOrchestrator:
         digest, artifacts = _collect_files(root_dir)
         return (fix_summary or summary), (fix_history or history), digest, artifacts
 
+    async def _maybe_claude(self, task_desc: str, summary: str | None, root_id: str,
+                            artifacts: list[dict]) -> tuple[str | None, list[dict], bool]:
+        """claude_review=ON のRunだけ、最後にClaudeレビュー→修正を通す。"""
+        run = self.run
+        if not (run.claude_review and not run.cancelled):
+            return summary, artifacts, False
+        summary, new_artifacts, ok = await claude_final_review(
+            run, self.bus, root_id, task_desc, summary)
+        return summary, (new_artifacts if new_artifacts is not None else artifacts), ok
+
     async def run_task(self, task: str) -> None:
         bus, run = self.bus, self.run
         bus.reset()
@@ -548,9 +592,14 @@ class CodeOrchestrator:
             summary, run.history, digest, artifacts = await self._maybe_review_and_fix(
                 f"元のタスク: {task}", summary, run.history, root_id, root_dir)
 
+            summary, artifacts, reviewed = await self._maybe_claude(
+                f"元のタスク: {task}", summary, root_id, artifacts)
+
             if artifacts:
                 bus.set_artifacts(artifacts)
-            answer_id = bus.create_node("answer", "⭐ 最終サマリ", "", root_id)
+            answer_id = bus.create_node(
+                "answer", "⭐ 最終成果物(Claudeレビュー済み)" if reviewed else "⭐ 最終サマリ",
+                "", root_id)
             bus.complete(answer_id, summary or "(要約なし)")
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
@@ -588,12 +637,19 @@ class CodeOrchestrator:
             run.history = history or run.history
 
             root_dir = Toolbox(subdir=f"run_{run.id}", approve=False).root
+            task_desc = f"元のタスク: {run.task}\n追加指示: {message}"
             summary, run.history, digest, artifacts = await self._maybe_review_and_fix(
-                f"元のタスク: {run.task}\n追加指示: {message}", summary, run.history, root_id, root_dir)
+                task_desc, summary, run.history, root_id, root_dir)
+
+            summary, artifacts, reviewed = await self._maybe_claude(
+                task_desc, summary, root_id, artifacts)
 
             if artifacts:
                 bus.set_artifacts(artifacts)
-            answer_id = bus.create_node("answer", "⭐ 追加指示への対応", "", root_id)
+            answer_id = bus.create_node(
+                "answer",
+                "⭐ 追加指示への対応(Claudeレビュー済み)" if reviewed else "⭐ 追加指示への対応",
+                "", root_id)
             bus.complete(answer_id, summary or "(要約なし)")
             bus.complete(root_id, "追加指示への対応が完了しました")
             bus.run_finished()
@@ -713,9 +769,18 @@ class SwarmCodeOrchestrator:
             ], self.cfg, self.worker)
             bus.complete(merger_id, final)
 
+            reviewed = False
+            if run.claude_review and not run.cancelled:
+                final, new_artifacts, reviewed = await claude_final_review(
+                    run, bus, root_id, f"元のタスク: {task}", final)
+                if new_artifacts is not None:
+                    artifacts = new_artifacts
+
             if artifacts:
                 bus.set_artifacts(artifacts)
-            answer_id = bus.create_node("answer", "⭐ 最終回答", "", root_id)
+            answer_id = bus.create_node(
+                "answer", "⭐ 最終成果物(Claudeレビュー済み)" if reviewed else "⭐ 最終回答",
+                "", root_id)
             bus.complete(answer_id, final)
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
