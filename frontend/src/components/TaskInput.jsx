@@ -150,7 +150,8 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           className={`flex items-center gap-1.5 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
           title={claude?.available
             ? `完了後にClaude(${claude.model})が成果物をレビューし、その場で修正して最終成果物に仕上げます。`
-              + "\n※このときだけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかります"
+              + "\n※ローカルのClaude Code CLIをサブスク認証で使います。API課金は発生しませんが、"
+              + "サブスクの5時間利用枠を消費します"
             : (claude?.reason || "Claudeレビューは利用できません")}
         >
           <input type="checkbox" checked={claudeReview} disabled={!claude?.available}
@@ -159,7 +160,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
           <span className={claudeReview ? "text-orange-400" : ""}>
             🤖 Claudeが最終レビュー
           </span>
-          <span className="text-zinc-600">※外部API・課金あり</span>
+          <span className="text-zinc-600">※サブスク枠を消費</span>
         </label>
         <label className="flex items-center gap-1.5">
           最大イテレーション

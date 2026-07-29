@@ -1,51 +1,62 @@
-"""Claude(Anthropic API)による最終レビュー: 成果物を読み、直接修正して仕上げる。
+"""Claudeによる最終レビュー: 成果物を読み、直接修正して仕上げる。
 
-このプロジェクトは既定ではローカル完結(Ollama・API課金なし)。この機能だけが例外で、
-**成果物のソースコードを Anthropic のサーバーへ送信する**。そのため次の設計にしている:
+**APIキー(従量課金)ではなく、ローカルにインストール済みの Claude Code CLI を
+サブスクリプション認証のまま呼ぶ**。したがって:
 
-- 既定OFF。Runごとにユーザーが明示的にONにしたときだけ動く。
-- APIキーが解決できない環境ではUI側で選択できない(status() が available:false を返す)。
-- run_command は渡さない。外部モデルにローカルのシェル実行権は与えず、
-  「読む・書く・直す」だけに限定する。検証は既存の verify_deliverable /
-  verify_runtime(ローカル)で行い、通らなければ Claude に差し戻す。
-- 書き込み先は Toolbox のパス制限(projects/run_<id>/ 配下)から出られない。
+- API利用料は発生しない。代わりに Claude のサブスク利用枠(5時間ローリング)を消費する。
+- サブプロセスの環境からは `ANTHROPIC_API_KEY` を必ず取り除く。残っているとCLIが
+  そちらを優先し、意図せず従量課金になるため。
+- 作業ディレクトリを `projects/run_<id>/` に固定して起動する。Claude Code は既定で
+  cwd 配下しか触れないので、これがそのままサンドボックスになる。
+- `Bash` は渡さない(ローカルでの任意コマンド実行権を与えない)。読む・書く・直すのみ。
+- 修正後は既存のローカル検証(verify_deliverable / verify_runtime)を必ず通し、
+  通らなければ同じセッションを再開して直させる。
 
-エージェントループは agent.py と同じ手動ループにしている(ツール実行を Toolbox に
-委譲し、キャンセル・イベント送出・finish ゲートを既存の仕組みにそのまま合わせるため)。
+CLI は `-p --output-format stream-json --verbose` で起動し、1行1JSONのイベントを
+逐次パースしてダッシュボードのログへ流す(数分かかる工程なので無言にしない)。
 """
 from __future__ import annotations
 
-import inspect
+import asyncio
+import json
 import os
-from pathlib import Path
+import shutil
+import subprocess
+import sys
 
-try:
-    import anthropic
-except ImportError:  # 未導入でもサーバー全体は動く(機能だけ無効化)
-    anthropic = None
+GUARD_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "hooks", "guard_write_path.py")
 
-from tools import TOOLS_SCHEMA
-
-# Opus 5 は既定でthinkingが有効。効率より品質を優先する用途なので effort は xhigh。
-MODEL = os.environ.get("CLAUDE_REVIEW_MODEL", "claude-opus-5")
+# 'opus' 等のエイリアス、または完全なモデル名
+MODEL = os.environ.get("CLAUDE_REVIEW_MODEL", "opus")
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
-EFFORT = os.environ.get("CLAUDE_REVIEW_EFFORT", "xhigh")
+EFFORT = os.environ.get("CLAUDE_REVIEW_EFFORT", "high")
 if EFFORT not in _EFFORTS:
-    EFFORT = "xhigh"
-MAX_TOKENS = 64000        # xhigh では thinking + ツール呼び出しの余地を広く取る
-MAX_ITER = 14             # レビュー→修正のツールループ上限
-MAX_FINISH_REJECTS = 2    # 検証NGで差し戻す回数の上限
+    EFFORT = "high"
 
-# 外部モデルに渡すツール。run_command は意図的に含めない。
-ALLOWED_TOOLS = ("list_dir", "read_file", "search_files", "write_file", "edit_file", "finish")
+MAX_TURNS = 40            # CLIの1パスあたりのターン上限
+TIMEOUT = 1800            # 1パスの上限秒(レビュー+修正は数分かかる)
+MAX_FINISH_REJECTS = 2    # ローカル検証NGで差し戻す回数の上限
+STREAM_LIMIT = 16 * 1024 * 1024   # 1行が巨大になりうる(Writeツールの入力=ファイル全文)
+
+# Claude Code に許可するツール。シェル / Web / サブエージェントは渡さない。
+# 注意: --allowedTools は「自動承認する対象」であって利用可能ツールの限定ではない。
+# シェルを止めるには --disallowedTools で名前を挙げて拒否する必要がある。
+# さらにシェルツールの名前はOSで異なる(Windows=PowerShell / それ以外=Bash)ため、
+# 取りこぼすと任意コマンドを実行できてしまう。実測で確認済みなので両方必ず入れる。
+ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
+DISALLOWED_TOOLS = ",".join((
+    "Bash", "PowerShell", "BashOutput", "KillShell", "KillBash",
+    "WebFetch", "WebSearch", "Task", "Agent", "NotebookEdit",
+))
 
 SYSTEM = """あなたはローカルLLMが作った成果物を仕上げる最終レビュアーです。
-ワークスペースのファイルを実際に読み、問題を見つけ、その場で直してください。
+カレントディレクトリが成果物のルートです。ファイルを実際に読み、問題を見つけ、その場で直してください。
 
 【最重要】
-- 指摘だけで終わらせない。edit_file / write_file で実際に修正すること。
+- 指摘だけで終わらせない。Edit / Write で実際に修正すること。
 - 手順書・README・レビュー報告書などのファイルを新しく作らない。求められているのは動く成果物です。
-- 既存ファイルの修正には edit_file を使う(write_file の全文書き直しで既存実装を削らない)。
+- 既存ファイルの修正には Edit を使う(Write の全文書き直しで既存実装を削らない)。
 - 外部URL(CDN)への依存を増やさない。ネット接続なしで動く必要があります。
 - 動作を変える大規模な作り直しはしない。壊れている所・足りない所を直すのが仕事です。
 
@@ -55,233 +66,283 @@ SYSTEM = """あなたはローカルLLMが作った成果物を仕上げる最�
 3. 使いやすさ: 開いた/起動した瞬間に動き出すか。操作方法が画面から分かるか。
 4. 簡素化: 使われていないコード・重複を削る。
 
-【進め方】
-list_dir と read_file で全体を把握 → 必要な修正を行う → finish を呼ぶ。
-finish の summary は日本語で、「見つけた問題」と「行った修正」を箇条書きで書くこと。
-問題が無ければ何も直さず、その旨を summary に書いて finish してよい。"""
+【最後の応答】
+修正を終えたら、日本語で「見つけた問題」と「行った修正」を箇条書きにして返すこと。
+問題が無ければ何も直さず、その旨を返してよい。"""
 
-_client_cache = None
+_cli_cache: str | None | bool = False   # False=未判定 / None=見つからない / str=実行パス
 
 
-def _anthropic_tools() -> list[dict]:
-    """Ollama形式のツール定義(tools.TOOLS_SCHEMA)を Anthropic 形式へ変換する。
+def _candidates():
+    """Claude Code CLI の実行ファイル候補。PATH上のものが壊れている場合に備えて複数見る。"""
+    env = os.environ.get("CLAUDE_CLI")
+    if env:
+        yield env
+    which = shutil.which("claude")
+    if which:
+        yield which
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        yield os.path.join(appdata, "npm", "claude.cmd")
+    home = os.path.expanduser("~")
+    yield os.path.join(home, ".local", "bin", "claude")
+    yield "claude"
 
-    ツールの定義元をローカルエージェントと共有し、二重管理を避ける。
+
+def _resolve_cli() -> str | None:
+    """実際に起動できる CLI のパスを1つ返す。見つからなければ None。
+
+    PATHの先頭に壊れたシムが置かれていることがあるため、`--version` が通るかまで確認する。
     """
-    out = []
-    for t in TOOLS_SCHEMA:
-        fn = t["function"]
-        if fn["name"] not in ALLOWED_TOOLS:
+    global _cli_cache
+    if _cli_cache is not False:
+        return _cli_cache
+    seen = set()
+    for cand in _candidates():
+        if not cand or cand in seen:
             continue
-        params = dict(fn.get("parameters") or {})
-        params.setdefault("type", "object")
-        params.setdefault("properties", {})
-        out.append({"name": fn["name"], "description": fn["description"],
-                    "input_schema": params})
-    return out
-
-
-def _client():
-    global _client_cache
-    if _client_cache is None:
-        if anthropic is None:
-            raise RuntimeError("anthropic SDK が未導入です")
-        # 認証情報(APIキー等)はSDKが環境変数・プロファイルから解決する
-        _client_cache = anthropic.AsyncAnthropic()
-    return _client_cache
-
-
-def _profile_exists() -> bool:
-    """`ant auth login` のプロファイルが保存されているか(APIキー未設定でも使える経路)。"""
-    base = os.environ.get("ANTHROPIC_CONFIG_DIR")
-    if base:
-        cand = [Path(base)]
-    elif os.name == "nt":
-        cand = [Path(os.environ.get("APPDATA", "")) / "Anthropic"]
-    else:
-        cand = [Path.home() / ".config" / "anthropic"]
-    return any((p / "credentials").is_dir() and any((p / "credentials").iterdir())
-               for p in cand if p.name)
-
-
-def _has_credentials(client) -> bool:
-    """SDKが認証情報を解決できる状態か。
-
-    AsyncAnthropic() はキーが無くても例外を投げず、実行時に401になる。
-    UIで選べてしまうと「実行して初めて失敗する」ため、ここで先に判定する。
-    """
-    if client.auth_headers or getattr(client, "credentials", None) is not None:
-        return True
-    if any(os.environ.get(k) for k in
-           ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID")):
-        return True
-    try:
-        return _profile_exists()
-    except OSError:
-        return False
+        seen.add(cand)
+        try:
+            # 壊れたシムはOSのコードページ(cp932等)でエラーを吐くため、
+            # locale任せの text=True にせずUTF-8で寛容にデコードする
+            proc = subprocess.run([cand, "--version"], capture_output=True,
+                                  timeout=30, encoding="utf-8", errors="replace")
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0 and "Claude Code" in (proc.stdout or ""):
+            _cli_cache = cand
+            return cand
+    _cli_cache = None
+    return None
 
 
 def status() -> dict:
     """UI用: Claudeレビューが使えるか。使えない理由も日本語で返す。"""
-    if anthropic is None:
-        return {"available": False, "model": MODEL,
-                "reason": "anthropic SDK が未導入です(pip install anthropic)"}
-    try:
-        client = _client()
-    except Exception as e:
-        return {"available": False, "model": MODEL, "reason": f"初期化に失敗: {e}"}
-    if not _has_credentials(client):
-        return {"available": False, "model": MODEL,
-                "reason": "APIキーが未設定です(環境変数 ANTHROPIC_API_KEY を設定してください)"}
-    return {"available": True, "model": MODEL, "reason": ""}
+    cli = _resolve_cli()
+    if cli is None:
+        return {"available": False, "model": MODEL, "cli": None,
+                "reason": "Claude Code CLI が見つかりません"
+                          "(npm install -g @anthropic-ai/claude-code、または環境変数 CLAUDE_CLI で指定)"}
+    return {"available": True, "model": MODEL, "cli": cli, "reason": ""}
 
 
-def _fallbacks_supported(client) -> bool:
-    """SDKがサーバー側フォールバック(fallbacks/betas)に対応しているか。
+def _child_env() -> dict:
+    """サブプロセス用の環境。APIキーを取り除きサブスク認証を使わせる。"""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    return env
 
-    ループ途中で経路が変わるとbeta/非betaのブロックが履歴に混ざるため、
-    実行前に一度だけ判定して固定する。
+
+class _Pass:
+    """CLI 1回分の実行結果。"""
+
+    def __init__(self):
+        self.text = ""
+        self.session_id = ""
+        self.edits = 0
+        self.tokens = 0
+        self.cost = 0.0
+        self.error: str | None = None
+
+
+def _handle_event(data: dict, out: _Pass, say) -> None:
+    """stream-json の1イベントを解釈してログへ流す。"""
+    kind = data.get("type")
+    if kind == "assistant":
+        for block in data.get("message", {}).get("content", []):
+            btype = block.get("type")
+            if btype == "text":
+                body = (block.get("text") or "").strip()
+                if body:
+                    say(body[:2000])
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                target = (block.get("input") or {}).get("file_path", "")
+                if name in ("Write", "Edit"):
+                    out.edits += 1
+                say(f"→ {name} {os.path.basename(str(target))}".rstrip())
+    elif kind == "result":
+        out.text = str(data.get("result") or "").strip()
+        out.session_id = data.get("session_id") or out.session_id
+        out.cost += float(data.get("total_cost_usd") or 0)
+        usage = data.get("usage") or {}
+        out.tokens += int(usage.get("output_tokens") or 0)
+        if data.get("is_error") or data.get("subtype") != "success":
+            out.error = f"CLIがエラーを返しました ({data.get('subtype')}): {out.text[:200]}"
+    elif kind == "system" and data.get("subtype") == "init":
+        out.session_id = data.get("session_id") or out.session_id
+
+
+def _guard_settings(root: str) -> str:
+    """作業ルート外への書き込みを拒否する PreToolUse フックの設定JSON(文字列)。
+
+    --permission-mode も --allowedTools のパス指定も cwd 外の書き込みを止めないことを
+    実測で確認しているため、サンドボックスはこのフックで担保する。
     """
-    try:
-        params = inspect.signature(client.beta.messages.stream).parameters
-        return "fallbacks" in params and "betas" in params
-    except (AttributeError, TypeError, ValueError):
-        return False
+    command = f'"{sys.executable}" "{GUARD_HOOK}" "{root}"'
+    return json.dumps({"hooks": {"PreToolUse": [{
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [{"type": "command", "command": command}],
+    }]}})
 
 
-async def _create(client, messages: list, tools: list, use_fallbacks: bool):
-    """1回のメッセージ生成。ストリーミングで受けて最終メッセージを返す。
+def _write_settings_file(root: str) -> str:
+    """設定JSONを一時ファイルに書き出してパスを返す。
 
-    max_tokens が大きいためHTTPタイムアウト対策としてストリーミング必須。
-    安全上の理由で拒否された場合に別モデルへ引き継ぐサーバー側フォールバックを
-    既定で有効にする(対応SDKのときだけ)。
+    CLIが .cmd シムだと cmd.exe を経由するため、JSONを引数へ直に渡すと
+    引用符・バックスラッシュが壊れて起動に失敗する(実測)。ファイル経由なら安全。
     """
-    common = dict(model=MODEL, max_tokens=MAX_TOKENS,
-                  system=[{"type": "text", "text": SYSTEM,
-                           "cache_control": {"type": "ephemeral"}}],
-                  thinking={"type": "adaptive"},
-                  output_config={"effort": EFFORT},
-                  tools=tools, messages=messages)
-    if use_fallbacks:
-        async with client.beta.messages.stream(
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default", **common) as stream:
-            return await stream.get_final_message()
-    async with client.messages.stream(**common) as stream:
-        return await stream.get_final_message()
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="agentlab_claude_", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(_guard_settings(root))
+    return path
+
+
+async def _run_cli(exe: str, prompt: str, cwd: str, say, should_stop,
+                   resume: str = "") -> _Pass:
+    """CLIを1回起動し、stream-json を逐次読みながら結果をまとめる。"""
+    out = _Pass()
+    settings_path = _write_settings_file(cwd)
+    args = ["-p", "--output-format", "stream-json", "--verbose",
+            "--settings", settings_path,
+            "--model", MODEL, "--effort", EFFORT,
+            "--max-turns", str(MAX_TURNS),
+            "--permission-mode", "acceptEdits",
+            "--allowedTools", ALLOWED_TOOLS,
+            "--disallowedTools", DISALLOWED_TOOLS,
+            "--strict-mcp-config",
+            "--append-system-prompt", SYSTEM]
+    if resume:
+        args += ["--resume", resume]
+
+    proc = await asyncio.create_subprocess_exec(
+        exe, *args, cwd=cwd, env=_child_env(), limit=STREAM_LIMIT,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+
+    err_parts: list[bytes] = []
+
+    async def feed():
+        try:
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+        finally:
+            proc.stdin.close()
+
+    async def drain_err():
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                return
+            err_parts.append(line)
+
+    async def pump():
+        while True:
+            if should_stop and should_stop():
+                out.error = "中断されました"
+                return
+            try:
+                line = await proc.stdout.readline()
+            except (ValueError, asyncio.LimitOverrunError):
+                out.error = "CLIの出力が大きすぎて読み取れませんでした"
+                return
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+            try:
+                _handle_event(json.loads(text), out, say)
+            except (ValueError, TypeError, KeyError):
+                continue   # JSON以外の行(進捗表示など)は無視
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(feed(), pump(), drain_err()), timeout=TIMEOUT)
+        await asyncio.wait_for(proc.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        out.error = out.error or f"{TIMEOUT}秒を超えたため中断しました"
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await asyncio.shield(proc.wait())
+            except BaseException:
+                pass
+        try:
+            os.remove(settings_path)
+        except OSError:
+            pass
+
+    if out.error is None and proc.returncode not in (0, None):
+        err = b"".join(err_parts).decode("utf-8", errors="replace").strip()
+        out.error = f"CLIが異常終了しました (exit={proc.returncode}): {err[:300]}"
+    return out
 
 
 async def review_and_fix(*, task: str, deliverable: str | None, toolbox,
                          emit=None, should_stop=None, summary_before: str = "",
-                         max_iter: int = MAX_ITER) -> dict:
+                         max_iter: int = MAX_FINISH_REJECTS) -> dict:
     """成果物をClaudeにレビューさせ、その場で修正させる。
 
-    返り値: {"ok", "summary", "edits", "tokens", "error"}
+    返り値: {"ok", "summary", "edits", "tokens", "cost", "error"}
     - ok=True かつ error=None なら最終成果物として提出できる状態。
     - 例外は投げず error に理由を入れて返す(レビュー失敗でRun全体を落とさない)。
     """
-    result = {"ok": False, "summary": "", "edits": 0, "tokens": 0, "error": None}
+    result = {"ok": False, "summary": "", "edits": 0, "tokens": 0,
+              "cost": 0.0, "error": None}
     say = emit or (lambda _line: None)
 
-    try:
-        client = _client()
-    except Exception as e:
-        result["error"] = f"Claudeに接続できません: {e}"
-        return result
-    if not _has_credentials(client):
-        result["error"] = "APIキーが未設定です(環境変数 ANTHROPIC_API_KEY)"
+    exe = _resolve_cli()
+    if exe is None:
+        result["error"] = status()["reason"]
         return result
 
-    use_fallbacks = _fallbacks_supported(client)
-    tools = _anthropic_tools()
-    files = toolbox.list_dir(".")
-    user = (f"ユーザーの依頼:\n{task}\n\n"
-            f"ローカルエージェントの作業要約:\n{summary_before or '(なし)'}\n\n"
-            f"成果物ルート直下:\n{files}\n\n"
-            "成果物を読んでレビューし、問題があれば直接修正してください。")
+    prompt = (f"ユーザーの依頼:\n{task}\n\n"
+              f"ローカルエージェントの作業要約:\n{(summary_before or '(なし)')[:4000]}\n\n"
+              "カレントディレクトリの成果物をレビューし、問題があれば直接修正してください。")
     if deliverable:
         kind = {"html": "ブラウザで index.html を開けば動くHTMLアプリ",
                 "exe": "Windowsの実行ファイル(exe)",
                 "script": "run.bat から起動できるスクリプト"}.get(deliverable, deliverable)
-        user += f"\n\n想定している成果物の形式: {kind}"
+        prompt += f"\n\n想定している成果物の形式: {kind}"
 
-    messages: list = [{"role": "user", "content": user}]
-    finish_rejects = 0
-
+    session = ""
     try:
-        for _ in range(max_iter):
+        for attempt in range(max_iter + 1):
             if should_stop and should_stop():
                 result["error"] = "中断されました"
                 return result
 
-            msg = await _create(client, messages, tools, use_fallbacks)
-
-            usage = getattr(msg, "usage", None)
-            if usage is not None:
-                result["tokens"] += getattr(usage, "output_tokens", 0) or 0
-
-            if msg.stop_reason == "refusal":
-                detail = getattr(getattr(msg, "stop_details", None), "explanation", "") or ""
-                result["error"] = f"Claudeが応答を拒否しました {detail}".strip()
+            out = await _run_cli(exe, prompt, toolbox.root, say, should_stop,
+                                 resume=session)
+            result["edits"] += out.edits
+            result["tokens"] += out.tokens
+            result["cost"] += out.cost
+            if out.text:
+                result["summary"] = out.text
+            if out.error:
+                result["error"] = out.error
                 return result
 
-            # thinking ブロックを含め、応答はそのまま履歴へ戻す(改変すると次ターンが壊れる)
-            messages.append({"role": "assistant", "content": msg.content})
-
-            texts = [b.text for b in msg.content if getattr(b, "type", "") == "text"]
-            for t in texts:
-                if t.strip():
-                    say(t.strip()[:2000])
-            calls = [b for b in msg.content if getattr(b, "type", "") == "tool_use"]
-
-            if not calls:
-                # ツールを使わず終えた場合は、その本文をレビュー結果として扱う。
-                # ただし出力上限による打ち切りは「完了」ではないので失敗として返す
-                result["summary"] = "\n\n".join(texts).strip() or "(レビュー結果なし)"
-                if msg.stop_reason == "max_tokens":
-                    result["error"] = "出力が上限に達して途中で終わりました"
-                    return result
+            session = out.session_id
+            # ローカル検証を通す。通らなければ同じセッションを再開して直させる
+            reason = (toolbox.verify_deliverable(deliverable)
+                      or await toolbox.verify_runtime(deliverable))
+            if reason is None:
                 result["ok"] = True
                 return result
-
-            tool_results = []
-            done_summary = None
-            for call in calls:
-                name = call.name
-                args = dict(call.input or {})
-                if name == "finish":
-                    reason = None
-                    if finish_rejects < MAX_FINISH_REJECTS:
-                        reason = (toolbox.verify_deliverable(deliverable)
-                                  or await toolbox.verify_runtime(deliverable))
-                    if reason:
-                        finish_rejects += 1
-                        say(f"  {reason}")
-                        tool_results.append({"type": "tool_result", "tool_use_id": call.id,
-                                             "content": reason, "is_error": True})
-                        continue
-                    done_summary = str(args.get("summary") or "").strip()
-                    tool_results.append({"type": "tool_result", "tool_use_id": call.id,
-                                         "content": "完了"})
-                    continue
-
-                say(f"→ {name}({', '.join(f'{k}={str(v)[:40]}' for k, v in args.items())})")
-                out = await toolbox.run(name, args)
-                out = "(結果なし)" if out is None else str(out)
-                if name in ("write_file", "edit_file") and not out.startswith("["):
-                    result["edits"] += 1
-                tool_results.append({"type": "tool_result", "tool_use_id": call.id,
-                                     "content": out})
-
-            if done_summary is not None:
-                result["summary"] = done_summary or "(要約なし)"
-                result["ok"] = True
+            if attempt >= max_iter or not session:
+                result["error"] = f"修正後もローカル検証を通りませんでした: {reason[:200]}"
                 return result
+            say(f"  {reason}")
+            prompt = reason + "\n\nこの問題を直してから終えてください。"
 
-            messages.append({"role": "user", "content": tool_results})
-
-        result["error"] = f"レビューが上限{max_iter}回で終わりませんでした"
+        result["error"] = "レビューが所定の回数で終わりませんでした"
         return result
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         result["error"] = f"{type(e).__name__}: {e}"
         return result

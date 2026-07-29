@@ -2,8 +2,8 @@
 
 ローカルLLM(Ollama)だけで動く、並列マルチエージェント実行基盤 + コーディングエージェント。
 agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai-agent-lab v1(ツール実行型
-コーディングエージェント)を統合した v2。API課金なし・全処理ローカル完結
-(唯一の例外が任意機能の「Claudeが最終レビュー」。既定OFF)。
+コーディングエージェント)を統合した v2。**API課金なし**・全処理ローカル完結
+(任意機能の「Claudeが最終レビュー」もサブスクのClaude Code CLIを使うため課金なし)。
 
 ## 実行モード(ダッシュボードから選択)
 
@@ -62,28 +62,41 @@ API から使う場合は `mode` / `deliverable` を明示指定することも�
 - モデル一覧には理由が出る: `※RAM併用をONに` / `※RAM不足`
 - `models.yaml` の `num_gpu` でGPUへ載せる層数を明示指定できる(未指定はOllama自動)
 
-### Claudeが最終レビューして仕上げる(任意・外部API)
+### Claudeが最終レビューして仕上げる(任意・サブスク枠)
 
-ローカルLLMが作った成果物を、最後に **Claude(Anthropic API)がレビューして直接修正**し、
-最終成果物として提出させられる。ローカルモデルが苦手な「作り切り・詰めの精度」を補うための工程。
+ローカルLLMが作った成果物を、最後に **Claudeがレビューして直接修正**し、最終成果物として
+提出させられる。ローカルモデルが苦手な「作り切り・詰めの精度」を補うための工程。
+
+**APIキー(従量課金)は使わない。** ローカルにインストール済みの Claude Code CLI を
+サブスクリプション認証のままヘッドレス(`claude -p`)で呼ぶ。
 
 - 入力欄の「🤖 Claudeが最終レビュー」をONにしたRunだけで動く(**既定OFF**)
-- **この工程だけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかる**。
-  秘密情報を含む成果物では使わないこと
-- `ANTHROPIC_API_KEY` が未設定なら、UIのチェックは無効化されて理由が出る(実行して初めて失敗しない)
-- Claudeに渡すのは**読む・書く・直す**ツールのみ。`run_command`(シェル実行)は渡さない。
-  書き込み先も `projects/run_<id>/` から出られない
+- **API利用料は発生しない。代わりに Claude サブスクの5時間利用枠を消費する**
+- サブプロセスの環境から `ANTHROPIC_API_KEY` を除去して起動する。残っているとCLIが
+  そちらを優先し、意図せず従量課金になるため
+- 作業ディレクトリを `projects/run_<id>/` に固定し、**PreToolUse フック
+  (`hooks/guard_write_path.py`)でその外への書き込みを拒否**する
+- シェル(`Bash` / `PowerShell`)・Web・サブエージェントは `--disallowedTools` で拒否する
+
+> **サンドボックスの実装が回りくどい理由**(CLI 2.1.216 / 2026-07-29 実測):
+> `--permission-mode acceptEdits` も `--allowedTools "Write(./**)"` も
+> **cwd外への絶対パス書き込みを止めなかった**。また `--disallowedTools "Bash"` だけでは
+> Windowsのシェルツール名が `PowerShell` のため**素通りした**。
+> そのため (1) シェルは両方の名前を明示的に拒否、(2) パス制限はフックで強制、
+> という二段構えにしている。3項目(cwd内書き込み可 / cwd外拒否 / シェル拒否)は
+> 実CLIに対するテストで確認済み。
 - 修正後は既存のローカル検証(`verify_deliverable` / `verify_runtime`)を必ず通す。
-  通らなければClaudeに差し戻して直させる
-- レビューに失敗しても(キー切れ・通信断など)Run自体は落とさず、ローカルの成果物をそのまま最終成果物とする
+  通らなければ同じセッションを再開して直させる(最大2回)
+- レビューに失敗しても Run 自体は落とさず、ローカルの成果物をそのまま最終成果物とする
 
 ```bash
-pip install anthropic
-setx ANTHROPIC_API_KEY "sk-ant-..."   # 設定後にサーバーを再起動
+npm install -g @anthropic-ai/claude-code   # 未導入の場合
+claude    # 一度起動してログイン(サブスクアカウント)しておく
 ```
 
-環境変数 `CLAUDE_REVIEW_MODEL`(既定 `claude-opus-5`)、`CLAUDE_REVIEW_EFFORT`
-(既定 `xhigh`)で挙動を変えられる。
+CLI は `CLAUDE_CLI` → PATH → `%APPDATA%\npm\claude.cmd` の順で探し、`--version` が通る
+ものを使う(PATH先頭に壊れたシムがあっても素通りする)。環境変数 `CLAUDE_REVIEW_MODEL`
+(既定 `opus`)、`CLAUDE_REVIEW_EFFORT`(既定 `high`)で挙動を変えられる。
 
 ### 成果物の形式(deliverable)
 
@@ -231,8 +244,10 @@ events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, 
 runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
                   10秒チェックポイント+起動時interrupted回復, reopen=会話継続用復元)
 orchestrator.py   4モードのオーケストレーター
-claude_review.py  【任意・外部API】Claudeによる最終レビュー→直接修正。既定OFF、
-                  run_commandは渡さず、修正後はローカル検証を必ず通す
+claude_review.py  【任意】Claude Code CLI(サブスク認証)を呼ぶ最終レビュー→直接修正。
+                  既定OFF、シェルは渡さず、修正後はローカル検証を必ず通す
+hooks/            claude_review が CLI に噛ませる PreToolUse フック
+                  (作業ルート外への書き込み拒否)
 server.py         FastAPI(/run /events SSE /approvals /models /claude /health)
 static/index.html ダッシュボード(単一HTML, 依存CDNなし)
 app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
@@ -246,8 +261,9 @@ gui.py, web/      【非推奨・v1遺物】新UIは static/index.html(server.py
 - denylist(rm -rf / format / reset --hard 等)+ **実行前承認**(既定ON)。自走(`--yes`/承認OFF)は
   検証コマンド程度に留めるのを推奨
 - キャンセル時は保留中の承認Futureを自動却下(デッドロック防止)
-- **外部送信は「Claudeが最終レビュー」をONにしたRunだけ**。既定OFF・Runごとの明示的な選択が必要で、
-  外部モデルにシェル実行権(`run_command`)は渡さない
+- 「Claudeが最終レビュー」は既定OFF・Runごとの明示的な選択が必要。ONでもCLIには
+  シェル(`Bash`/`PowerShell`)を渡さず、`projects/run_<id>/` の外への書き込みは
+  PreToolUseフックで拒否する
 
 ## 将来拡張
 

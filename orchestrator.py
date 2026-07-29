@@ -152,15 +152,16 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
 
 async def claude_final_review(run, bus, root_id: str, task_desc: str,
                               summary: str | None) -> tuple[str | None, list[dict] | None, bool]:
-    """Claude(外部API)に成果物をレビューさせ、その場で修正させて最終成果物に仕上げる。
+    """Claudeに成果物をレビューさせ、その場で修正させて最終成果物に仕上げる。
 
-    ローカル完結の原則から外れる唯一の工程なので、Runで明示的にONにされたときだけ呼ぶ。
-    失敗してもRun全体は落とさず、ローカルの成果をそのまま最終成果物として扱う。
+    ローカルのClaude Code CLIをサブスク認証のまま呼ぶ(API課金なし・サブスク枠を消費)。
+    Runで明示的にONにされたときだけ呼ぶ。失敗してもRun全体は落とさず、
+    ローカルの成果をそのまま最終成果物として扱う。
     戻り値: (最終サマリ, 再収集したartifacts or None, レビューが成立したか)
     """
     node_id = bus.create_node(
         "claude", f"🤖 Claudeレビュー ({claude_review.MODEL})",
-        "成果物をレビューし、問題を直接修正します(ソースを外部APIへ送信)", root_id)
+        "成果物をレビューし、問題を直接修正します(Claude Codeのサブスク枠を使用)", root_id)
     bus.set_status(node_id, "running")
     toolbox = Toolbox(subdir=f"run_{run.id}", approve=False)   # run_command は渡さない
     res = await claude_review.review_and_fix(
@@ -175,7 +176,7 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
         bus.complete(node_id, error=f"Claudeレビューを実行できませんでした: {res['error']}")
         return summary, None, False
 
-    bus.set_title(node_id, f"🤖 Claudeレビュー — {res['edits']}ファイル修正")
+    bus.set_title(node_id, f"🤖 Claudeレビュー — {res['edits']}件修正")
     bus.complete(node_id, res["summary"])
     _, artifacts = _collect_files(toolbox.root)
     merged = ((summary + "\n\n" if summary else "")

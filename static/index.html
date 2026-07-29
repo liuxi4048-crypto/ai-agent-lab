@@ -320,7 +320,7 @@
   <div class="opt-row" id="code-opts">
     <label title="run_command をユーザー承認してから実行する(15分無応答で自動却下)"><input type="checkbox" id="approve-check" checked> 実行前に承認</label>
     <label id="critique-label" title="完走後に異ファミリーモデルがレビューし、要改善ならFIXラウンドを回す"><input type="checkbox" id="critique-check"> レビュー+FIX</label>
-    <label id="claude-label" title="確認中…"><input type="checkbox" id="claude-check" disabled> 🤖 Claudeが最終レビュー<span style="color:var(--dim)">(外部API・課金あり)</span></label>
+    <label id="claude-label" title="確認中…"><input type="checkbox" id="claude-check" disabled> 🤖 Claudeが最終レビュー<span style="color:var(--dim)">(サブスク枠を消費)</span></label>
     <label>最大反復 <input type="number" id="maxiter-input" value="18" min="4" max="50"></label>
     <span style="color:var(--dim)">進め方と成果物の形式はメインエージェントが自動で決めます</span>
   </div>
@@ -482,7 +482,8 @@ async function loadModels() {
   clLabel.style.opacity = cl?.available ? "" : "0.5";
   clLabel.title = cl?.available
     ? `完了後にClaude(${cl.model})が成果物をレビューし、その場で修正して最終成果物に仕上げます。`
-      + "\n※このときだけ成果物のソースコードがAnthropicのサーバーへ送信され、API利用料がかかります"
+      + "\n※ローカルのClaude Code CLIをサブスク認証で使います。API課金は発生しませんが、"
+      + "サブスクの5時間利用枠を消費します"
     : (cl?.reason || "Claudeレビューは利用できません");
   if (!cl?.available) clCheck.checked = false;
   // レビュアー選択は「レビュー+FIX」ON時だけ出す
