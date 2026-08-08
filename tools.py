@@ -21,9 +21,14 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
+import sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.join(BASE, "projects")
+
+# vault-search 連携(C:\dev\vault-search)。存在するときだけツールを登録するフェイルセーフ。
+VAULT_SEARCH_VS = r"C:\dev\vault-search\vs.py"
 
 # denylist は回避容易(例 python -c "shutil.rmtree(...)")。あくまで明白な事故の一次防止。
 # 本当の安全は承認モード(既定ON)と、発展のコンテナ/別ユーザ隔離で担保する。
@@ -267,6 +272,31 @@ class Toolbox:
             full = os.path.join(p, name)
             items.append(name + ("/" if os.path.isdir(full) else ""))
         return "\n".join(items) or "(空)"
+
+    def search_vault(self, query, type=None, days=None, k=None):
+        """Obsidian vault の横断検索(vault-search CLI 経由・読み取り専用)。
+
+        --mode lex 固定: Ollama を使わないため、実行中のチャットモデルを
+        退避させない(OLLAMA_MAX_LOADED_MODELS=1 環境での必須条件)。
+        """
+        if not os.path.isfile(VAULT_SEARCH_VS):
+            return "(search_vault 不可: C:\\dev\\vault-search が存在しない)"
+        cmd = [sys.executable, VAULT_SEARCH_VS, "context", str(query),
+               "--mode", "lex", "--budget", "6000"]
+        if type:
+            cmd += ["--type", str(type)]
+        if days:
+            cmd += ["--days", str(int(days))]
+        if k:
+            cmd += ["--k", str(int(k))]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=90)
+        except subprocess.TimeoutExpired:
+            return "(search_vault タイムアウト)"
+        if r.returncode != 0:
+            return f"(search_vault エラー: {(r.stderr or r.stdout or '')[:500]})"
+        return r.stdout or "(ヒットなし)"
 
     def read_file(self, path, start_line=None, end_line=None):
         p = self._safe_path(path)
@@ -598,10 +628,12 @@ class Toolbox:
             else:
                 fn = {"list_dir": self.list_dir, "read_file": self.read_file,
                       "write_file": self.write_file, "edit_file": self.edit_file,
-                      "search_files": self.search_files}.get(name)
+                      "search_files": self.search_files,
+                      "search_vault": self.search_vault}.get(name)
                 if fn is None:
                     return (f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, "
-                            "search_files, write_file, edit_file, run_command, finish)")
+                            "search_files, write_file, edit_file, run_command, "
+                            "search_vault, finish)")
                 result = fn(**args)
         except TypeError as e:
             return f"[引数エラー] {name}: {e}"
@@ -683,3 +715,18 @@ TOOLS_SCHEMA = [
         "parameters": {"type": "object", "properties": {
             "summary": {"type": "string"}}, "required": ["summary"]}}},
 ]
+
+# vault-search が存在するときだけ search_vault を公開(無ければ従来どおり)
+if os.path.isfile(VAULT_SEARCH_VS):
+    TOOLS_SCHEMA.append({"type": "function", "function": {
+        "name": "search_vault",
+        "description": "Obsidian vault(AI/開発の記事アーカイブ約3,400件+Claude Code事例+テーマまとめ)を"
+                       "検索し、日付・出典つきの抜粋を返す(読み取り専用)。2026年以降のAI/開発動向の"
+                       "事実確認に使う。自分の知識が古い可能性がある話題では、推測せずまずこれを引くこと",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "日本語の検索語や質問"},
+            "type": {"type": "string",
+                     "description": "ai-archive / dev-archive / cc-case / note (カンマ区切り可)"},
+            "days": {"type": "integer", "description": "直近N日に絞る(省略可)"},
+            "k": {"type": "integer", "description": "取得件数。既定12"}},
+            "required": ["query"]}}})
