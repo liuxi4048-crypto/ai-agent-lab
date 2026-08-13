@@ -24,8 +24,47 @@ from tools import Toolbox
 
 MAX_SUBAGENTS = 3
 
+# structured outputs 用スキーマ(浅く保つ。descriptionは文法制約に使われないので
+# 意味はプロンプト本文に書く)。
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "creates_code": {"type": "boolean"},
+        "subtasks": {
+            "type": "array", "minItems": 1, "maxItems": MAX_SUBAGENTS,
+            "items": {"type": "object",
+                      "properties": {"title": {"type": "string"},
+                                     "instruction": {"type": "string"}},
+                      "required": ["title", "instruction"]},
+        },
+    },
+    "required": ["creates_code", "subtasks"],
+}
+
+SWARM_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "contract": {"type": "string"},
+        "subtasks": PLAN_SCHEMA["properties"]["subtasks"],
+    },
+    "required": ["contract", "subtasks"],
+}
+
+CRITIQUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+        "score": {"type": "integer", "minimum": 1, "maximum": 10},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "suggestions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["approved", "score", "issues", "suggestions"],
+}
+
 PLANNER_SYSTEM = """あなたはタスクを分解するプランナーです。
-ユーザーのタスクを、互いに独立して並列実行できる2〜3個のサブタスクに分解してください。
+ユーザーのタスクを、互いに独立して並列実行できる1〜3個のサブタスクに分解してください。
+分割が有益でない単純なタスクは、無理に分けず1個のサブタスクにしてください
+(不要な分割は文脈の分断と統合誤差で品質を下げます)。
 アプリやコードを作成するタスクの場合は、サブタスクの指示に「コードを書く」ことを明示してください。
 必ず次のJSON形式だけを出力してください(説明文は不要):
 {"creates_code": true または false, "subtasks": [{"title": "短いタイトル", "instruction": "サブエージェントへの具体的な指示"}]}
@@ -68,11 +107,18 @@ CODE_REVIEWER_SYSTEM = """あなたは厳格なコードレビュアーです。
 "score" が8以上なら approved を true にしてください。"""
 
 SWARM_PLANNER_SYSTEM = """あなたはコーディングタスクを分解するプランナーです。
-ユーザーのタスクを、互いに独立して並列開発できる2〜3個のサブタスクに分解してください。
+ユーザーのタスクを、互いに独立して並列開発できる1〜3個のサブタスクに分解してください。
 各サブタスクは「それ単体で完結して動作確認できる成果物」になるよう分割してください
 (例: コア機能モジュール / CLI・UI / テストとドキュメント)。
+分割が有益でない単純なタスクは、無理に分けず1個のサブタスクにしてください。
+
+さらに "contract"(結合契約)として、後で部品を1つに統合するために全員が守るべき規約を
+具体的に書いてください: 共有するファイル名 / モジュール名 / 関数・クラスのシグネチャ /
+データ形式 / 部品同士の呼び出し方。並列開発者はお互いの成果を見られないため、
+この契約だけが唯一の共有情報になります。
+
 必ず次のJSON形式だけを出力してください(説明文は不要):
-{"subtasks": [{"title": "短いタイトル", "instruction": "そのサブタスクで作るもの・検証方法の具体的な指示"}]}"""
+{"contract": "全員が守る結合規約", "subtasks": [{"title": "短いタイトル", "instruction": "そのサブタスクで作るもの・検証方法の具体的な指示"}]}"""
 
 MERGER_SYSTEM = """あなたは統合エージェントです。並列開発された各サブタスクの成果(要約とファイル構成)を確認し、
 1) 全体として何ができたか 2) 各部品の使い方・組み合わせ方 3) 未完了・要修正点
@@ -80,15 +126,62 @@ MERGER_SYSTEM = """あなたは統合エージェントです。並列開発さ�
 
 
 async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
-                      json_mode: bool = False) -> str:
-    """LLMをストリーミング実行しつつイベントバスへ進捗を流す。"""
+                      json_mode: bool = False, json_schema: dict | None = None,
+                      temperature: float | None = None, think=None) -> str:
+    """LLMをストリーミング実行しつつイベントバスへ進捗を流す。
+
+    json_schema を渡すと structured outputs で構造を強制する(判定・分解用)。
+    その場合 temperature は明示的に低く渡すこと(判定タスクに高温は無用のブレ)。
+    thinking はノードの思考ストリームとして別枠で流す(出力本文を汚さない)。
+    """
     bus.set_prompt(node_id, "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages))
     bus.set_status(node_id, "thinking")
     out: list[str] = []
-    async for piece in llm.chat_stream(cfg, key, messages, json_mode=json_mode):
-        out.append(piece)
-        bus.token_progress(node_id, piece)
+    async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
+                                       json_schema=json_schema,
+                                       temperature=temperature, think=think):
+        if chunk.get("thinking"):
+            bus.think_progress(node_id, chunk["thinking"])
+        if chunk.get("content"):
+            out.append(chunk["content"])
+            bus.token_progress(node_id, chunk["content"])
+        if chunk.get("done"):
+            meta = chunk.get("meta") or {}
+            if meta.get("eval_count"):
+                # token_progress のチャンク数カウントを実測(thinking含む)で置き換える。
+                # add_tokens(加算)だと二重計上になる
+                bus.set_tokens(node_id, meta["eval_count"])
+            if meta.get("done_reason") == "length":
+                bus.emit_log(node_id, "[警告] 生成が長さ上限で打ち切られました(不完全な可能性)")
     return "".join(out)
+
+
+# チャット系呼び出し(統合・レビュー)の入力予算。num_ctx 16384 tokens ≒ 日本語混在で
+# 約32K字。system+指示のヘッドルームを引いた値を本文に割り当てる。
+_CHAT_INPUT_BUDGET = 20000
+
+
+def _fit_parts(parts: list[str], total_chars: int = _CHAT_INPUT_BUDGET) -> list[str]:
+    """複数テキストを合計予算内へ切り詰める(Ollamaの無言切り捨て対策)。
+
+    合計が予算内ならそのまま返す。超過時は短いパートの余りを長いパートへ再配分
+    してから切る(均等割りだと予算が余っているのに長いパートを切ってしまう)。
+    切ったことはマーカーで明示する(レビュアーが「コードが途中で切れている」と
+    誤指摘しないように)。
+    """
+    parts = [t or "" for t in parts]
+    if sum(len(t) for t in parts) <= total_chars:
+        return parts
+    # 短い順に必要分だけ割り当て、残予算を残りのパートへ回す(water-filling)
+    alloc: dict[int, int] = {}
+    left, remaining = total_chars, sorted(range(len(parts)), key=lambda i: len(parts[i]))
+    for pos, i in enumerate(remaining):
+        share = left // (len(remaining) - pos)
+        take = min(len(parts[i]), share)
+        alloc[i] = take
+        left -= take
+    return [t if len(t) <= alloc[i] else t[:max(600, alloc[i])] + "\n…(長いためここで省略)"
+            for i, t in enumerate(parts)]
 
 
 def _classify_artifact(rel: str) -> tuple[str, int]:
@@ -122,7 +215,12 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
     「▶ 実行」として最上位に表示される。
     """
     from tools import WORKSPACE
-    listing, artifacts, used = [], [], 0
+    # テキストとして読む価値のある拡張子だけダイジェストに載せる(バイナリの化け文字混入防止)
+    text_ext = (".py", ".js", ".mjs", ".ts", ".jsx", ".tsx", ".html", ".htm", ".css",
+                ".json", ".md", ".txt", ".bat", ".cmd", ".ps1", ".sh", ".csv",
+                ".yml", ".yaml", ".toml", ".ini", ".sql", ".svg", ".xml")
+    listing, artifacts, index, skipped = [], [], [], 0
+    used = 0
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames
                        if d not in ("__pycache__", ".git", "node_modules", "build")]
@@ -133,21 +231,38 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
             rel = os.path.relpath(full, root).replace("\\", "/")
             rel_ws = os.path.relpath(full, WORKSPACE).replace("\\", "/")
             kind, prio = _classify_artifact(rel)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            index.append(f"- {rel} ({size:,} bytes)")
             artifacts.append({"name": rel, "path": f"/projects/{rel_ws}",
                               "kind": kind, "runnable": kind in ("html", "exe", "bat"),
                               "_prio": prio})
-            if used < cap_bytes and kind != "exe":  # exeはバイナリなのでダイジェスト対象外
-                try:
-                    with open(full, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read(min(4000, cap_bytes - used))
-                    used += len(content)
-                    listing.append(f"### {rel}\n```\n{content}\n```")
-                except OSError:
-                    listing.append(f"### {rel}\n(読み取り不可)")
+            if os.path.splitext(fn)[1].lower() not in text_ext:
+                continue   # バイナリ等は一覧のみ(内容は載せない)
+            if used >= cap_bytes:
+                skipped += 1
+                continue
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read(min(4000, cap_bytes - used))
+                used += len(content)
+                mark = ""
+                if size > len(content.encode("utf-8", errors="replace")):
+                    mark = "\n…(以降省略)"
+                listing.append(f"### {rel}\n```\n{content}{mark}\n```")
+            except OSError:
+                listing.append(f"### {rel}\n(読み取り不可)")
     artifacts.sort(key=lambda a: (a["_prio"], a["name"]))
     for a in artifacts:
         a.pop("_prio", None)
-    return "\n\n".join(listing), artifacts
+    digest = "## ファイル一覧(全量)\n" + "\n".join(index)
+    if listing:
+        digest += "\n\n## 内容ダイジェスト\n\n" + "\n\n".join(listing)
+    if skipped:
+        digest += f"\n\n(容量上限により {skipped} 件のファイル内容は省略。一覧には全件記載)"
+    return digest, artifacts
 
 
 async def claude_final_review(run, bus, root_id: str, task_desc: str,
@@ -164,6 +279,11 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
         "成果物をレビューし、問題を直接修正します(Claude Codeのサブスク枠を使用)", root_id)
     bus.set_status(node_id, "running")
     toolbox = Toolbox(subdir=f"run_{run.id}", approve=False)   # run_command は渡さない
+    # Claude CLI はシェル(run_command)を渡されず直接ファイルを編集するため、
+    # script形式の「run_command exit=0 の実行証拠」(verified_run)を満たす経路が
+    # 構造的に無い。実行証拠はローカルエージェントの finish 時に検証済みなので、
+    # ここでは証拠要求を満たした状態から検証を始める(残りの構造検査・HTML実行検査は有効)。
+    toolbox.verified_run = True
     res = await claude_review.review_and_fix(
         task=task_desc, deliverable=run.deliverable, toolbox=toolbox,
         emit=lambda line: bus.emit_log(node_id, str(line)),
@@ -172,8 +292,16 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
     if res["tokens"]:
         bus.add_tokens(node_id, res["tokens"])
     if res["error"]:
-        # レビューできなくてもローカル成果物は有効。理由だけ見せて先へ進む
         bus.complete(node_id, error=f"Claudeレビューを実行できませんでした: {res['error']}")
+        if res["edits"] > 0:
+            # 途中終了でも実際に書き込まれた修正はディスクに残っているので、
+            # ロールバックせず成果物として救い出す
+            _, artifacts = _collect_files(toolbox.root)
+            merged = ((summary + "\n\n" if summary else "")
+                      + f"⚠ Claudeレビューは途中終了({res['error']})だが、"
+                        f"{res['edits']}件の修正はディスクに適用済み")
+            return merged, artifacts, False
+        # 修正が1件も無いエラーはローカル成果物のまま先へ進む
         return summary, None, False
 
     bus.set_title(node_id, f"🤖 Claudeレビュー — {res['edits']}件修正")
@@ -206,7 +334,10 @@ class Orchestrator:
         try:
             for attempt in range(2):
                 try:
-                    raw = await self._run_llm(planner_id, messages, json_mode=True)
+                    # スキーマ強制+低温度: 分解JSONのパース失敗と判定ブレを抑える
+                    raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.model,
+                                            json_schema=PLAN_SCHEMA, temperature=0.1,
+                                            think=llm.effort(llm.resolve(self.cfg, self.model), "high"))
                     subtasks, creates_code = _parse_plan(raw)
                     titles = " / ".join(s["title"] for s in subtasks)
                     kind = "コード作成タスク" if creates_code else "通常タスク"
@@ -225,13 +356,16 @@ class Orchestrator:
         bus.complete(planner_id, "分解に失敗したため既定の3分割(現状分析/アイデア出し/リスク検討)を使用")
         return subtasks, False
 
-    async def _run_subagent(self, sub: dict, parent_id: str, creates_code: bool) -> tuple[str, str]:
+    async def _run_subagent(self, task: str, sub: dict, parent_id: str,
+                            creates_code: bool) -> tuple[str, str]:
         bus = self.bus
         node_id = bus.create_node("subagent", f"サブエージェント: {sub['title']}", sub["instruction"], parent_id)
         system = SUBAGENT_SYSTEM_BASE + (SUBAGENT_SYSTEM_CODE if creates_code else "")
+        # 元タスク全文を渡す: プランナーの instruction が省略的でも目的を見失わない
         messages = [
             {"role": "system", "content": system},
-            {"role": "user", "content": sub["instruction"]},
+            {"role": "user",
+             "content": f"元のタスク全体:\n{task}\n\nあなたの担当サブタスク:\n{sub['instruction']}"},
         ]
         try:
             result = await self._run_llm(node_id, messages)
@@ -248,7 +382,9 @@ class Orchestrator:
         agg_id = bus.create_node("aggregator", "統合エージェント",
                                  "サブエージェントの成果を統合して最終回答を作成", root_id)
         system = AGGREGATOR_SYSTEM + (SUBAGENT_SYSTEM_CODE + FILE_MARK_RULE if creates_code else "")
-        body = "\n\n".join(f"## {title}\n{result}" for title, result in results)
+        fitted = _fit_parts([r for _, r in results])
+        body = "\n\n".join(f"## {title}\n{result}"
+                           for (title, _), result in zip(results, fitted))
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": f"元のタスク: {task}\n\n各サブエージェントの成果:\n\n{body}"},
@@ -277,7 +413,7 @@ class Orchestrator:
 
             async def tracked(sub: dict) -> tuple[str, str]:
                 nonlocal done_count
-                result = await self._run_subagent(sub, root_id, creates_code)
+                result = await self._run_subagent(task, sub, root_id, creates_code)
                 done_count += 1
                 bus.set_progress(root_id, done_count, len(subtasks))
                 return result
@@ -308,15 +444,49 @@ class Orchestrator:
 
 
 def _parse_plan(raw: str) -> tuple[list[dict], bool]:
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not m:
-        raise ValueError("JSONが見つかりません")
-    data = json.loads(m.group(0))
+    data = _extract_json(raw)
     subtasks = data.get("subtasks", [])
     valid = [s for s in subtasks if isinstance(s, dict) and s.get("title") and s.get("instruction")]
     if not valid:
         raise ValueError("有効なサブタスクがありません")
     return valid[:MAX_SUBAGENTS], bool(data.get("creates_code", False))
+
+
+def _parse_swarm_plan(raw: str) -> tuple[list[dict], str]:
+    data = _extract_json(raw)
+    subtasks = data.get("subtasks", [])
+    valid = [s for s in subtasks if isinstance(s, dict) and s.get("title") and s.get("instruction")]
+    if not valid:
+        raise ValueError("有効なサブタスクがありません")
+    return valid[:MAX_SUBAGENTS], str(data.get("contract") or "")
+
+
+def _extract_json(raw: str) -> dict:
+    """LLM出力からJSONオブジェクトを取り出す。
+
+    schema強制時は素のJSONのはずなのでまず直接パースし、失敗したら
+    テキスト混じり(思考テキスト等)を想定して最初の { から末尾方向へ探す。
+    """
+    raw = (raw or "").strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    if start < 0:
+        raise ValueError("JSONが見つかりません")
+    dec = json.JSONDecoder()
+    # 思考テキスト中の { を掴んでも、パースできる位置まで前進して試す
+    idx = start
+    while idx != -1:
+        try:
+            obj, _ = dec.raw_decode(raw, idx)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = raw.find("{", idx + 1)
+    raise ValueError("JSONが見つかりません")
 
 
 def _fallback_plan(task: str) -> list[dict]:
@@ -377,6 +547,7 @@ class CritiqueOrchestrator:
         try:
             draft, critique_text = "", ""
             approved = False
+            best_score, best_draft, best_round = -1, "", 0
             for round_no in range(1, MAX_ROUNDS + 1):
                 round_id = bus.create_node(
                     "round", f"🔁 ラウンド {round_no}/{MAX_ROUNDS}",
@@ -385,6 +556,12 @@ class CritiqueOrchestrator:
 
                 draft = await self._write_draft(task, round_id, round_no, draft, critique_text)
                 verdict, critique_text = await self._review(task, draft, round_id)
+
+                # 小型モデルの全文改稿は改悪(内容の脱落)を起こすことがあるため、
+                # 各ラウンドのスコアを保持し、未承認終了時は最高スコア版を採用する
+                sc = verdict["score"] if verdict["score"] is not None else 0
+                if sc >= best_score:
+                    best_score, best_draft, best_round = sc, draft, round_no
 
                 approved = bool(verdict["approved"])
                 badge = "✅承認" if approved else "❌要改善"
@@ -395,7 +572,13 @@ class CritiqueOrchestrator:
                 if approved:
                     break
 
-            reason = "レビュアーが承認しました" if approved else "上限ラウンドに到達しました"
+            if approved:
+                reason = "レビュアーが承認しました"
+            elif best_draft and best_draft != draft:
+                draft = best_draft
+                reason = f"上限到達 — 最高スコアのラウンド{best_round}版(スコア{best_score})を採用"
+            else:
+                reason = "上限ラウンドに到達しました"
             answer_id = bus.create_node("answer", f"⭐ 最終回答({reason})", "", root_id)
             bus.complete(answer_id, draft)
 
@@ -424,7 +607,9 @@ async def _review_json(bus, node_id: str, messages: list[dict], cfg, key: str) -
     verdict: dict | None = None
     for attempt in range(2):
         try:
-            raw = await _stream_llm(bus, node_id, messages, cfg, key, json_mode=True)
+            # スキーマ強制+低温度で判定ブレとパース失敗を抑える
+            raw = await _stream_llm(bus, node_id, messages, cfg, key,
+                                    json_schema=CRITIQUE_SCHEMA, temperature=0.1)
             verdict = _parse_critique(raw)
             break
         except (ValueError, json.JSONDecodeError):
@@ -467,8 +652,12 @@ def _parse_critique(raw: str) -> dict:
     except (TypeError, ValueError):
         score = None
     to_strs = lambda v: [str(x) for x in v if str(x).strip()] if isinstance(v, list) else []
+    # プロンプトは「score 8以上なら approved=true」と指示しているが、ローカルモデルは
+    # score=9/approved=false の矛盾を平気で返す。ここで整合を強制し、無駄な追加
+    # ラウンド(hybridレビュアーだと数分単位)を防ぐ。
+    approved = bool(data["approved"]) or (score is not None and score >= 8)
     return {
-        "approved": bool(data["approved"]),
+        "approved": approved,
         "score": score,
         "issues": to_strs(data.get("issues")),
         "suggestions": to_strs(data.get("suggestions")),
@@ -508,7 +697,7 @@ class CodeOrchestrator:
                 bus.set_title(node_id, f"🛠 コーディングエージェント iter {d['iter']}/{d['max']} [{d['phase']}]")
                 bus.set_progress(root_id, d["iter"], d["max"])
             elif d.get("type") == "usage":
-                bus.add_tokens(node_id, d["tokens"])
+                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
             elif d.get("type") == "start":
                 bus.set_status(node_id, "running")
 
@@ -523,6 +712,10 @@ class CodeOrchestrator:
         """
         toolbox, emit, on_status = self._wire(node_id, root_id)
         history_out: list = []
+        # 実行中の会話も10秒チェックポイントが拾えるよう、開始前に run.history へ共有する
+        # (run_agent は毎反復 history_out を最新の messages で更新する)。
+        # 中断→continue で「会話文脈の全損」を防ぐ。
+        self.run.history = history_out
         summary = await run_agent(
             goal, model=self.run.model, max_iter=max_iter or self.run.max_iter,
             approve=self.run.approve, emit=emit,
@@ -545,14 +738,17 @@ class CodeOrchestrator:
         if not (self.critique and summary and self.reviewer_model and not run.cancelled):
             return summary, history, digest, artifacts
 
+        def _review_messages(dg, sm):
+            body = _fit_parts([dg], total_chars=16000)[0]
+            return [
+                {"role": "system", "content": CODE_REVIEWER_SYSTEM},
+                {"role": "user",
+                 "content": f"{task_desc}\n\nエージェントの要約:\n{sm}\n\n成果ファイル:\n{body}"},
+            ]
+
         rev_id = bus.create_node("reviewer", "🔍 コードレビュアー: 批評中…",
                                  f"モデル: {self.reviewer_model}", root_id)
-        messages = [
-            {"role": "system", "content": CODE_REVIEWER_SYSTEM},
-            {"role": "user",
-             "content": f"{task_desc}\n\nエージェントの要約:\n{summary}\n\n成果ファイル:\n{digest}"},
-        ]
-        verdict, critique_text = await _review_json(bus, rev_id, messages,
+        verdict, critique_text = await _review_json(bus, rev_id, _review_messages(digest, summary),
                                                     self.cfg, self.reviewer_model)
         if verdict["approved"] or run.cancelled:
             return summary, history, digest, artifacts
@@ -565,6 +761,17 @@ class CodeOrchestrator:
             extra_system=extra, max_iter=max(6, run.max_iter // 2), history=history)
         bus.complete(fix_id, fix_summary or "(中断または上限到達)")
         digest, artifacts = _collect_files(root_dir)
+
+        # FIX後の再レビュー1回(表示のみ・再FIXはしない)。「指摘が直ったか不明のまま
+        # 最終成果物と表示される」のを防ぎ、ユーザーが追加指示を出す判断材料にする。
+        if fix_summary and not run.cancelled:
+            rev2_id = bus.create_node("reviewer", "🔍 再レビュー(FIX検証)",
+                                      f"モデル: {self.reviewer_model}", root_id)
+            verdict2, _ = await _review_json(bus, rev2_id, _review_messages(digest, fix_summary),
+                                             self.cfg, self.reviewer_model)
+            state = "✅指摘は解消" if verdict2["approved"] else "⚠未解消の指摘が残っています"
+            sc = f"(スコア {verdict2['score']}/10)" if verdict2["score"] is not None else ""
+            fix_summary = (fix_summary or "") + f"\n\n【FIX後の再レビュー】{state}{sc}"
         return (fix_summary or summary), (fix_history or history), digest, artifacts
 
     async def _maybe_claude(self, task_desc: str, summary: str | None, root_id: str,
@@ -677,10 +884,10 @@ class SwarmCodeOrchestrator:
         self.cfg = cfg
         self.worker = worker_model
 
-    async def _plan(self, task: str, root_id: str) -> list[dict]:
+    async def _plan(self, task: str, root_id: str) -> tuple[list[dict], str]:
         bus = self.bus
         planner_id = bus.create_node("planner", f"🐝 Planner ({self.worker})",
-                                     "タスクを独立サブタスクへ分解", root_id)
+                                     "タスクを独立サブタスクへ分解し、結合契約を決める", root_id)
         messages = [{"role": "system", "content": SWARM_PLANNER_SYSTEM},
                     {"role": "user", "content": task}]
         raw = ""
@@ -688,11 +895,13 @@ class SwarmCodeOrchestrator:
             for attempt in range(2):
                 try:
                     raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.worker,
-                                            json_mode=True)
-                    subtasks, _ = _parse_plan(raw)
+                                            json_schema=SWARM_PLAN_SCHEMA, temperature=0.1,
+                                            think=llm.effort(llm.resolve(self.cfg, self.worker), "high"))
+                    subtasks, contract = _parse_swarm_plan(raw)
                     bus.complete(planner_id,
-                                 f"{len(subtasks)}個に分解: " + " / ".join(s["title"] for s in subtasks))
-                    return subtasks
+                                 f"{len(subtasks)}個に分解: " + " / ".join(s["title"] for s in subtasks)
+                                 + (f"\n\n【結合契約】\n{contract}" if contract else ""))
+                    return subtasks, contract
                 except (ValueError, json.JSONDecodeError):
                     if attempt == 0:
                         messages.append({"role": "assistant", "content": raw})
@@ -703,9 +912,10 @@ class SwarmCodeOrchestrator:
             bus.complete(planner_id, error=f"失敗: {e}")
             raise
         bus.complete(planner_id, "分解に失敗したため単一サブタスクとして実行")
-        return [{"title": "実装", "instruction": task}]
+        return [{"title": "実装", "instruction": task}], ""
 
-    async def _sub_coder(self, i: int, sub: dict, root_id: str) -> tuple[str, str]:
+    async def _sub_coder(self, i: int, sub: dict, root_id: str, task: str,
+                         contract: str, deliverable: str | None) -> tuple[str, str]:
         bus, run = self.bus, self.run
         node_id = bus.create_node("coder", f"🛠 サブコーダー{i+1}: {sub['title']}",
                                   sub["instruction"], root_id)
@@ -721,15 +931,20 @@ class SwarmCodeOrchestrator:
                 bus.set_title(node_id,
                               f"🛠 サブコーダー{i+1}: {sub['title']} iter {d['iter']}/{d['max']} [{d['phase']}]")
             elif d.get("type") == "usage":
-                bus.add_tokens(node_id, d["tokens"])
+                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
 
+        extra = (f"これは大きなタスクの一部。元のタスク全体:\n{task}\n\n"
+                 f"あなたの担当: {sub['title']}。担当分だけを完成させること。")
+        if contract:
+            extra += ("\n\n【結合契約(全サブコーダー共通・必ず守る)】\n" + contract +
+                      "\n契約にあるファイル名・関数シグネチャ・データ形式から逸脱しないこと。")
         try:
             summary = await run_agent(
                 sub["instruction"], model=self.worker, max_iter=run.max_iter,
                 approve=run.approve, emit=lambda line: bus.emit_log(node_id, str(line)),
                 should_stop=lambda: run.cancelled, on_status=on_status,
-                toolbox=toolbox, deliverable=run.deliverable,
-                extra_system=f"これは大きなタスクの一部(担当: {sub['title']})。担当分だけを完成させること。")
+                toolbox=toolbox, deliverable=deliverable,
+                extra_system=extra)
             bus.complete(node_id, summary or "(中断または上限到達)")
             return sub["title"], summary or "(未完)"
         except asyncio.CancelledError:
@@ -738,31 +953,89 @@ class SwarmCodeOrchestrator:
             bus.complete(node_id, error=f"失敗: {e}")
             return sub["title"], f"(失敗: {e})"
 
+    async def _integrate(self, task: str, contract: str, results: list[tuple[str, str]],
+                         root_id: str) -> str | None:
+        """並列成果を実際に結合する統合ラウンド(レポートではなく実作業)。
+
+        run_agent を run ルート(sub_* の親)で実行し、finishゲートで
+        「動く統合成果物」の実在を保証する。
+        """
+        bus, run = self.bus, self.run
+        node_id = bus.create_node("coder", "🧩 統合ラウンド(実結合)",
+                                  "sub_* の成果を結合し、動く統合成果物を作る", root_id)
+
+        async def approver(command: str, cwd: str) -> bool:
+            return await run.wait_approval(node_id, command, cwd)
+
+        toolbox = Toolbox(subdir=f"run_{run.id}", approve=run.approve,
+                          approver=approver if run.approve else None)
+
+        def on_status(d: dict) -> None:
+            if d.get("type") == "iter":
+                bus.set_title(node_id, f"🧩 統合ラウンド iter {d['iter']}/{d['max']}")
+            elif d.get("type") == "usage":
+                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
+
+        body = "\n".join(f"- sub_{i}/: {t} — {s[:300]}" for i, (t, s) in enumerate(results))
+        goal = (f"並列開発された部品を統合して、動く最終成果物を作る。\n"
+                f"元のタスク: {task}\n\n各部品(このディレクトリ配下):\n{body}\n\n"
+                + (f"結合契約:\n{contract}\n\n" if contract else "") +
+                "手順: (1) list_dir と read_file で sub_0〜 の成果を確認 "
+                "(2) ルート直下に統合された成果物を作る(部品のコードを取り込み、"
+                "重複・不整合は直す) (3) 実行/検証して finish。")
+        try:
+            summary = await run_agent(
+                goal, model=self.worker, max_iter=max(8, run.max_iter // 2),
+                approve=run.approve, emit=lambda line: bus.emit_log(node_id, str(line)),
+                should_stop=lambda: run.cancelled, on_status=on_status,
+                toolbox=toolbox, deliverable=run.deliverable)
+            bus.complete(node_id, summary or "(中断または上限到達)")
+            return summary
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            bus.complete(node_id, error=f"統合失敗: {e}")
+            return None
+
     async def run_task(self, task: str) -> None:
         bus, run = self.bus, self.run
         bus.reset()
         root_id = bus.create_node("task", "ユーザータスク", task)
         bus.set_status(root_id, "running")
         try:
-            subtasks = await self._plan(task, root_id)
+            subtasks, contract = await self._plan(task, root_id)
             bus.set_progress(root_id, 0, len(subtasks))
             done = 0
 
+            # 単一HTML形式は「index.html 全部入り」を強制するため、複数サブに配ると
+            # 各自が完全なアプリを別々に作って統合不能になる。サブには渡さず、
+            # 統合ラウンドでのみ最終形式として適用する。
+            sub_deliverable = None if (run.deliverable == "html" and len(subtasks) > 1) \
+                else run.deliverable
+
             async def tracked(i: int, sub: dict) -> tuple[str, str]:
                 nonlocal done
-                result = await self._sub_coder(i, sub, root_id)
+                result = await self._sub_coder(i, sub, root_id, task, contract, sub_deliverable)
                 done += 1
                 bus.set_progress(root_id, done, len(subtasks))
                 return result
 
             results = await asyncio.gather(*(tracked(i, s) for i, s in enumerate(subtasks)))
 
+            # 統合ラウンド: レポートではなく実結合(複数サブのときだけ)
+            integrate_summary = None
+            if len(subtasks) > 1 and not run.cancelled:
+                integrate_summary = await self._integrate(task, contract, list(results), root_id)
+
             root_dir = Toolbox(subdir=f"run_{run.id}", approve=False).root
             digest, artifacts = _collect_files(root_dir)
 
-            merger_id = bus.create_node("merger", f"🧩 統合エージェント ({self.worker})",
-                                        "並列成果の統合レポートを作成", root_id)
-            body = "\n\n".join(f"## {t}\n{s}" for t, s in results)
+            merger_id = bus.create_node("merger", f"🧩 統合レポート ({self.worker})",
+                                        "最終成果のまとめを作成", root_id)
+            fitted = _fit_parts([s for _, s in results], total_chars=9000)
+            body = "\n\n".join(f"## {t}\n{s}" for (t, _), s in zip(results, fitted))
+            if integrate_summary:
+                body += f"\n\n## 統合ラウンドの結果\n{integrate_summary[:3000]}"
             final = await _stream_llm(bus, merger_id, [
                 {"role": "system", "content": MERGER_SYSTEM},
                 {"role": "user",

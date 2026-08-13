@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Star, FileCode2, ExternalLink, Copy, Check, MessageSquarePlus,
          Play, Download } from "lucide-react";
 import Drawer from "./Drawer.jsx";
+import Markdown from "./md.jsx";
 
 // 「そのまま動かせる成果物」の見せ方。html はその場で開き、exe/bat は保存させる。
 const RUN_KIND = {
@@ -109,9 +110,13 @@ export default function ArtifactDrawer({ open, onClose, artifacts, answerNode, r
                 {copied ? "コピー済み" : "コピー"}
               </button>
             </div>
-            <pre className="whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 font-mono text-[12.5px] leading-relaxed text-zinc-200">
-              {answerNode.output}
-            </pre>
+            {answerNode.status === "done" ? (
+              <Markdown text={answerNode.output} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-zinc-200" />
+            ) : (
+              <pre className="whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 font-mono text-[12.5px] leading-relaxed text-zinc-200">
+                {answerNode.output}
+              </pre>
+            )}
           </section>
         )}
 

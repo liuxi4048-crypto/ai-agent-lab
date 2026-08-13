@@ -5,8 +5,12 @@ import { fmtGB } from "../derive.js";
 /**
  * トップヘッダー: VRAMメーター / アクティブ推論 / キュー数 / 全停止。
  * gpu: /gpu のレスポンス, active: {name, tps}|null, queueCount: number
+ * pendingApprovals: 全Run合計の承認待ち数, onJumpToPending: バッジクリック時のRun選択(任意)
  */
-export default function Header({ gpu, health, active, queueCount, onStopAll, stoppable }) {
+export default function Header({
+  gpu, health, active, queueCount, onStopAll, stoppable,
+  pendingApprovals = 0, onJumpToPending,
+}) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
@@ -72,6 +76,17 @@ export default function Header({ gpu, health, active, queueCount, onStopAll, sto
         <div className="flex items-center gap-1.5 text-xs text-red-400">
           <WifiOff size={13} /> Ollama未接続
         </div>
+      )}
+
+      {/* 承認待ち(全Run合計) */}
+      {pendingApprovals > 0 && (
+        <button
+          onClick={onJumpToPending}
+          className="soft-pulse flex items-center gap-1.5 rounded-full border border-yellow-500 bg-yellow-500/10 px-2.5 py-1 text-xs font-bold text-yellow-300 hover:bg-yellow-500/20"
+          title="承認待ちのコマンドがあります"
+        >
+          🔔 承認待ち {pendingApprovals}
+        </button>
       )}
 
       {/* 全停止 */}

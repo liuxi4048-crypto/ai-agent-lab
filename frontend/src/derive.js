@@ -25,6 +25,10 @@ export const KIND_LABEL = {
 export const STALL_MS_GENERATING = 10_000;
 export const STALL_MS_THINKING = 120_000;
 
+// thinking中にトークン0が続く場合、この時間までは「モデル準備中」(ロード/プロンプト評価)
+// とみなす。Stalled(応答停止警告)よりずっと短い、正常起動時によく起きる待機。
+export const LOADING_MS = 15_000;
+
 /**
  * ノード1件をUIの9状態へ写像する。
  * @param node    events.py の Node.snapshot()
@@ -50,6 +54,24 @@ export function deriveAgentState(node, ctx) {
     default:
       return { key: "waiting" };
   }
+}
+
+/**
+ * thinking状態でトークン0が続いているノードを「モデル準備中」(ロード/プロンプト評価)と判定する。
+ * @param node events.py の Node.snapshot()
+ * @param now  Date.now() 相当(ms)
+ */
+export function isModelLoading(node, now) {
+  if (node.status !== "thinking" || node.tokens > 0 || node.started_at == null) return false;
+  return now - node.started_at * 1000 >= LOADING_MS;
+}
+
+// ctx_fill(コンテキスト充填率)の警告レベル。85%超=warn(黄) / 95%超=danger(赤)。
+export function ctxFillLevel(ctxFill) {
+  if (ctxFill == null) return "none";
+  if (ctxFill > 0.95) return "danger";
+  if (ctxFill > 0.85) return "warn";
+  return "none";
 }
 
 // 並列実行されるノード群(orchestraのsubagent / swarm-codeのサブコーダー)。

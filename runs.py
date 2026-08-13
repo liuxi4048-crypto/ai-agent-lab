@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -21,6 +23,14 @@ RUNS_DIR = _BASE / "runs"
 MAX_CONCURRENT = 3
 APPROVAL_TIMEOUT = 900   # 承認待ちの上限秒。放置時は自動却下(スロット飢餓の防止)
 CHECKPOINT_SEC = 10      # 実行中Runの定期スナップショット間隔(プロセス死対策)
+
+# run_id は uuid4().hex[:10]。URLパラメータをそのままパスに連結するため形式検証する
+# (Windows では ..%5C.. がディレクトリ外のファイル読取/削除に化けるのを防ぐ)。
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+
+
+def _valid_id(run_id: str) -> bool:
+    return bool(_RUN_ID_RE.fullmatch(str(run_id or "")))
 
 
 def normalize_snapshot(snapshot: dict, run_status: str) -> dict:
@@ -76,6 +86,9 @@ class Run:
         self.task_obj: asyncio.Task | None = None
         self.pending_approvals: dict[str, asyncio.Future] = {}
         self.history: list = []  # codeモード: 会話継続用の最終メッセージ列
+        # persist の直列化と「最終記録を古いチェックポイントで上書きしない」ガード
+        self._persist_lock = threading.Lock()
+        self._finalized = False
 
     def status(self) -> str:
         if self.cancelled:
@@ -174,10 +187,18 @@ class RunManager:
         """factory() -> coroutine(オーケストレーター本体)をゲート付きで起動する。"""
 
         async def _checkpoint() -> None:
-            # プロセス死(ウィンドウクローズ・taskkill・電源断)でも直近状態が残るように
+            # プロセス死(ウィンドウクローズ・taskkill・電源断)でも直近状態が残るように。
+            # スナップショット構築はイベントループ上(bus/historyの並行変更と競合しない)、
+            # json.dumps+書き込みだけをスレッドへ逃がす。1回の失敗でループを止めない。
             while True:
                 await asyncio.sleep(CHECKPOINT_SEC)
-                self.persist(run, final=False)
+                try:
+                    data = self._encode(run, final=False)
+                    await asyncio.to_thread(self._write_record, run, data, False)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    print(f"[checkpoint] 保存失敗(継続): {e}")
 
         async def _gated() -> None:
             ck = asyncio.create_task(_checkpoint())
@@ -194,6 +215,10 @@ class RunManager:
                         await factory()
             except asyncio.CancelledError:
                 run.error = run.error or "ユーザーによって中断されました"
+                if run.queued:
+                    # factory 未開始のキャンセルはオーケストレーターが通知できないので
+                    # ここで締める(開いているSSEクライアントが即座に終了を検知できる)
+                    run.bus.run_finished(error=run.error)
             except Exception as e:
                 run.error = str(e)
             finally:
@@ -207,16 +232,38 @@ class RunManager:
     def persist(self, run: Run, final: bool = True) -> None:
         """Runの状態をディスクへ書く。final=False はチェックポイント(実行中のまま)。
 
-        tmp+replace の原子的書き込みにする(書き込み途中のクラッシュで
-        JSONが壊れると _load_file が黙って捨て「Run消失」が再発するため)。
+        イベントループ上から同期で呼ぶ用(終了時の最終保存)。チェックポイントは
+        _encode(ループ上)+ _write_record(スレッド)に分けて呼ぶ。
+        """
+        self._write_record(run, self._encode(run, final), final)
+
+    def _encode(self, run: Run, final: bool) -> dict:
+        """保存用データの構築。bus/history を触るため必ずイベントループ上で呼ぶ。
+
+        history は浅いコピーを取る(スレッド側で json.dumps 中に
+        agent が history_out[:] で差し替えてもイテレーション破壊しないように)。
         """
         if final:
             run.finished_at = time.time()
-        RUNS_DIR.mkdir(parents=True, exist_ok=True)
-        data = {**run.summary(), "snapshot": run.bus.full_snapshot(), "history": run.history}
-        tmp = RUNS_DIR / f"{run.id}.json.tmp"
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(RUNS_DIR / f"{run.id}.json")
+        return {**run.summary(), "snapshot": run.bus.full_snapshot(),
+                "history": list(run.history)}
+
+    def _write_record(self, run: Run, data: dict, final: bool) -> None:
+        """json.dumps + tmp+replace の原子的書き込み(スレッド実行可)。
+
+        run._persist_lock で直列化し、final 書き込み後は古いチェックポイントの
+        追い越し上書き(完了済みRunが running 状態の記録に巻き戻る)を拒否する。
+        tmp 名はスレッド毎に一意(同名tmpへの同時書き込みはWindowsで共有違反になる)。
+        """
+        with run._persist_lock:
+            if run._finalized and not final:
+                return
+            if final:
+                run._finalized = True
+            RUNS_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = RUNS_DIR / f"{run.id}.json.tmp{threading.get_ident()}"
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(RUNS_DIR / f"{run.id}.json")
 
     def _load_file(self, path: Path) -> dict | None:
         try:
@@ -237,6 +284,9 @@ class RunManager:
 
     def list_runs(self) -> list[dict]:
         items = []
+        queued = sorted((r for r in self.live.values() if r.status() == "queued"),
+                        key=lambda r: r.created_at)
+        queue_pos = {r.id: i + 1 for i, r in enumerate(queued)}
         for r in self.live.values():
             s = r.summary()
             if s["status"] == "queued":
@@ -244,16 +294,38 @@ class RunManager:
                     "hybrid直列待ち(大型モデルの同時実行を防止)"
                     if r.hybrid and self.hybrid_lock.locked()
                     else f"並列上限{MAX_CONCURRENT}件に到達")
+                s["queue_pos"] = queue_pos.get(r.id)
             items.append(s)
         seen = {r["id"] for r in items}
         if RUNS_DIR.is_dir():
             for path in RUNS_DIR.glob("*.json"):
-                data = self._load_file(path)
-                if data and data["id"] not in seen:
-                    items.append(self._fill_tag(
-                        {k: v for k, v in data.items() if k != "snapshot"}))
-        items.sort(key=lambda r: r["created_at"], reverse=True)
+                if path.stem in seen:
+                    continue   # ライブ実行中のチェックポイントは毎回mtimeが変わるためパースしない
+                summary = self._summary_cached(path)
+                if summary and summary.get("id") and summary["id"] not in seen:
+                    items.append(summary)
+        items.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
         return items
+
+    # {path: (mtime, summary)} — /runs は3秒ポーリングされるため、全ファイルの
+    # 全文パース(snapshot込み)を毎回やらない。変化したファイルだけ再読込する。
+    _summary_cache: dict = {}
+
+    def _summary_cached(self, path: Path) -> dict | None:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        hit = self._summary_cache.get(str(path))
+        if hit and hit[0] == mtime:
+            return hit[1]
+        data = self._load_file(path)
+        if not data or not data.get("id"):
+            return None
+        summary = self._fill_tag({k: v for k, v in data.items()
+                                  if k not in ("snapshot", "history")})
+        self._summary_cache[str(path)] = (mtime, summary)
+        return summary
 
     def get_snapshot(self, run_id: str) -> dict | None:
         """ライブ実行ならその場のスナップショット、終了済みなら保存済みを返す。"""
@@ -264,6 +336,8 @@ class RunManager:
 
     def get_record(self, run_id: str) -> dict | None:
         """保存済みRunのレコード全体(summary+snapshot)を返す。"""
+        if not _valid_id(run_id):
+            return None
         return self._load_file(RUNS_DIR / f"{run_id}.json")
 
     def get_live(self, run_id: str) -> Run | None:
@@ -289,7 +363,16 @@ class RunManager:
     def cancel(self, run_id: str) -> bool:
         """実行中/待機中のRunを中断する。対象がない/既に終了していればFalse。"""
         run = self.live.get(run_id)
-        if run is None or run.task_obj is None or run.task_obj.done():
+        if run is None:
+            return False
+        if run.task_obj is None:
+            # start 前に失敗して残留したゾンビRun。live から除去して救済する
+            # (放置すると中断も削除も継続もできず、再起動まで詰まる)。
+            run.cancelled = True
+            run.reject_pending()
+            self.live.pop(run_id, None)
+            return True
+        if run.task_obj.done():
             return False
         run.cancelled = True
         run.reject_pending()
@@ -325,12 +408,15 @@ class RunManager:
 
     def delete(self, run_id: str) -> str:
         """終了済みRunの記録を削除する。返り値: ok / running / not_found。"""
+        if not _valid_id(run_id):
+            return "not_found"
         if run_id in self.live:
             return "running"
         path = RUNS_DIR / f"{run_id}.json"
         if not path.is_file():
             return "not_found"
         path.unlink()
+        self._summary_cache.pop(str(path), None)
         return "ok"
 
 

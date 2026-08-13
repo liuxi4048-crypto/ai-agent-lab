@@ -104,6 +104,14 @@ def strip_think(text):
     return _OPEN_THINK_RE.sub("", text).strip()
 
 
+def _next_pow2(n):
+    """n以上の最小の2の冪を返す。"""
+    p = 1
+    while p < n:
+        p *= 2
+    return p
+
+
 # ---------------------------------------------------------------- 入力の収集
 
 def collect_content(targets, diff_repo, max_chars):
@@ -120,6 +128,22 @@ def collect_content(targets, diff_repo, max_chars):
             raise SystemExit(f"{diff_repo} に未コミットの差分がありません。")
         parts.append(f"--- git diff HEAD ({diff_repo}) ---\n{proc.stdout}")
         labels.append(f"diff:{os.path.basename(os.path.abspath(diff_repo))}")
+
+        # git diff HEAD には未追跡(git add前)の新規ファイルが乗らないため、
+        # 別途 ls-files で拾って本文に加える(1ファイルあたり4000字上限)
+        untracked = subprocess.run(
+            ["git", "-C", diff_repo, "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        new_files = [p.strip() for p in (untracked.stdout or "").splitlines() if p.strip()]
+        for rel in new_files:
+            try:
+                with open(os.path.join(diff_repo, rel), "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(4000)
+            except OSError:
+                continue
+            parts.append(f"--- new file: {rel} ---\n{text}")
+        if new_files:
+            labels.append(f"new:{len(new_files)}件")
 
     for t in targets:
         if t == "-":
@@ -156,19 +180,41 @@ def build_prompt(lens_name, focus, content, source, instruction):
 
 async def run_ollama_lens(cfg, model_key, lens_name, content, source, instruction):
     started = time.monotonic()
-    prompt = build_prompt(lens_name, LENSES[lens_name]["focus"], content, source, instruction)
     info = llm.resolve(cfg, model_key)
+    num_ctx = info["num_ctx"]
+
+    prompt = build_prompt(lens_name, LENSES[lens_name]["focus"], content, source, instruction)
+    # 概算トークン数(日本語想定でlen//2)がコンテキストの80%を超える場合は
+    # num_ctx を「必要量÷0.8」(=SYSTEM_PROMPT・生成分のヘッドルーム込み)まで
+    # 32768上限で広げる。上限でも80%予算に収まらない分は対象コード部分の末尾を
+    # 切り詰める(境界帯 26K〜32K トークンを無余裕のまま送ると、Ollamaが先頭の
+    # system/観点指示から黙って切り捨てるため)。
+    req_num_ctx = None
+    estimated = (len(prompt) + len(SYSTEM_PROMPT)) // 2
+    if estimated > num_ctx * 0.8:
+        needed = _next_pow2(int(estimated / 0.8))
+        req_num_ctx = min(32768, needed)
+        budget_tokens = int(req_num_ctx * 0.8)
+        if estimated > budget_tokens:
+            overhead_tokens = estimated - (len(content) // 2)   # focus/指示文などcontent以外の分
+            keep_chars = max(0, budget_tokens - overhead_tokens) * 2
+            if keep_chars < len(content):   # 実際に削れる分がある場合だけ切り詰める
+                content = content[:keep_chars] + "\n\n…(入力が長いため末尾を省略)"
+                prompt = build_prompt(lens_name, LENSES[lens_name]["focus"], content, source, instruction)
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}]
     try:
-        msg = await llm.chat(
-            cfg, model_key,
-            [{"role": "system", "content": SYSTEM_PROMPT},
-             {"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
+        msg = await llm.chat(cfg, model_key, messages, temperature=0.2, num_ctx=req_num_ctx)
         text = strip_think(msg.get("content", ""))
+        if not text:
+            # <think>ブロックだけで本文が無い応答。temperatureを上げて1回だけ救済を試みる
+            retry = await llm.chat(cfg, model_key, messages, temperature=0.8, num_ctx=req_num_ctx)
+            text = strip_think(retry.get("content", ""))
+        error = None if text else "思考のみで本文なし"
         return {"lens": lens_name, "backend": "ollama", "model": info["tag"],
                 "seconds": round(time.monotonic() - started, 1),
-                "output": text or "(空応答)", "error": None}
+                "output": text or "(空応答)", "error": error}
     except Exception as e:  # llm.OllamaError 含む。1lensの失敗で全体を落とさない
         return {"lens": lens_name, "backend": "ollama", "model": info["tag"],
                 "seconds": round(time.monotonic() - started, 1),
@@ -341,7 +387,11 @@ async def main_async(args):
                           "results": results}, ensure_ascii=False, indent=2))
     else:
         print(render_markdown(results, source, elapsed))
-    return 0 if any(not r["error"] for r in results) else 1
+    # 全滅時だけでなく、半数以上のlensが失敗した場合も失敗として exit 1 にする
+    failed = sum(1 for r in results if r["error"])
+    if not results or failed * 2 >= len(results):
+        return 1
+    return 0
 
 
 def main():

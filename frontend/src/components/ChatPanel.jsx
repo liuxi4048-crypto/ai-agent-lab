@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Send, Loader2, User, Bot, Play } from "lucide-react";
 import { continueRun } from "../api.js";
+import Markdown from "./md.jsx";
 
 /**
  * 成果物に会話形式で修正を加えるパネル(ワークスペース下部に常設)。
@@ -62,15 +63,13 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, onS
               >
                 {m.role === "user" ? <User size={13} /> : <Bot size={13} />}
               </span>
-              <p
-                className={`min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg px-2.5 py-1.5 ${
-                  m.role === "user"
-                    ? "bg-blue-500/10 text-zinc-200"
-                    : "bg-zinc-900 text-zinc-300"
-                }`}
-              >
-                {m.text}
-              </p>
+              {m.role === "user" ? (
+                <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-zinc-200">
+                  {m.text}
+                </p>
+              ) : (
+                <Markdown text={m.text} className="min-w-0 flex-1 rounded-lg bg-zinc-900 px-2.5 py-1.5 text-zinc-300" />
+              )}
             </div>
           ))}
           <div ref={endRef} />

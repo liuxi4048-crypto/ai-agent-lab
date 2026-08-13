@@ -57,10 +57,15 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     if (claude && !claude.available && claudeReview) setClaudeReview(false);
   }, [claude, claudeReview]);
 
+  // 軽量hybrid(RAMオフロード8GB以下)は実測で実用速度のため、トグルOFFでも選択可
+  // (router.pick_model の自動選択と同じ基準。coder=qwen3:30b が該当)
+  const isLightHybrid = (m) => m.needs_ram && (m.ram_gb ?? 0) <= 8;
+
   // RAM併用をOFFに戻したとき、選択中の大型モデルが残らないよう auto へ落とす
   useEffect(() => {
     const cur = modelOptions.find((m) => m.key === model);
-    if (cur?.needs_ram && (!allowRam || !cur.ram_ok)) setModel("auto");
+    if (cur?.needs_ram && !isLightHybrid(cur) && (!allowRam || !cur.ram_ok)) setModel("auto");
+    if (cur && isLightHybrid(cur) && !cur.ram_ok) setModel("auto");
   }, [allowRam, model, modelOptions]);
 
   if (!open) {
@@ -102,12 +107,16 @@ export default function TaskInput({ models, onStart, running, prefill }) {
         >
           <option value="auto">auto (タスクに合わせて自動選択)</option>
           {modelOptions.map((m) => {
-            // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない
-            const blocked = !m.installed || (m.needs_ram && (!allowRam || !m.ram_ok));
+            // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
+            // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)
+            const light = isLightHybrid(m);
+            const blocked = !m.installed
+              || (m.needs_ram && !m.ram_ok)
+              || (m.needs_ram && !light && !allowRam);
             const note = !m.installed ? " ※未導入"
               : m.needs_ram && !m.ram_ok ? " ※RAM不足"
-              : m.needs_ram && !allowRam ? " ※RAM併用をONに"
-              : m.needs_ram ? " ※低速" : "";
+              : m.needs_ram && !light && !allowRam ? " ※RAM併用をONに"
+              : m.needs_ram && !light ? " ※低速" : "";
             return (
               <option key={m.key} value={m.key} disabled={blocked}>
                 {m.tag}{m.for ? ` (${m.for})` : ""}{note}

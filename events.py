@@ -11,7 +11,10 @@ import time
 import uuid
 from typing import Any
 
-LOG_CAP = 2000  # ノードあたりの保持ログ行数上限
+LOG_CAP = 2000    # ノードあたりの保持ログ行数上限
+THINK_CAP = 20000  # ノードあたりの思考テキスト保持上限(文字)
+OUTPUT_CAP = 400000  # ノード出力の保持上限(文字)。無制限成長でsnapshot/persistが肥大するのを防ぐ
+FLUSH_INTERVAL = 0.1  # token/think ストリームのSSEフラッシュ間隔(秒)
 
 
 class Node:
@@ -25,13 +28,17 @@ class Node:
         self.tokens = 0
         self.preview = ""         # 生成中テキストの末尾プレビュー
         self.output = ""          # 完全な出力
+        self.think = ""           # thinking(推論)テキスト。UIでは折りたたみ表示
         self.prompt = ""          # 与えたプロンプト(ログ表示用)
         self.log: list[str] = []  # coder ノードの逐次ログ
         self.started_at: float | None = None
         self.finished_at: float | None = None
         self.progress: tuple[int, int] | None = None  # (完了, 総数) 親ノード用
+        self.ctx_fill: float | None = None  # コンテキスト充填率(coderノード)
 
     def snapshot(self) -> dict[str, Any]:
+        # log はコピーを返す(persist がワーカースレッドで json.dumps する間に
+        # イベントループ側が append すると "changed size during iteration" になるため)
         return {
             "id": self.id,
             "parent_id": self.parent_id,
@@ -42,11 +49,13 @@ class Node:
             "tokens": self.tokens,
             "preview": self.preview,
             "output": self.output,
+            "think": self.think,
             "prompt": self.prompt,
-            "log": self.log,
+            "log": list(self.log),
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "progress": list(self.progress) if self.progress else None,
+            "ctx_fill": self.ctx_fill,
         }
 
 
@@ -59,6 +68,11 @@ class EventBus:
         self.artifacts: list[dict] = []
         self.approvals: dict[str, dict] = {}  # aid -> {node_id, command, cwd, resolved, approved}
         self._subscribers: list[asyncio.Queue] = []
+        # token/think ストリームのコアレッシング(トークン毎に1イベント発行すると
+        # 50tok/s×並列3Runで毎秒150イベントになり、UI再描画と回線を圧迫するため)
+        self._tok_dirty: set[str] = set()
+        self._think_buf: dict[str, list[str]] = {}
+        self._flush_handle = None
 
     # ---- 購読 ----
     def subscribe(self) -> asyncio.Queue:
@@ -75,13 +89,15 @@ class EventBus:
             q.put_nowait(event)
 
     def full_snapshot(self) -> dict:
+        """スナップショット全量。必ずイベントループスレッド上で呼ぶこと
+        (返り値はコピーなので、その後のシリアライズはスレッドに逃がしてよい)。"""
         return {
             "type": "snapshot",
             "running": self.running,
             "run_started_at": self.run_started_at,
             "nodes": [self.nodes[i].snapshot() for i in self.order],
-            "artifacts": self.artifacts,
-            "approvals": [a for a in self.approvals.values() if not a["resolved"]],
+            "artifacts": list(self.artifacts),
+            "approvals": [dict(a) for a in self.approvals.values() if not a["resolved"]],
         }
 
     # ---- 復元(会話継続用) ----
@@ -101,12 +117,14 @@ class EventBus:
             node.tokens = nd.get("tokens", 0)
             node.preview = nd.get("preview", "")
             node.output = nd.get("output", "")
+            node.think = nd.get("think", "")
             node.prompt = nd.get("prompt", "")
             node.log = list(nd.get("log") or [])
             node.started_at = nd.get("started_at")
             node.finished_at = nd.get("finished_at")
             p = nd.get("progress")
             node.progress = tuple(p) if p else None
+            node.ctx_fill = nd.get("ctx_fill")
             bus.nodes[node.id] = node
             bus.order.append(node.id)
         return bus
@@ -155,18 +173,73 @@ class EventBus:
     def token_progress(self, node_id: str, piece: str) -> None:
         node = self.nodes[node_id]
         node.tokens += 1
-        node.output += piece
+        if len(node.output) < OUTPUT_CAP:
+            node.output += piece
         node.preview = node.output[-120:]
         if node.status != "generating":
-            node.status = "generating"
-        self._publish({"type": "token_progress", "id": node_id,
-                       "tokens": node.tokens, "preview": node.preview})
+            # set_status 経由で正規の status_changed を発行(started_at も立つ)
+            self.set_status(node_id, "generating")
+        self._tok_dirty.add(node_id)
+        self._schedule_flush()
 
-    def add_tokens(self, node_id: str, n: int) -> None:
-        """非ストリーミング呼び出し(coderノード等)のトークン計上。"""
+    def think_progress(self, node_id: str, piece: str) -> None:
+        """thinking(推論)テキストのストリーム。出力本文とは別枠で保持・配信する。"""
+        node = self.nodes[node_id]
+        node.think += piece
+        if len(node.think) > THINK_CAP:
+            node.think = node.think[-THINK_CAP:]
+        self._think_buf.setdefault(node_id, []).append(piece)
+        self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        if self._flush_handle is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._flush_stream()   # ループ外(テスト等)は即時
+            return
+        self._flush_handle = loop.call_later(FLUSH_INTERVAL, self._flush_stream)
+
+    def _flush_stream(self) -> None:
+        self._flush_handle = None
+        for node_id in self._tok_dirty:
+            node = self.nodes.get(node_id)
+            if node is not None and node.status not in ("done", "error", "cancelled"):
+                self._publish({"type": "token_progress", "id": node_id,
+                               "tokens": node.tokens, "preview": node.preview})
+        self._tok_dirty.clear()
+        for node_id, pieces in self._think_buf.items():
+            node = self.nodes.get(node_id)
+            if node is not None:
+                # total を添える: snapshot直後に接続したクライアントが、snapshotに
+                # 含まれ済みのバッファ分を二重追記しないための冪等キー
+                self._publish({"type": "think_progress", "id": node_id,
+                               "piece": "".join(pieces), "total": len(node.think)})
+        self._think_buf.clear()
+
+    def add_tokens(self, node_id: str, n: int, ctx_fill: float | None = None) -> None:
+        """非ストリーミング呼び出し(coderノード等)のトークン計上(加算)。
+
+        ctx_fill: コンテキスト充填率(実測prompt tokens / num_ctx)。UIの窓メーター用。
+        """
         node = self.nodes[node_id]
         node.tokens += n
-        self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens})
+        if ctx_fill is not None:
+            node.ctx_fill = ctx_fill
+        self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens,
+                       "ctx_fill": getattr(node, "ctx_fill", None)})
+
+    def set_tokens(self, node_id: str, total: int) -> None:
+        """トークン数を実測値で確定する(ストリーミングノードの完了時用)。
+
+        token_progress はチャンク数≒トークンの近似カウントなので、done チャンクの
+        eval_count(thinking含む実測)で置き換える。加算だと二重計上になる。
+        """
+        node = self.nodes[node_id]
+        node.tokens = total
+        self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens,
+                       "ctx_fill": getattr(node, "ctx_fill", None)})
 
     def emit_log(self, node_id: str, line: str) -> None:
         """coder ノードの逐次ログ1行。"""

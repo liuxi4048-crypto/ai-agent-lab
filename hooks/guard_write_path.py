@@ -37,7 +37,11 @@ def main() -> int:
             continue
         # 相対パスは cwd(=作業ルート)基準。realpath でシンボリックリンクも解決する
         target = os.path.realpath(os.path.join(root, raw))
-        if target != root and not target.startswith(root + os.sep):
+        # Windowsは大文字小文字を区別しないため、比較だけ normcase して揃える
+        # (実際のブロック判定に使う target/root 自体は元の大文字小文字を保つ)
+        target_cmp = os.path.normcase(target)
+        root_cmp = os.path.normcase(root)
+        if target_cmp != root_cmp and not target_cmp.startswith(root_cmp + os.sep):
             sys.stderr.write(
                 f"作業ディレクトリの外への書き込みは禁止されています: {raw}\n"
                 f"許可されているのは {root} 配下だけです。"

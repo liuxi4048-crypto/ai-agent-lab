@@ -5,62 +5,55 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 コーディングエージェント)を統合した v2。**API課金なし**・全処理ローカル完結
 (任意機能の「Claudeが最終レビュー」もサブスクのClaude Code CLIを使うため課金なし)。
 
+> **2026-08-13 大規模改修**: モデル世代交代(Muse Glimmer / Qwen3-Coder-Next 導入)、
+> モデル別公式サンプリング値、structured outputs(スキーマ強制)、thinking の分離表示、
+> 実測ベースのコンテキスト管理、finishゲートの厳密化、swarm の実統合ラウンド、
+> SSEバッチ化ほか。詳細は「改修の要点」節。
+
 ## 実行モード(ダッシュボードから選択)
 
 | モード | 内容 |
 |---|---|
-| 🛠 **code** | コーディングエージェント1本。PLAN→BUILD→RUN→FIX を自律反復し動くものを作る。「レビュー+FIX」ONで完走後に異ファミリーモデルがコードレビュー→要改善ならFIXラウンド |
-| 🐝 **swarm-code** | Plannerがタスクを2〜3の独立サブタスクへ分解 → **並列コーディングエージェント**(各自 `projects/run_<id>/sub_<i>/` に隔離)→ 統合エージェントがレポート |
-| 🎼 **orchestra** | Planner分解 → チャット型サブエージェント並列 → 統合(旧agent-orchestra) |
-| 🔁 **critique** | 作成者モデル ⇄ レビュアーモデルが最大3ラウンド批評改善(既定で**異ファミリーペア**) |
+| 🛠 **code** | コーディングエージェント1本。PLAN→BUILD→RUN→FIX を自律反復し動くものを作る。「レビュー+FIX」ONで完走後に異ファミリーモデルがコードレビュー→要改善ならFIXラウンド→**FIX後に再レビューして解消/未解消を表示** |
+| 🐝 **swarm-code** | Plannerがタスクを1〜3の独立サブタスクへ分解し**結合契約(共有ファイル名・シグネチャ・データ形式)を発行** → **並列コーディングエージェント**(各自 `projects/run_<id>/sub_<i>/` に隔離・契約を共有)→ **統合ラウンドが実際に部品を結合して動く統合成果物を作る** → 統合レポート |
+| 🎼 **orchestra** | Planner分解 → チャット型サブエージェント並列(**元タスク全文を共有**)→ 統合(旧agent-orchestra) |
+| 🔁 **critique** | 作成者モデル ⇄ レビュアーモデルが最大3ラウンド批評改善(既定で**異ファミリーペア**)。未承認で終わった場合は**最高スコアのラウンドの版**を最終回答に採用 |
 
-- タスクは**3件まで並列実行**、超過分はキューイング(`queued`→自動開始。待機理由も表示)
-- `run_command` は**実行前承認**(モーダル+自動却下までのカウントダウン)が既定ON
-- 実行状況はツリー表示+coderノードは色分きライブログ。完了タスクは `runs/` に永続化
+- タスクは**3件まで並列実行**、超過分はキューイング(`queued`→自動開始。待機理由と順位も表示)
+- `run_command` は**実行前承認**(モーダル+15分カウントダウン+自動却下)が既定ON
+- 実行状況はカードグリッド+ライブログ。**thinking(推論過程)は本文と分けて折りたたみ表示**
+- 完了タスクは `runs/` に永続化。**実行中も10秒毎に会話履歴込みでチェックポイント**
+  (プロセス死→再起動→「会話で修正する」で文脈を失わず継続できる)
 
 ### 使い方はシンプル: タスクを書いて実行するだけ
 
 進め方(制作 / 並列制作 / 調査・考察 / 推敲)と成果物の形式は、**メインエージェントが
-依頼文を読んで自動で決める**(`router.triage`)。ユーザーが選ぶのはモデルだけで、
-それも既定の `auto` で自動選択される。決まった内容は実行直後に表示される:
+依頼文を読んで自動で決める**(`router.triage`)。判定は Ollama の structured outputs
+(JSONスキーマ強制)+few-shot で行い、失敗時はキーワード判定にフォールバックする。
+決まった内容は選択中Runの上部に常設表示される:
 
 ```
-制作 / HTMLアプリ · qwen3:30b (ブラウザで遊べる)
+制作 / HTMLアプリ · qwen3:30b (ブラウザゲーム制作)
 ```
 
-モデル選択は内部キーではなく**実際のモデル名 + 用途**で並ぶ:
-
-| 表示 | 用途 |
-|---|---|
-| `gpt-oss:20b` | 最速・軽快。普段づかい/並列作業 |
-| `qwen3:30b` | コーディング主力。バランス型 |
-| `qwen3.6:35b` | 高品質コーディング。難しい実装向け |
-| `deepseek-r1:14b` | 推論・数学。考察向き(コード生成は不可) |
-| `gpt-oss:120b` | 最大モデル。難所向け・低速 |
-
-API から使う場合は `mode` / `deliverable` を明示指定することもできる(既定は `auto`)。
+モデル選択は内部キーではなく**実際のモデル名 + 用途**で並ぶ。既定の `auto` は
+タスク内容から自動選択される(コーディング→Qwen / 数学・推論→DeepSeek / 並列→worker)。
 
 ### 成果物は会話で直せる
 
 画面下部の「会話で修正する」に指示を送ると、**同じRun・同じワークスペースの続き**として
-実行される。やり取りはスレッド表示され、何度でも繰り返せる。
-
-```
-あなた   反応速度を測るゲームを作って
-エージェント index.html を作成しました
-あなた   ベストスコアを表示するようにして
-エージェント index.html を更新しました
-```
+実行される。やり取りはスレッド表示され、何度でも繰り返せる。中断・プロセス死のあとでも
+チェックポイントから会話文脈ごと復元される。
 
 ### 大きいモデルを使う(RAM併用)
 
-既定は**VRAMに収まるモデルだけ**を使う(帯域が10倍近く速いため)。より賢いモデルが
-必要なときは「大きいモデルも使う(RAM併用・低速)」をONにすると、VRAMに載り切らない
-層をRAMへ逃がして実行できる。
-
+- **軽量hybrid(RAMオフロード8GB以下、qwen3:30b等)は既定で有効**。実測50 tok/sで
+  実用速度のため、トグルなしで自動選択・手動選択の両方に乗る
+- それより大きいモデル(qwen3-coder-next / gpt-oss:120b / deepseek-r1:70b)は
+  「大きいモデルも使う(RAM併用・低速)」をONにすると候補に入る
 - 空きRAMが必要量に足りないモデルは自動的に選択肢から外れる(ページングによる激遅化を回避)
-- モデル一覧には理由が出る: `※RAM併用をONに` / `※RAM不足`
-- `models.yaml` の `num_gpu` でGPUへ載せる層数を明示指定できる(未指定はOllama自動)
+- 注意: hybrid モデルを使うRunは直列実行される(モデル再ロードのスラッシング防止)。
+  並列スループット優先なら worker(gpt-oss:20b, VRAM全載り)を明示選択する
 
 ### Claudeが最終レビューして仕上げる(任意・サブスク枠)
 
@@ -72,36 +65,23 @@ API から使う場合は `mode` / `deliverable` を明示指定することも�
 
 - 入力欄の「🤖 Claudeが最終レビュー」をONにしたRunだけで動く(**既定OFF**)
 - **API利用料は発生しない。代わりに Claude サブスクの5時間利用枠を消費する**
-- サブプロセスの環境から `ANTHROPIC_API_KEY` を除去して起動する。残っているとCLIが
-  そちらを優先し、意図せず従量課金になるため
+- サブプロセスの環境から `ANTHROPIC_API_KEY` を除去して起動する
 - 作業ディレクトリを `projects/run_<id>/` に固定し、**PreToolUse フック
   (`hooks/guard_write_path.py`)でその外への書き込みを拒否**する
 - シェル(`Bash` / `PowerShell`)・Web・サブエージェントは `--disallowedTools` で拒否する
-
-> **サンドボックスの実装が回りくどい理由**(CLI 2.1.216 / 2026-07-29 実測):
-> `--permission-mode acceptEdits` も `--allowedTools "Write(./**)"` も
-> **cwd外への絶対パス書き込みを止めなかった**。また `--disallowedTools "Bash"` だけでは
-> Windowsのシェルツール名が `PowerShell` のため**素通りした**。
-> そのため (1) シェルは両方の名前を明示的に拒否、(2) パス制限はフックで強制、
-> という二段構えにしている。3項目(cwd内書き込み可 / cwd外拒否 / シェル拒否)は
-> 実CLIに対するテストで確認済み。
+- ユーザーが中断したら**watchdogがCLIプロセスを即kill**する(サブスク枠を浪費しない)
 - 修正後は既存のローカル検証(`verify_deliverable` / `verify_runtime`)を必ず通す。
   通らなければ同じセッションを再開して直させる(最大2回)
-- レビューに失敗しても Run 自体は落とさず、ローカルの成果物をそのまま最終成果物とする
+- レビューが途中で失敗しても、**適用済みの修正はディスクに残る**ため成果物一覧へ反映される
 
 ```bash
 npm install -g @anthropic-ai/claude-code   # 未導入の場合
 claude    # 一度起動してログイン(サブスクアカウント)しておく
 ```
 
-CLI は `CLAUDE_CLI` → PATH → `%APPDATA%\npm\claude.cmd` の順で探し、`--version` が通る
-ものを使う(PATH先頭に壊れたシムがあっても素通りする)。環境変数 `CLAUDE_REVIEW_MODEL`
-(既定 `opus`)、`CLAUDE_REVIEW_EFFORT`(既定 `high`)で挙動を変えられる。
-
 ### 成果物の形式(deliverable)
 
-「ソースコード一式」ではなく**そのまま動かせるもの**を出力させる。制作系の依頼で
-自動的に選ばれる。
+「ソースコード一式」ではなく**そのまま動かせるもの**を出力させる。
 
 | 形式 | 出力されるもの | 実行方法 |
 |---|---|---|
@@ -110,30 +90,27 @@ CLI は `CLAUDE_CLI` → PATH → `%APPDATA%\npm\claude.cmd` の順で探し、`
 | `script` | ソース + `run.bat` ランチャー | `run.bat` をダブルクリック |
 | `auto` | 上記から自動判定 | ゲーム・UI系→html / CLI・ライブラリ系→script |
 
-- **手順書・README等の説明ファイルは作らせない**。「作り方の説明」ではなく実物を作り、
-  使い方は完了サマリに書かせる(ドキュメントが欲しい場合は明示的に指示する)
-- **finishゲート**: 実行できる成果物が無い状態で `finish` を呼んでも差し戻され、
-  実物を作るまで完了できない(`Toolbox.verify_deliverable`)
-- 成果物は種別(`html`/`exe`/`bat`/`entry`/`doc`)で分類され、実行できるものが
-  「すぐ実行できる成果物」として最上位に表示される
-- HTMLアプリは「開いても何も起きない」を防ぐため、読み込み直後に自動でループを
-  開始することをプロンプトで強制している
-- HTML内のインラインJSと `.js` は書き込み後に Node で構文チェックされる
-  (Node が無い環境では自動スキップ)
+**finishゲート**(「手順書だけ書いて完了」を構造的に防ぐ):
+- 検査対象は**そのRunが書き込んだプロジェクトだけ**(過去Runの残骸で誤通過しない)
+- `html`: index.html の実在+外部URL禁止+起動コード検査+**NodeのDOMスタブで実際に
+  読み込んで起動時クラッシュ・未定義参照を検査**(verify_runtime)
+- `script`/`exe`: ファイル実在に加えて**「最後の編集後に run_command が exit=0」の
+  実行証拠**を要求(存在するだけで即クラッシュするスクリプトを通さない)
+- 差し戻しは最大3回(残り回数を明示)。それでも通らなければ max_iter に委ねる
 
 ### ダッシュボードの機能
 
-- **一覧**: 「実行中・待機中」と「履歴」を分離表示。実行中カードには現在ステップ
-  (どのエージェントが何をしているか)、待機中カードには待機理由を表示
-- **履歴カード**: 🔁再実行(元の設定を継承)/ 🗑削除。中断・削除は2段階クリック確認
-- **完了バナー**: 所要時間・トークン数・成果物件数を集約表示。クリックで結果へジャンプ
-- **入力**: 複数行対応(Enter=実行 / Shift+Enter=改行)
-- **異常系**: SSE切断・存在しないRun・サーバー停止による中断(`interrupted`)を明示表示
-- **会話継続(成果物の修正)**: `code`モードの完了済みRunは詳細画面下部に入力欄が出て、
-  追加指示を送ると同じ会話・同じワークスペース(`projects/run_<id>/`)の続きとして
-  実行される。ツリーは消えずにノードが積み重なっていく。何度でも継続可能。
-  スコープは`code`モードのみ(`swarm-code`は継続対象のサブエージェントが曖昧になるため対象外)。
-  中断時に応答未完了のtool_callが残っていた場合は合成応答を補ってから再開する。
+- **一覧**: 実行中・待機中と履歴を分離表示。実行中カードは現在ステップ、待機中は理由+順位
+- **状態バナー**: SSE切断(再接続中)/ Runエラー / サーバー停止による中断 / 待機順位を明示
+- **思考の可視化**: thinking対応モデルの推論過程を「🧠 思考」として本文と分離して
+  折りたたみ表示(ライブ更新)
+- **コンテキストメーター**: コーディングエージェントの実測コンテキスト充填率を表示。
+  85%超で警告色(窓溢れによる品質劣化を目視できる)
+- **完了通知**: バックグラウンドのタブでもタイトルバーが「✅ 完了」に変わる
+- **承認**: ヘッダーに全Run横断の承認待ちバッジ、承認バーに自動却下カウントダウン
+- **markdown表示**: 完了した回答・レポート・チャットは整形表示(依存ライブラリなし)
+- **履歴カード**: 🔁再実行 / 🗑削除(2段階確認)。空状態にはサンプルタスクのチップ
+- **入力**: 複数行対応(Ctrl+Enter=実行)
 
 ## 起動
 
@@ -143,57 +120,47 @@ python app.py        # デスクトップアプリ(WebView2)。Ollama自動起�
 python agent.py "todo-cli に TODO CLI を作って動かして" [--model coder] [--yes]   # CLI
 ```
 
-## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT)
+## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT / Ollama 0.32.9)
 
-models.yaml の各モデルは `family` / `placement` / `strengths` を持つ:
+models.yaml の各モデルは `family` / `placement` / `strengths` / **`options`(公式推奨
+サンプリング値)** / **`think`(reasoning既定)** を持つ。従来の「全モデル一律
+temperature=0.2」はQwen公式(貪欲寄り禁止=反復ループの原因)等に反していたため、
+**モデル別の公式推奨値を既定**とし、判定系(triage/planner/レビューJSON)だけ呼び出し側が
+低温度を明示する。
 
 - **placement: vram** — VRAMに全載り。並列スロット(`OLLAMA_NUM_PARALLEL`)で真の並列が可能
-- **placement: hybrid** — VRAM+RAMオフロード(=本機で実用になる「RAMの仮想VRAM化」)。
-  同時実行すると帯域を食い合うため **RunManagerが直列強制**
+- **placement: hybrid** — VRAM+RAMオフロード。同時実行すると帯域を食い合うため直列強制。
+  RAMオフロード8GB以下の「軽量hybrid」は既定で選択候補(実用速度)
 
-| key | tag | family | placement | 位置づけ |
-|---|---|---|---|---|
-| worker | gpt-oss:20b | gpt-oss | vram | 並列ワーカー主役(swarm/planner/merger) |
-| coder | qwen3:30b | qwen | hybrid | 主力コーダー(50 tok/s実測) |
-| smart | qwen3.6:35b | qwen | hybrid | 上位(SWE-bench 73.4%) |
-| reasoner | deepseek-r1:14b | deepseek | vram | 深い推論・数学。批評レビュアー(tools非対応) |
-| deep | deepseek-r1:70b | deepseek | hybrid | DeepSeek最大(dense・低速だが最深) |
-| (next) | Qwen3-Next-80B-A3B Q4 (HF) | qwen | hybrid | **無効化中**。48GB GGUFの導入は完了したが、Ollama 0.32.x の qwen3next アーキ対応が不完全で空応答になる(FA/KV設定無関係と切り分け済み・[類似報告](https://github.com/ollama/ollama/issues/16282)多数)。Ollama対応後に models.yaml のコメントを外して再評価。それまでは heavy がhybrid筆頭 |
-| heavy | gpt-oss:120b | gpt-oss | hybrid | **最大モデル**(65GB, MoE) |
-| fast | gemma3:12b | gemma | vram | 高速チャット(tools非対応) |
+| key | tag | family | placement | 実測 | 位置づけ |
+|---|---|---|---|---|---|
+| worker | gpt-oss:20b | gpt-oss | vram | 102.1 tok/s | 並列ワーカー主役(swarm/planner/merger)。reasoning effort可変 |
+| coder | qwen3:30b | qwen | hybrid(軽量) | 50 tok/s | 主力コーダー(MoE活性≈3B)。codeモード既定 |
+| smart | qwen3.6:35b | qwen | hybrid | — | 上位MoE(SWE-bench 73.4%) |
+| glimmer | muse-glimmer:30b | meta | hybrid(軽量) | 13.4 tok/s | **新規(2026-08)**。Metaのagentic特化dense 28B+vision 2B。SWE-bench V 76.0 / ツール呼び出しに強い。effort可変(low〜xhigh) |
+| next | qwen3-coder-next | qwen | hybrid | 21.2 tok/s | **新規(2026-08)**。Qwen3-Next-80B-A3Bベースのコーディング特化(51GB, MoE活性3B)。SWE-bench V 70+。**hybrid筆頭** |
+| reasoner | deepseek-r1:14b | deepseek | vram | 55.3 tok/s | 深い推論・数学。**批評レビュアー既定**(tools非対応) |
+| deep | deepseek-r1:70b | deepseek | hybrid | 1.6 tok/s | dense=帯域律速の遅さの実例。最深推論枠 |
+| heavy | gpt-oss:120b | gpt-oss | hybrid | 10.7 tok/s | 最大モデル(65GB, MoE活性5.1B) |
+| fast | gemma3:12b | gemma | vram | — | 高速チャット(tools非対応) |
 
-- `model=auto`: タスク文から強み(コーディング→Qwen / 数学・推論→DeepSeek / 並列→worker)で自動選択(router.py)
-- 批評ループの既定レビュアーは**作成者と別ファミリー**(models.yaml `critique_pairs`)
-
-### 実測(このマシン / 2026-07-24 / ROCm 7.1ネイティブ)
-
-| key | 生成速度 | PROCESSOR | 備考 |
-|---|---|---|---|
-| worker (gpt-oss:20b) | **102.1 tok/s** | 100% GPU | 12GB常駐+16K×2スロット(q8_0 KV)でVRAM内 |
-| reasoner (deepseek-r1:14b) | 55.3 tok/s | 100% GPU | |
-| coder (qwen3:30b) | 50 tok/s | 23%/77% CPU/GPU | v1時代(20 tok/s)の2.5倍 |
-| heavy (gpt-oss:120b, 65GB) | 10.7 tok/s | 77%/23% CPU/GPU | MoE活性5.1B。ロード65秒 |
-| deep (deepseek-r1:70b, 42GB) | 1.6 tok/s | 66%/34% CPU/GPU | dense=全重みストリーミングの遅さの実例 |
-
-**65GBのMoE(heavy)が42GBのdense(deep)より6.7倍速い** — hybrid帯域律速では
-「ファイルサイズより活性パラメータ数」という設計判断の実証値。
-
-### 「RAMを仮想VRAMとして使う」について(2026-07調査)
-
-- WindowsのWDDM「共有GPUメモリ」はディスクリートGPUでは制御不可の会計値で、
-  Vulkan自動スピルは OOM や「CPU単体より遅い」実例あり(llama.cpp #12748)→ **不採用**
-- 本機で実際に機能するのは **llama.cpp系の明示的CPUオフロード**(OllamaはVRAM超過分を自動スプリット)。
-  activeパラメータの小さいMoEなら実用速度(gpt-oss:120b級で8〜18 tok/s目安。dense 70Bは2〜5 tok/s)
-- これを `placement: hybrid` として設計に組み込み済み。SAM(Resizable BAR)有効化を推奨
+- **51GBのMoE A3B(next)が65GBのMoE A5B(heavy)の2倍速い(21.2 vs 10.7 tok/s)** —
+  hybrid帯域律速では「ファイルサイズより活性パラメータ数」という設計判断の追実証
+- 批評ループの既定レビュアーは**vram常駐のreasoner**に統一(旧 heavy→smart のような
+  hybrid同士のペアは批評ラウンド毎に大型モデルの交互ロード25〜65秒×2が発生していた)
+- 旧 `hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M`(48GB)は空応答バグが
+  0.32.9でも再現するため廃止(公式 `qwen3-coder-next` が後継)。ディスクを空けるなら
+  `ollama rm hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M`
 
 ## セットアップ
 
 ```
 python -m pip install -r requirements.txt
 ollama pull gpt-oss:20b
+ollama pull qwen3:30b
 ollama pull deepseek-r1:14b
-ollama pull deepseek-r1:70b
-ollama pull hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M
+ollama pull muse-glimmer:30b       # 2026-08新モデル(要 Ollama 0.32.8+)
+ollama pull qwen3-coder-next       # 2026-08新モデル(51GB)
 ```
 
 環境変数(ユーザーレベル、設定後 Ollama 再起動):
@@ -207,10 +174,9 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 
 ### GPUバックエンド(RX 9070 XT / gfx1201)
 
-- Ollama 0.32.x は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**(実測50 tok/s @ qwen3:30b)
-- **`ollama ps` の PROCESSOR が `100% CPU` になっていたらまず dGPU の状態を疑う**。
-  このマシンでは RX 9070 XT が突発的に脱落する事象が発生している(Ollamaは
-  エラーを出さず黙ってCPUにフォールバックするため、症状は「異様に遅い」だけ):
+- Ollama 0.32.x は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**。
+  **0.32.9 以上必須**(0.32.8でMuse GlimmerのAMD対応、0.32.9でそのtool callingパーサ修正)
+- **`ollama ps` の PROCESSOR が `100% CPU` になっていたらまず dGPU の状態を疑う**:
 
   ```powershell
   Get-PnpDevice -Class Display | Select-Object FriendlyName, Status, Problem
@@ -223,49 +189,89 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
   pnputil /enable-device "PCI\VEN_1002&DEV_7550&SUBSYS_54141849&REV_C0\6&31E3CDBB&0&00000009"
   ```
 
-- それでもGPUを掴まない場合は `OLLAMA_VULKAN=1` を試す
-- ネイティブ `/api/chat` は `options.num_ctx` をリクエスト単位で尊重(0.32.1実測)。
-  旧v1の「派生モデルにnum_ctx焼き込み」(modelfiles/)は不要になったがフォールバックとして残置
+- ネイティブ `/api/chat` は `options.num_ctx` をリクエスト単位で尊重(実測済み)
+
+## 改修の要点(2026-08-13)
+
+**LLM層(llm.py)**
+- `chat()` を内部ストリーミング化: read timeout がチャンク間隔にのみ効き、低速モデルの
+  長い生成が「900秒で全体打ち切り」にならない。tools+stream で tool_calls も蓄積
+- structured outputs: `json_schema=` にJSONスキーマを渡すと文法制約デコードで構造保証
+  (triage / planner / 批評JSON が使用。パース失敗によるフォールバックが激減)
+- thinking 対応: `think` パラメータ(gpt-oss/glimmer=effort文字列, deepseek/qwen=bool)。
+  応答の thinking は `_thinking` メタで分離され、履歴へ再送しない(コンテキスト節約)
+- 応答メタ: `_prompt_tokens`(実測プロンプトトークン)/`_done_reason`(length打ち切り検知)
+- リトライ整理: 4xxは即時失敗、接続系・途中切断のみ指数バックオフでリトライ
+
+**コーディングエージェント(agent.py / tools.py)**
+- コンテキスト管理を実測ベース化: Ollamaの `prompt_eval_count` を一次シグナルにし、
+  85%超で圧縮発動。概算も日本語考慮の //2 へ補正(旧 //3 は約3倍の過小評価で、
+  goalが黙って切り捨てられ自走が脱線する原因だった)
+- goal・残り反復数を毎リクエスト末尾へ一時ピン留め(履歴切り捨てが起きても目標を見失わない)
+- 同一失敗ループ検知(同じツール+引数の3連続失敗で介入)/ツール不使用の段階的エスカレーション
+- finishゲート厳密化(上述)+差し戻し回数の明示+finish時の未応答tool_calls補完
+
+**オーケストレーター(orchestrator.py)**
+- サブエージェントへ元タスク全文を共有(orchestra/swarm)
+- swarm: 結合契約の発行→全サブ共有→**実統合ラウンド**(finishゲート付き)
+- 判定系JSONはスキーマ強制+temperature 0.1(旧: 温度0.7で判定していた)
+- レビューの approved/score 矛盾を正規化(score≥8 は承認扱い)
+- 統合・レビュー入力の予算管理(`_fit_parts` — 予算超過分だけをwater-fillingで切る)
+
+**サーバ・イベント(server.py / runs.py / events.py)**
+- SSEのトークンストリームを100msコアレッシング(旧: 1トークン=1イベントで毎秒150発)
+- チェックポイントを「ループでsnapshot構築→スレッドで書き込み」に分離し、最終記録の
+  追い越し上書きを世代ガードで防止。実行中も会話履歴込みで保存
+- run_id形式検証(パストラバーサル防止)/ゾンビRun救済/明示モデルの事前検証/
+  `GET /run/{id}`(SSEなしで結果取得)/`/health` に検証レイヤの死活情報
+
+**外部レビューCLI(panel.py)**
+- 入力量に応じて num_ctx を自動拡張(上限32768)+超過分の明示切り詰め
+  (旧: 60,000字既定入力を16Kコンテキストへ黙って流し込んでいた)
+- `--diff` が未追跡ファイルも対象に。think-only応答の再試行。半数以上失敗で exit 1
 
 ## 構成
 
 ```
 frontend/         新UI(Vite+React+Tailwind)のソース。`npm run build` で static-react/ へ出力
 static-react/     新UIのビルド成果物(`/` で配信。旧UIは `/legacy`)
-llm.py            Ollamaネイティブ/api/chatクライアント(async, tools, per-request num_ctx)
-models.yaml       モデルマトリクス(family/placement/strengths)+critique_pairs
-agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX)
-tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認)
-                  ツール: list_dir / read_file / search_files / write_file /
-                  edit_file / run_command / finish + 構文チェック(py/json/js)
-router.py         triage(進め方・成果物の自動決定)+モデル選択+異ファミリー批評ペア
-events.py         EventBus(ノード状態→SSE, log_line, 承認イベント, トークン計上,
+llm.py            Ollamaネイティブ/api/chatクライアント(async, tools, streaming集約,
+                  structured outputs, think, モデル別options, メタ添付)
+models.yaml       モデルマトリクス(family/placement/strengths/options/think)+critique_pairs
+agent.py          コーディングエージェント本体(async, PLAN→BUILD→RUN→FIX, 実測ctx管理,
+                  ループ検知)
+tools.py          Toolboxクラス(per-runサンドボックス, denylist, async承認, touched追跡,
+                  実行証拠)ツール: list_dir / read_file / search_files / write_file /
+                  edit_file / run_command / search_vault / finish + 構文チェック(py/json/js)
+router.py         triage(スキーマ強制+few-shot)+モデル選択(軽量hybrid既定)+批評ペア
+events.py         EventBus(ノード状態→SSE, 100msコアレッシング, think stream, 承認,
                   from_snapshot/resume=会話継続用の復元)
 runs.py           RunManager(並列3+キュー, hybrid直列ロック, 承認Future,
-                  10秒チェックポイント+起動時interrupted回復, reopen=会話継続用復元)
-orchestrator.py   4モードのオーケストレーター
+                  スレッド安全チェックポイント+interrupted回復, reopen=会話継続)
+orchestrator.py   4モードのオーケストレーター(契約付きswarm+実統合, FIX後再レビュー)
 claude_review.py  【任意】Claude Code CLI(サブスク認証)を呼ぶ最終レビュー→直接修正。
-                  既定OFF、シェルは渡さず、修正後はローカル検証を必ず通す
-hooks/            claude_review が CLI に噛ませる PreToolUse フック
-                  (作業ルート外への書き込み拒否)
-server.py         FastAPI(/run /events SSE /approvals /models /claude /health)
-static/index.html ダッシュボード(単一HTML, 依存CDNなし)
+                  既定OFF、シェル渡さず、中断watchdog付き、修正後はローカル検証を必ず通す
+hooks/            claude_review が CLI に噛ませる PreToolUse フック(ルート外書き込み拒否)
+panel.py          観点別並列レビューCLI(local-reviewer / codex-reviewer の実体)
+server.py         FastAPI(/run /run/{id} /events SSE /approvals /models /claude /health)
+static/index.html 旧ダッシュボード(/legacy で残置)
 app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
 step1_chat.py     学習用: 最小チャット / step2_tool.py 学習用: 最小ツールループ
-gui.py, web/      【非推奨・v1遺物】新UIは static/index.html(server.py)を使う
+gui.py, web/      【非推奨・v1遺物】
 ```
 
 ## 安全設計
 
 - ファイル/コマンドは `projects/` 配下のみ(`Toolbox._safe_path`)。run毎に `projects/run_<id>/` へ隔離
-- denylist(rm -rf / format / reset --hard 等)+ **実行前承認**(既定ON)。自走(`--yes`/承認OFF)は
-  検証コマンド程度に留めるのを推奨
+- denylist(rm -rf / format / reset --hard 等)+ **実行前承認**(既定ON)。無人実行
+  (`--yes`/承認OFF)時はワークスペース脱出検知(絶対パス/UNC/../ルート相対 `\` /環境変数)
 - キャンセル時は保留中の承認Futureを自動却下(デッドロック防止)
 - 「Claudeが最終レビュー」は既定OFF・Runごとの明示的な選択が必要。ONでもCLIには
-  シェル(`Bash`/`PowerShell`)を渡さず、`projects/run_<id>/` の外への書き込みは
-  PreToolUseフックで拒否する
+  シェルを渡さず、`projects/run_<id>/` の外への書き込みはPreToolUseフックで拒否
 
 ## 将来拡張
 
-- llama-server(Vulkan)バックエンド: llm.py の `OLLAMA_BASE` を差し替え+`/v1`変換の薄い層で対応可能
+- llama-server(Vulkan)バックエンド: llm.py の `OLLAMA_BASE` 差し替え+`/v1`変換の薄い層で対応可能
+- Muse Glimmer の3-bit量子化(unsloth UD-Q3_K_XL 13.4GB)をimportすればVRAM全載りで
+  大幅高速化の余地(SWE-bench 76.0級がvram枠に入る)。品質劣化は要実測
 - PyInstaller化: `pyinstaller --noconfirm --windowed --name AgentLab --add-data "static;static" --collect-all uvicorn app.py`

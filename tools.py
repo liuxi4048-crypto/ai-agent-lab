@@ -50,6 +50,8 @@ ESCAPE_PATTERNS = [
     r"\\\\",                                          # UNCパス
     r"%\w+%|\$env:",                                  # 環境変数展開
     r"(?:^|[\s\"'=(\\/])\.\.(?=[\\/\s\"'&|;]|$)",  # パス要素としての ..
+    r"(?:^|[\s\"'=(><|&;])\\(?!\\)",                # ドライブルート相対 \foo(cmdはカレントドライブのルートと解釈)
+    r"\bcd\s*\.\.",                                    # cd..(区切りなしの親ディレクトリ移動)
 ]
 ESCAPE_RE = re.compile("|".join(ESCAPE_PATTERNS))
 
@@ -91,7 +93,10 @@ async def _js_syntax_check(path, content):
         return None
 
     import tempfile
-    tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_check_{os.getpid()}.js")
+    import uuid
+    # PID だけでは同一プロセス内の並列Run(swarm)で衝突するため一意名にする
+    tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_check_{uuid.uuid4().hex}.js")
+    proc = None
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(js)
@@ -105,6 +110,13 @@ async def _js_syntax_check(path, content):
     except (OSError, asyncio.TimeoutError):
         return None
     finally:
+        # timeout時に node 子プロセスを孤児にしない(run_command と同じ後始末)
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            try:
+                await asyncio.shield(proc.wait())
+            except BaseException:
+                pass
         try:
             os.remove(tmp)
         except OSError:
@@ -123,7 +135,13 @@ _EXTERNAL_RE = re.compile(r"""<(?:script|link|img)\b[^>]*\b(?:src|href)\s*=\s*["
 _BOOT_RE = re.compile(
     r"window\.onload|DOMContentLoaded|addEventListener\s*\(\s*['\"]load|"
     r"setInterval\s*\(|requestAnimationFrame\s*\(|"
-    r"^\s*(?:init|main|start|loop|draw|render|setup|game|update)\s*\(\s*\)\s*;",
+    r"^\s*(?:init|main|start|loop|draw|render|setup|game|update)\s*\(\s*\)\s*;|"
+    # IIFE 起動の「呼び出し尾部」: })(); / }()); のみを見る。
+    # `(function` 単体だと forEach(function(){...}) 等のコールバックに過剰一致し、
+    # 「読み込み時に起動しないHTML」を素通ししてしまう
+    r"\}\s*\)\s*\(\s*\)|\}\s*\(\s*\)\s*\)|"
+    # コンストラクタ起動: new Game(); / const app = new App(...)
+    r"^\s*(?:(?:const|let|var)\s+\w+\s*=\s*)?new\s+[A-Z]\w*\s*\(",
     re.MULTILINE | re.IGNORECASE)
 
 # 最小DOMスタブ。実ブラウザではなく「読み込み時に落ちないか」だけを検査する。
@@ -245,6 +263,12 @@ class Toolbox:
         self.root = root
         self.approve = approve
         self.approver = approver
+        # この Run が書き込んだ相対パス。finishゲートの検査対象を「今回作ったもの」に
+        # 限定するために使う(root=projects/ 共有時に過去Runの残骸で誤通過しないように)。
+        self.touched = set()
+        # 最後の書き込み以降に run_command が exit=0 で成功したか(script/exe の
+        # 「動いた証拠」)。書き込みでリセットされる。
+        self.verified_run = False
 
     def _safe_path(self, path):
         """root 配下に正規化・限定。外に出る指定は拒否。
@@ -260,6 +284,12 @@ class Toolbox:
             raise ValueError(f"作業ディレクトリの外は禁止: {path}")
         return p
 
+    def _mark_touched(self, abs_path):
+        """書き込み記録。finishゲートの検査範囲と「動いた証拠」のリセットに使う。"""
+        rel = os.path.relpath(abs_path, self.root).replace("\\", "/")
+        self.touched.add(rel)
+        self.verified_run = False   # 編集後は再実行で確認し直すまで「動いた」とみなさない
+
     # ---- 個々のツール実装 ----------------------------------------------------
     def list_dir(self, path="."):
         p = self._safe_path(path)
@@ -273,11 +303,13 @@ class Toolbox:
             items.append(name + ("/" if os.path.isdir(full) else ""))
         return "\n".join(items) or "(空)"
 
-    def search_vault(self, query, type=None, days=None, k=None):
+    async def search_vault(self, query, type=None, days=None, k=None):
         """Obsidian vault の横断検索(vault-search CLI 経由・読み取り専用)。
 
         --mode lex 固定: Ollama を使わないため、実行中のチャットモデルを
         退避させない(OLLAMA_MAX_LOADED_MODELS=1 環境での必須条件)。
+        非同期サブプロセスで実行する(同期 subprocess.run はイベントループを
+        最大90秒止め、他Runの進行・承認応答まで巻き添えにするため)。
         """
         if not os.path.isfile(VAULT_SEARCH_VS):
             return "(search_vault 不可: C:\\dev\\vault-search が存在しない)"
@@ -289,14 +321,27 @@ class Toolbox:
             cmd += ["--days", str(int(days))]
         if k:
             cmd += ["--k", str(int(k))]
+        proc = None
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=90)
-        except subprocess.TimeoutExpired:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        except asyncio.TimeoutError:
             return "(search_vault タイムアウト)"
-        if r.returncode != 0:
-            return f"(search_vault エラー: {(r.stderr or r.stdout or '')[:500]})"
-        return r.stdout or "(ヒットなし)"
+        except OSError as e:
+            return f"(search_vault 実行エラー: {e})"
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                try:
+                    await asyncio.shield(proc.wait())
+                except BaseException:
+                    pass
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            return f"(search_vault エラー: {(err or out or '')[:500]})"
+        return out or "(ヒットなし)"
 
     def read_file(self, path, start_line=None, end_line=None):
         p = self._safe_path(path)
@@ -326,6 +371,7 @@ class Toolbox:
         os.makedirs(os.path.dirname(p) or self.root, exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
+        self._mark_touched(p)
         msg = f"書き込み完了: {path} ({len(content)} 文字)"
         # 構文が壊れていても書き込み自体は通す(モデルが直せるように結果で知らせる)
         warn = _syntax_check(path, content)
@@ -357,6 +403,7 @@ class Toolbox:
                    else content.replace(old_string, new_string, 1))
         with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(updated)
+        self._mark_touched(p)
         msg = f"編集完了: {path} ({count if replace_all else 1} 箇所を置換)"
         warn = _syntax_check(path, updated)
         return f"{msg}\n{warn}" if warn else msg
@@ -453,17 +500,39 @@ class Toolbox:
                     pass
         out = stdout.decode("utf-8", errors="replace")[-4000:]
         err = stderr.decode("utf-8", errors="replace")[-2000:]
+        if proc.returncode == 0:
+            self.verified_run = True   # script/exe の finishゲートが参照する「動いた証拠」
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"
 
-    def _all_files(self):
+    def _verify_scope(self):
+        """finishゲートの検査範囲(rootからの相対トップレベル)を返す。
+
+        - このRunで書き込みがあれば、そのファイルが属するトップレベル
+          ディレクトリ(root直下ファイルは "")だけを対象にする。
+        - 書き込みが無い場合: per-run 隔離ディレクトリ(root != projects/)なら
+          継続実行とみなし全体を対象、共有 projects/ 直下なら None(=実物なし扱い)。
+          共有ルートで全体を見ると過去Runの残骸で誤通過するため。
+        """
+        if self.touched:
+            return {rel.split("/", 1)[0] if "/" in rel else "" for rel in self.touched}
+        if self.root != WORKSPACE:
+            return {"*"}   # 全体
+        return None
+
+    def _all_files(self, scope=None):
+        """検査対象ファイル一覧。scope は _verify_scope() の返り値(None=全体)。"""
         out = []
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = [d for d in dirnames if d not in VERIFY_SKIP_DIRS]
             for fn in filenames:
                 if fn.endswith((".pyc", ".pyo")):
                     continue
-                out.append(os.path.relpath(os.path.join(dirpath, fn), self.root)
-                           .replace("\\", "/"))
+                rel = os.path.relpath(os.path.join(dirpath, fn), self.root).replace("\\", "/")
+                if scope is not None and "*" not in scope:
+                    top = rel.split("/", 1)[0] if "/" in rel else ""
+                    if top not in scope:
+                        continue
+                out.append(rel)
         return out
 
     async def verify_runtime(self, kind=None):
@@ -475,7 +544,10 @@ class Toolbox:
         global _node_available
         if kind != "html" or _node_available is False:
             return None
-        entry = next((f for f in self._all_files() if f.lower().endswith("index.html")), None)
+        scope = self._verify_scope()
+        if scope is None:
+            return None   # 実物なしは verify_deliverable 側で差し戻し済み
+        entry = next((f for f in self._all_files(scope) if f.lower().endswith("index.html")), None)
         if not entry:
             return None
         try:
@@ -499,7 +571,9 @@ class Toolbox:
                    .replace("__CODE__", code))
 
         import tempfile
-        tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_run_{os.getpid()}.js")
+        import uuid
+        tmp = os.path.join(tempfile.gettempdir(), f"_agentlab_run_{uuid.uuid4().hex}.js")
+        proc = None
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(harness)
@@ -513,6 +587,12 @@ class Toolbox:
         except (OSError, asyncio.TimeoutError):
             return None
         finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                try:
+                    await asyncio.shield(proc.wait())
+                except BaseException:
+                    pass
             try:
                 os.remove(tmp)
             except OSError:
@@ -536,11 +616,13 @@ class Toolbox:
         """finish 前の最終ゲート。実行できる成果物が無ければ理由(文字列)を返す。
 
         「作り方の手順書だけ書いて終わる」失敗を構造的に防ぐための検査。
-        問題なければ None。
+        検査対象は「このRunが書き込んだプロジェクト」に限定する(共有 projects/
+        直下で過去Runの残骸を成果物と誤認しないため)。問題なければ None。
         """
-        files = self._all_files()
+        scope = self._verify_scope()
+        files = self._all_files(scope) if scope is not None else []
         if not files:
-            return ("[finish拒否] 成果物が1つもありません。"
+            return ("[finish拒否] このRunではまだ成果物を1つも作成していません。"
                     "説明ではなく、実際に動くファイルを write_file で作ってから finish してください。")
         low = [f.lower() for f in files]
         listing = ", ".join(files[:12])
@@ -593,6 +675,11 @@ class Toolbox:
             if not has(body):
                 return (f"[finish拒否] 起動スクリプトはありますが実行するコード本体がありません"
                         f"(現在: {listing})。本体を実装してから finish してください。")
+            # html の verify_runtime に相当する「動いた証拠」。ファイルが存在するだけでは
+            # 即クラッシュするスクリプトでも通ってしまうため、実行成功を要求する。
+            if not self.verified_run:
+                return ("[finish拒否] 最後の編集のあと run_command で実行して動作確認していません。"
+                        "本体を実行し exit=0 を確認してから finish してください。")
             return None
 
         # 形式指定なし: 説明ドキュメントだけで終わっていないかだけを見る
@@ -625,11 +712,12 @@ class Toolbox:
         try:
             if name == "run_command":
                 result = await self.run_command(**args)
+            elif name == "search_vault":
+                result = await self.search_vault(**args)
             else:
                 fn = {"list_dir": self.list_dir, "read_file": self.read_file,
                       "write_file": self.write_file, "edit_file": self.edit_file,
-                      "search_files": self.search_files,
-                      "search_vault": self.search_vault}.get(name)
+                      "search_files": self.search_files}.get(name)
                 if fn is None:
                     return (f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, "
                             "search_files, write_file, edit_file, run_command, "
@@ -655,7 +743,8 @@ class Toolbox:
 
 async def _console_approve(command, cwd):
     print(f"\n[承認要求] 実行しますか?\n  $ {command}\n  (cwd={os.path.relpath(cwd, BASE)})")
-    ans = input("  y/N > ").strip().lower()
+    # input() はブロッキング。to_thread に逃がしてイベントループ(他Run・SSE)を止めない
+    ans = (await asyncio.to_thread(input, "  y/N > ")).strip().lower()
     return ans in ("y", "yes")
 
 
@@ -702,7 +791,10 @@ TOOLS_SCHEMA = [
             "replace_all": {"type": "boolean", "description": "一致する全箇所を置換する。既定false"}},
             "required": ["path", "old_string", "new_string"]}}},
     {"type": "function", "function": {
-        "name": "run_command", "description": "作業ディレクトリ配下でシェルコマンドを実行(導入/実行/テスト)",
+        "name": "run_command",
+        "description": "作業ディレクトリ配下でシェルコマンドを実行(導入/実行/テスト)。"
+                       "結果は exit=コード + stdout/stderr。ファイルを編集したら実行し直して "
+                       "exit=0 を確認すること(動作確認していないと finish が拒否される)",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string"},
             "working_dir": {"type": "string", "description": "作業ルートからの相対。既定 '.'"},
@@ -711,7 +803,9 @@ TOOLS_SCHEMA = [
                                        "時間がかかるコマンドでは長めに指定すること"}},
             "required": ["command"]}}},
     {"type": "function", "function": {
-        "name": "finish", "description": "目標達成時に呼ぶ。要約を渡す",
+        "name": "finish",
+        "description": "目標達成時に呼ぶ。要約(何を作ったか・使い方)を渡す。"
+                       "実行できる成果物が無い状態で呼ぶと差し戻される",
         "parameters": {"type": "object", "properties": {
             "summary": {"type": "string"}}, "required": ["summary"]}}},
 ]

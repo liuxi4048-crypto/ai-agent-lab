@@ -166,7 +166,8 @@ def _handle_event(data: dict, out: _Pass, say) -> None:
         out.session_id = data.get("session_id") or out.session_id
         out.cost += float(data.get("total_cost_usd") or 0)
         usage = data.get("usage") or {}
-        out.tokens += int(usage.get("output_tokens") or 0)
+        # inputもサブスク枠を消費するため加算する(outputのみでは過小表示になる)
+        out.tokens += int(usage.get("output_tokens") or 0) + int(usage.get("input_tokens") or 0)
         if data.get("is_error") or data.get("subtype") != "success":
             out.error = f"CLIがエラーを返しました ({data.get('subtype')}): {out.text[:200]}"
     elif kind == "system" and data.get("subtype") == "init":
@@ -257,6 +258,24 @@ async def _run_cli(exe: str, prompt: str, cwd: str, say, should_stop,
             except (ValueError, TypeError, KeyError):
                 continue   # JSON以外の行(進捗表示など)は無視
 
+    async def watchdog():
+        """should_stop を1秒間隔で監視し、検知した瞬間にプロセスをkillする。
+
+        pump() は proc.stdout.readline() で長時間ブロックしうるため、中断検知を
+        pump() 側の判定だけに任せると kill が finally まで遅延し、最大 TIMEOUT
+        (1800秒)までハングする。ここで独立に kill することで即時中断にする。
+        """
+        while True:
+            await asyncio.sleep(1)
+            if should_stop and should_stop():
+                out.error = out.error or "中断されました"
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass   # 直前に自然終了していた(killは不要)
+                return
+
+    watchdog_task = asyncio.create_task(watchdog())
     try:
         await asyncio.wait_for(
             asyncio.gather(feed(), pump(), drain_err()), timeout=TIMEOUT)
@@ -264,6 +283,11 @@ async def _run_cli(exe: str, prompt: str, cwd: str, say, should_stop,
     except asyncio.TimeoutError:
         out.error = out.error or f"{TIMEOUT}秒を超えたため中断しました"
     finally:
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except (asyncio.CancelledError, Exception):
+            pass   # watchdog内の例外でfinallyの後始末(設定ファイル削除等)を止めない
         if proc.returncode is None:
             proc.kill()
             try:
@@ -279,6 +303,19 @@ async def _run_cli(exe: str, prompt: str, cwd: str, say, should_stop,
         err = b"".join(err_parts).decode("utf-8", errors="replace").strip()
         out.error = f"CLIが異常終了しました (exit={proc.returncode}): {err[:300]}"
     return out
+
+
+def _sanitize_for_cli(reason: str) -> str:
+    """ローカル検証の差し戻し文をClaude CLI向けに書き換える。
+
+    `finish` はローカルエージェント(tools.py)のツール名で、Claude CLI には
+    存在せず無意味なため、CLIへ渡す直前だけ置換する
+    (ダッシュボードのログ表示 = say() 側はローカルの文脈のまま残してよい)。
+    """
+    text = reason.replace("[finish拒否]", "[要修正]")
+    text = text.replace("finish してください", "修正を完了してください")
+    text = text.replace("finish すること", "修正を完了してください")
+    return text
 
 
 async def review_and_fix(*, task: str, deliverable: str | None, toolbox,
@@ -337,7 +374,7 @@ async def review_and_fix(*, task: str, deliverable: str | None, toolbox,
                 result["error"] = f"修正後もローカル検証を通りませんでした: {reason[:200]}"
                 return result
             say(f"  {reason}")
-            prompt = reason + "\n\nこの問題を直してから終えてください。"
+            prompt = _sanitize_for_cli(reason) + "\n\nこの問題を直してから終えてください。"
 
         result["error"] = "レビューが所定の回数で終わりませんでした"
         return result

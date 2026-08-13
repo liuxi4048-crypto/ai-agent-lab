@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { X } from "lucide-react";
 
 /**
@@ -5,6 +6,16 @@ import { X } from "lucide-react";
  * 左のカードグリッドを視界に保つため、オーバーレイは薄い暗転のみ(クリックで閉じる)。
  */
 export default function Drawer({ open, onClose, title, children, wide = false }) {
+  // Escキーで閉じる
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   return (
     <>
       <div

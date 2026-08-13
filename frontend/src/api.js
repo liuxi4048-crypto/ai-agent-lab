@@ -7,7 +7,9 @@ async function jsonOrThrow(resp) {
       const body = await resp.json();
       if (body.detail) detail = body.detail;
     } catch { /* JSONでないエラーボディは無視 */ }
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = resp.status; // 呼び出し側でステータス別分岐(例: 409=解決済み)に使う
+    throw err;
   }
   return resp.json();
 }

@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, Copy, Check } from "lucide-react";
 import Drawer from "./Drawer.jsx";
-import { AGENT_STATES, KIND_LABEL } from "../derive.js";
+import Markdown from "./md.jsx";
+import { AGENT_STATES, KIND_LABEL, ctxFillLevel } from "../derive.js";
+
+const CTX_METER_CLASS = {
+  none: "border-zinc-700 text-zinc-500",
+  warn: "border-yellow-500 text-yellow-400",
+  danger: "border-red-500 text-red-400",
+};
 
 function CopyButton({ text }) {
   const [done, setDone] = useState(false);
@@ -78,6 +85,14 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
           </button>
         )}
         <CopyButton text={node.output} />
+        {node.ctx_fill != null && (
+          <span
+            className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums ${CTX_METER_CLASS[ctxFillLevel(node.ctx_fill)]}`}
+            title="コンテキスト充填率(実測prompt tokens / num_ctx)"
+          >
+            コンテキスト {Math.round(node.ctx_fill * 100)}%
+          </span>
+        )}
         <button
           onClick={() => {
             setFollow((v) => !v);
@@ -111,13 +126,30 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
             </pre>
           </section>
         )}
+        {node.think && (
+          <section>
+            <details className="rounded-lg border border-zinc-800 bg-zinc-900/60">
+              <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 hover:text-zinc-300">
+                🧠 思考
+                <span className="tabular-nums font-normal text-zinc-600">({node.think.length.toLocaleString()}字)</span>
+              </summary>
+              <pre className="whitespace-pre-wrap border-t border-zinc-800 p-3 font-mono text-[12px] leading-relaxed text-zinc-500">
+                {node.think}
+              </pre>
+            </details>
+          </section>
+        )}
         <section>
           <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-            出力 / 思考プロセス {node.tokens > 0 && <span className="tabular-nums">({node.tokens.toLocaleString()} tokens)</span>}
+            出力 {node.tokens > 0 && <span className="tabular-nums">({node.tokens.toLocaleString()} tokens)</span>}
           </h3>
-          <pre className="whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 font-mono text-[12px] leading-relaxed text-zinc-200">
-            {node.output || node.preview || "(まだ出力はありません)"}
-          </pre>
+          {agentState?.key === "completed" && node.output ? (
+            <Markdown text={node.output} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-zinc-200" />
+          ) : (
+            <pre className="whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 font-mono text-[12px] leading-relaxed text-zinc-200">
+              {node.output || node.preview || "(まだ出力はありません)"}
+            </pre>
+          )}
         </section>
       </div>
     </Drawer>

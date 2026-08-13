@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
 
 const RUN_DOT = {
@@ -19,6 +20,23 @@ const DELIVERABLE_LABEL = {
 
 /** Run切り替えストリップ(新しい順)。選択中Runのエージェント群がワークスペースに出る。 */
 export default function RunPicker({ runs, currentId, onSelect, onDelete }) {
+  // 削除は誤操作防止のため2段階確認(1回目クリックで「削除?」に変化 → 3秒以内の再クリックで実行)
+  const [armedId, setArmedId] = useState(null);
+  const armTimer = useRef(null);
+  useEffect(() => () => clearTimeout(armTimer.current), []);
+
+  const handleDeleteClick = (e, id) => {
+    e.stopPropagation();
+    clearTimeout(armTimer.current);
+    if (armedId === id) {
+      setArmedId(null);
+      onDelete(id);
+      return;
+    }
+    setArmedId(id);
+    armTimer.current = setTimeout(() => setArmedId(null), 3000);
+  };
+
   if (!runs.length) return null;
   return (
     <div className="flex gap-2 overflow-x-auto border-b border-zinc-800/70 bg-zinc-950 px-4 py-2">
@@ -43,16 +61,21 @@ export default function RunPicker({ runs, currentId, onSelect, onDelete }) {
               {[r.model_tag || r.model, MODE_LABEL[r.mode] ?? r.mode,
                 DELIVERABLE_LABEL[r.deliverable]].filter(Boolean).join(" · ")}
             </span>
+            {r.pending_approvals > 0 && (
+              <span className="soft-pulse shrink-0" title={`承認待ち ${r.pending_approvals}件`}>🔔</span>
+            )}
             {finished && (
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(r.id);
-                }}
-                className="hidden text-zinc-600 hover:text-red-400 group-hover:block"
-                title="Run記録を削除"
+                onClick={(e) => handleDeleteClick(e, r.id)}
+                className={`shrink-0 flex items-center gap-1 rounded-full px-1.5 text-[10px] transition-colors ${
+                  armedId === r.id
+                    ? "bg-red-600 font-semibold text-white"
+                    : "text-zinc-600 opacity-60 hover:text-red-400 hover:opacity-100"
+                }`}
+                title={armedId === r.id ? "3秒以内にもう一度クリックで削除" : "Run記録を削除"}
               >
                 <Trash2 size={11} />
+                {armedId === r.id && "削除?"}
               </button>
             )}
           </div>

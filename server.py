@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 import uvicorn
@@ -96,7 +97,16 @@ async def gpu() -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ollama": await llm.is_alive(), "running": manager.running_count()}
+    from runs import MAX_CONCURRENT
+    running = manager.running_count()
+    return {
+        "ollama": await llm.is_alive(),
+        "running": running,
+        "slots_free": max(0, MAX_CONCURRENT - running),
+        # 検証レイヤの死活(黙って無効化されている状態をUIで認知できるように)
+        "node_check": shutil.which("node") is not None,
+        "claude_review": claude_review.status().get("available", False),
+    }
 
 
 @app.get("/claude")
@@ -166,10 +176,29 @@ async def start_run(req: RunRequest) -> dict:
         if deliverable == "auto":
             deliverable = picked["deliverable"] or "auto"
 
+    # 成果物形式: コード生成モードでのみ意味を持つ(orchestra/critiqueは文章生成)
+    if mode in ("code", "swarm-code"):
+        if deliverable in (None, "auto"):
+            deliverable = router.pick_deliverable(task)
+    else:
+        deliverable = None
+
+    # 単一HTML形式は「index.html 全部入り」なので並列分解と相性が悪い
+    # (各サブが完全なアプリを別々に作る)。自動判定時は code へ降格する。
+    if mode == "swarm-code" and deliverable == "html" and decided_by != "user":
+        mode = "code"
+        reason = (reason + " / " if reason else "") + "単一HTMLのため並列分解を回避"
+
     free_ram = llm.free_ram_gb()
     model = (req.model if req.model and req.model != "auto"
              else router.pick_model(cfg, task, mode, installed=installed,
                                     allow_ram=req.allow_ram, free_ram_gb=free_ram))
+
+    # 明示指定モデルの存在検証(typo等は実行途中に落ちるより先に弾く)
+    if req.model and req.model != "auto" and not _installed(cfg, model, installed):
+        raise HTTPException(
+            400, f"モデル '{llm.resolve(cfg, model)['tag']}' はOllamaに存在しません。"
+                 f"`ollama pull {llm.resolve(cfg, model)['tag']}` で導入してください")
 
     # 明示指定のモデルがRAMを食い過ぎる場合は、黙って遅くならないよう先に弾く
     chosen = llm.resolve(cfg, model)
@@ -189,18 +218,12 @@ async def start_run(req: RunRequest) -> dict:
     if mode in ("code", "swarm-code") and not info["tools"]:
         raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {mode} で使えません")
 
-    # 成果物形式: コード生成モードでのみ意味を持つ(orchestra/critiqueは文章生成)
-    if mode in ("code", "swarm-code"):
-        if deliverable in (None, "auto"):
-            deliverable = router.pick_deliverable(task)
-    else:
-        deliverable = None
-
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     # Claudeレビューは成果物ファイルを直接直す工程なので、ファイルを作るモードのみ
     claude_on = req.claude_review and mode in ("code", "swarm-code")
+    max_iter = max(1, min(int(req.max_iter or 18), 200))
     run = manager.create(task, mode, model, reviewer,
-                         approve=req.approve, max_iter=req.max_iter, hybrid=hybrid,
+                         approve=req.approve, max_iter=max_iter, hybrid=hybrid,
                          critique=req.critique, deliverable=deliverable,
                          claude_review=claude_on)
 
@@ -275,19 +298,44 @@ async def continue_run(run_id: str, req: ContinueRequest) -> dict:
     run = manager.reopen(run_id)
     if run is None:
         raise HTTPException(404, "継続可能なRunが見つかりません(完了済みのタスクを選んでください)")
-    cfg = llm.load_config()
-    # 継続作業はツールを使うため、tools非対応モデルのRunはコーダーへ切り替える
-    if not llm.resolve(cfg, run.model)["tools"]:
-        installed = set(await llm.list_models())
-        run.model = router.pick_model(cfg, message, "code", installed=installed)
-        run.model_tag = llm.resolve(cfg, run.model)["tag"]
+    try:
+        cfg = llm.load_config()
+        # 継続作業はツールを使うため、tools非対応モデルのRunはコーダーへ切り替える
+        if not llm.resolve(cfg, run.model)["tools"]:
+            installed = set(await llm.list_models())
+            run.model = router.pick_model(cfg, message, "code", installed=installed)
+            run.model_tag = llm.resolve(cfg, run.model)["tag"]
 
-    def factory():
-        return CodeOrchestrator(run, cfg, critique=run.critique,
-                                reviewer_model=run.reviewer_model).continue_task(message)
+        def factory():
+            return CodeOrchestrator(run, cfg, critique=run.critique,
+                                    reviewer_model=run.reviewer_model).continue_task(message)
 
-    manager.start(run, factory)
+        manager.start(run, factory)
+    except Exception:
+        # start 前に失敗すると task_obj=None のゾンビが live に残留し、中断も削除も
+        # 継続もできなくなる(サーバー再起動まで詰まる)。必ず除去してから再raise。
+        manager.live.pop(run.id, None)
+        raise
     return {"status": "started", "run_id": run.id}
+
+
+@app.get("/run/{run_id}")
+async def get_run(run_id: str) -> dict:
+    """Run 1件のレコード(summary+正規化済みsnapshot)をJSONで返す。
+
+    完了済みRunの閲覧・外部ツール(CLI/スクリプト)からの結果取得用。
+    SSE接続(/events)を張らずに済む。
+    """
+    live = manager.get_live(run_id)
+    if live is not None:
+        return {**live.summary(), "snapshot": live.bus.full_snapshot()}
+    record = manager.get_record(run_id)
+    if record is None:
+        raise HTTPException(404, "指定されたタスクが見つかりません")
+    if record.get("snapshot") is not None:
+        record["snapshot"] = normalize_snapshot(record["snapshot"],
+                                                record.get("status", "done"))
+    return record
 
 
 @app.get("/events/{run_id}")

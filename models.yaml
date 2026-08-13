@@ -8,6 +8,10 @@
 # ram_gb: モデル本体がRAM側に必要とする概算容量(GB)。空きRAMが足りないモデルは
 #   選択肢から外し、ページング(極端な低速化)を避けるための目安。
 # tools: function calling 対応。false のモデルはチャット/批評専用(コーディングエージェント不可)。
+# options: モデル公式推奨のサンプリング値(llm.py が既定として送る。呼び出し側の明示指定が優先)。
+#   min_p は llama.cpp 既定 0.1 に上書きされないよう必ず明示する(Qwen/gpt-oss 公式は 0)。
+# think: thinking の既定指定(gpt-oss系="low"/"medium"/"high", deepseek系=true/false)。
+#   省略=モデル既定。think 非対応モデルには送らない(llm.py 側で未設定なら送信しない)。
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
@@ -17,6 +21,7 @@ models:
     placement: vram          # ~13GB 全載り。swarm並列の主役
     tools: true
     num_ctx: 16384
+    options: {temperature: 1.0, top_p: 1.0, top_k: 0, min_p: 0}   # OpenAI公式推奨
     strengths: [tool, speed, reasoning]
     for: "最速・軽快。普段づかい/並列作業"
     use: "並列ワーカー / VRAM全載りMoE(活性3.6B) / swarm・planner・merger向け"
@@ -27,6 +32,7 @@ models:
     tools: true
     num_ctx: 16384
     ram_gb: 6                # 18GBのうちVRAMに載り切らない分だけRAMへ
+    options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}  # Qwen3公式(non-thinking/coder)
     strengths: [coding, tool]
     for: "コーディング主力。バランス型"
     use: "主力コーダー / MoE(活性≈3B) / codeモード既定"
@@ -37,15 +43,29 @@ models:
     tools: true
     num_ctx: 16384
     ram_gb: 10
+    options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}
     strengths: [coding, reasoning]
     for: "高品質コーディング。難しい実装向け"
     use: "上位MoE(SWE-bench 73.4%) / 難しい実装・レビュアー"
+  glimmer:
+    tag: "muse-glimmer:30b"
+    family: meta
+    placement: hybrid        # 18GB dense(28Bデコーダ+2B vision) → 13.4 tok/s実測(2026-08-12)
+    tools: true
+    num_ctx: 16384           # GQA 16:1 でKVが小さく128K対応だが、hybrid時はVRAM節約を優先
+    ram_gb: 6
+    options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}  # Meta公式推奨
+    think: "low"             # 既定でthinkingが長く、13tok/sではループが重い。planner等はeffortで上げる
+    strengths: [tool, coding, reasoning]
+    for: "エージェント特化(Meta)。ツール呼び出しに強い"
+    use: "agentic特化 / SWE-bench V 76.0 / dense28B・13.4tok/s実測 / reasoning effort可変"
   reasoner:
     tag: "deepseek-r1:14b"
     family: deepseek
     placement: vram          # 9.3GB 全載り
     tools: false             # R1系はfunction calling非対応(批評・推論専用)
     num_ctx: 16384
+    options: {temperature: 0.6, top_p: 0.95, min_p: 0}   # DeepSeek公式推奨
     strengths: [reasoning, math]
     for: "推論・数学。考察向き(コード生成は不可)"
     use: "深い推論・数学(CoT) / 批評ループの異ファミリーレビュアー"
@@ -57,21 +77,25 @@ models:
     num_ctx: 8192
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     ram_gb: 42               # dense 42GB。帯域律速で1.6 tok/s実測
+    options: {temperature: 0.6, top_p: 0.95, min_p: 0}
     strengths: [reasoning, math]
     for: "最も深い推論。非常に低速(コード生成は不可)"
     use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
-  # next(Qwen3-Next-80B-A3B)は 2026-07-27 時点で無効化。
-  # 48GB の GGUF 導入自体は成功したが、Ollama 0.32.1/0.32.4 とも qwen3next アーキの
-  # 推論が空応答(1トークン即EOS)になる既知の互換問題(FA/KV設定無関係と切り分け済み)。
-  # Ollamaが対応したらコメントを外して再評価する。それまでの hybrid 筆頭は heavy。
-  # next:
-  #   tag: "hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M"
-  #   family: qwen
-  #   placement: hybrid
-  #   tools: true
-  #   num_ctx: 16384
-  #   strengths: [coding, tool, reasoning]
-  #   use: "Qwen最大 / VRAM+RAM筆頭 / 高品質エージェント"
+  next:
+    tag: "qwen3-coder-next"
+    family: qwen
+    placement: hybrid        # 51GB MoE(80B総/活性3B) → 21.2 tok/s実測・ロード29s(2026-08-12)
+    tools: true
+    num_ctx: 16384
+    keep_alive: "10m"
+    ram_gb: 46               # 51GBのうちVRAM超過分
+    options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}  # Qwen3-Coder公式
+    strengths: [coding, tool, reasoning]
+    for: "最高品質コーディング(RAM併用)"
+    use: "Qwen3-Next-80B-A3Bベースのコーディング特化 / SWE-bench V 70+ / hybrid筆頭(gpt-oss:120bの2倍速)"
+  # 旧 next(hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M)は空応答バグで無効化
+  # (0.32.9 でも再現を確認 2026-08-12)。公式パッケージの qwen3-coder-next を後継として採用。
+  # 旧GGUF(48GB)は不要なら `ollama rm hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M` で解放可。
   heavy:
     tag: "gpt-oss:120b"
     family: gpt-oss
@@ -80,6 +104,7 @@ models:
     num_ctx: 16384
     keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
     ram_gb: 61               # RAM 61.6GB にギリギリ。空きが少ないとページングする
+    options: {temperature: 1.0, top_p: 1.0, top_k: 0, min_p: 0}
     strengths: [tool, reasoning]
     for: "最大モデル。難所向け・低速"
     use: "最大モデル / VRAM+RAM / 難所のみ"
@@ -89,6 +114,7 @@ models:
     placement: vram
     tools: false             # gemma3はtools非対応=chat専用
     num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}  # Google公式推奨
     strengths: [chat, speed]
     for: "軽量チャット・多言語(コード生成は不可)"
     use: "高速チャット・多言語 / 非エージェント"
@@ -96,11 +122,14 @@ models:
 default: coder
 
 # 批評ループの異ファミリーペア既定(router.pyが参照)。
+# レビュアーは原則 vram 常駐の reasoner に寄せる: hybrid 同士のペア(旧 heavy→smart 等)は
+# 批評ラウンド毎に大型モデルの交互ロード(25〜65秒×2/ラウンド)が発生していた。
 critique_pairs:
   coder: reasoner      # 作成者=Qwen coder → レビュアー=DeepSeek(視点の多様性)
   smart: reasoner
   worker: reasoner
+  glimmer: reasoner
   next: reasoner
-  heavy: smart
+  heavy: reasoner
   reasoner: worker
-  deep: smart
+  deep: worker

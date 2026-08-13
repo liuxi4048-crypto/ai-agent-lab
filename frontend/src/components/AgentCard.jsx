@@ -2,7 +2,12 @@ import {
   Zap, Hourglass, Clock, Wrench, CheckCircle2, XCircle, Ban, Square,
   AlertTriangle, RotateCcw, FileCog, BookOpen, Timer,
 } from "lucide-react";
-import { AGENT_STATES, KIND_LABEL, fmtElapsed, lastLine } from "../derive.js";
+import { AGENT_STATES, KIND_LABEL, fmtElapsed, lastLine, isModelLoading, ctxFillLevel } from "../derive.js";
+
+const CTX_PILL_CLASS = {
+  warn: "border-yellow-500 text-yellow-400",
+  danger: "border-red-500 text-red-400",
+};
 
 const STATE_ICON = {
   active: Zap, queued: Hourglass, waiting: Clock, tool: Wrench, completed: CheckCircle2,
@@ -14,13 +19,16 @@ const STATE_ICON = {
  * デフォルトは名前/役割/状態/依存/経過時間/最新1行のみ。ログ全文はサイドドロワーへ。
  */
 export default function AgentCard({
-  node, agentState, dep, depState, tps, now,
+  node, agentState, dep, depState, tps, sinceMs, now,
   onOpen, onAbort, onRerun, onEditRerun,
 }) {
   const meta = AGENT_STATES[agentState.key];
   const Icon = STATE_ICON[agentState.key];
   const isLive = ["active", "tool", "stalled"].includes(agentState.key);
   const isFinished = ["completed", "failed", "aborted", "canceled"].includes(agentState.key);
+  const loading = agentState.key === "active" && isModelLoading(node, now);
+  const ctxLevel = ctxFillLevel(node.ctx_fill);
+  const stalledSec = sinceMs != null ? Math.floor(sinceMs / 1000) : null;
 
   const elapsed =
     node.started_at != null
@@ -46,7 +54,7 @@ export default function AgentCard({
         </span>
         <span className={`flex shrink-0 items-center gap-1 rounded-full bg-zinc-800/80 px-2 py-0.5 text-[11px] font-semibold ${meta.text} ${isLive ? "soft-pulse" : ""}`}>
           <Icon size={11} />
-          {meta.label}
+          {loading ? "モデル準備中(ロード/プロンプト評価)" : meta.label}
           {agentState.key === "queued" && agentState.pos != null && ` #${agentState.pos}`}
         </span>
       </div>
@@ -74,13 +82,21 @@ export default function AgentCard({
         {node.progress && (
           <span className="tabular-nums">進捗 {node.progress[0]}/{node.progress[1]}</span>
         )}
+        {ctxLevel !== "none" && (
+          <span
+            className={`rounded-full border px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${CTX_PILL_CLASS[ctxLevel]}`}
+            title="コンテキスト充填率(上限に近いと要約や打ち切りが起きやすくなります)"
+          >
+            ctx {Math.round(node.ctx_fill * 100)}%
+          </span>
+        )}
       </div>
 
       {/* Stalled警告 / エラーサマリー / 最新1行ログ */}
       {agentState.key === "stalled" ? (
         <p className="flex items-center gap-1.5 truncate rounded bg-orange-500/10 px-2 py-1 font-mono text-[11px] text-orange-400">
           <AlertTriangle size={11} className="shrink-0" />
-          応答が停止しています(0 t/s)。GPUハングの可能性 — ログを確認してください
+          {stalledSec != null ? `${stalledSec}秒間トークンが来ていません` : "トークンが来ていません"} — ログを確認してください
         </p>
       ) : agentState.key === "failed" ? (
         <p className="truncate rounded bg-red-500/10 px-2 py-1 font-mono text-[11px] text-red-400">
@@ -114,7 +130,7 @@ export default function AgentCard({
             <button
               onClick={onRerun}
               className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-blue-500 hover:text-blue-400"
-              title="同条件でRunを再実行(失敗していた場合、連鎖中止した下流も自動で待機に復帰)"
+              title="同条件でRunを再実行(元の設定を引き継いで新しいRunを開始)"
             >
               <RotateCcw size={10} /> 再実行
             </button>
@@ -129,7 +145,7 @@ export default function AgentCard({
         )}
         <button
           onClick={onOpen}
-          className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-zinc-500 opacity-0 transition-opacity group-hover:opacity-100 hover:text-blue-400"
+          className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-zinc-500 opacity-60 transition-opacity hover:text-blue-400 group-hover:opacity-100"
         >
           <BookOpen size={11} /> 詳細を表示
         </button>
