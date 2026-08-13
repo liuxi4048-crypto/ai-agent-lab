@@ -10,10 +10,40 @@
 @keyframes soft-pulse { 50% { opacity: 0.45; } }
 .soft-pulse { animation: soft-pulse 1.3s ease-in-out infinite; }
 
+/* 長時間ダッシュボードを開いたままにする使い方なので、動きを嫌う設定は尊重する。
+   点滅・パルスは静的な色分けに退避させ、状態の判別自体は失わないようにする。 */
+@media (prefers-reduced-motion: reduce) {
+  .stall-blink,
+  .soft-pulse,
+  .animate-spin {
+    animation: none !important;
+  }
+  .stall-blink { border-color: rgb(249 115 22); box-shadow: 0 0 0 1px rgb(249 115 22 / 0.55); }
+  * { transition-duration: 0.01ms !important; }
+}
+
+/* キーボード操作の可視化(カード・ボタン・リンク共通)。マウス操作では出さない */
+:focus-visible {
+  outline: 2px solid rgb(59 130 246 / 0.7);
+  outline-offset: 1px;
+}
+
 /* ダークテーマ用スクロールバー */
 * { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: #52525b; }
 *::-webkit-scrollbar-track { background: transparent; }
 
-body { background-color: #09090b; }
+::selection { background: rgb(59 130 246 / 0.35); }
+
+body {
+  background-color: #09090b;
+  /* 日本語UIなので、和文が破綻しない範囲でOSの標準UIフォントに寄せる(外部フォント不可) */
+  font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+}
+
+/* 等幅はログ・コード用。日本語混在でも桁がずれにくい順で指定する */
+.font-mono, pre, code {
+  font-family: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, "Yu Gothic UI", monospace;
+}

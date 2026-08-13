@@ -184,6 +184,25 @@ def _fit_parts(parts: list[str], total_chars: int = _CHAT_INPUT_BUDGET) -> list[
             for i, t in enumerate(parts)]
 
 
+def _agent_stream(bus, node_id: str, d: dict) -> None:
+    """run_agent の phase / delta イベントをノード状態とストリームへ写す。
+
+    コーディングエージェントのLLM呼び出しはツールループの内側にあるため、以前は
+    ノードが実行中ずっと status="running"(=UI上「ツール実行中」)のままで、
+    数十分の推論が推論として見えず t/s も停滞検知も働かなかった。
+    phase で推論中(thinking)/ツール実行中(running)を切り替え、delta で
+    生成トークンを流すことで、チャット系ノードと同じ精度の表示になる。
+    """
+    t = d.get("type")
+    if t == "phase":
+        bus.set_status(node_id, "thinking" if d.get("state") == "infer" else "running")
+    elif t == "delta":
+        if d.get("kind") == "thinking":
+            bus.think_progress(node_id, d.get("text") or "")
+        else:
+            bus.token_progress(node_id, d.get("text") or "")
+
+
 def _classify_artifact(rel: str) -> tuple[str, int]:
     """成果物ファイルの種別と表示優先度を返す。
 
@@ -679,7 +698,13 @@ class CodeOrchestrator:
         self.critique = critique
         self.reviewer_model = reviewer_model
 
-    def _wire(self, node_id: str, root_id: str):
+    def _wire(self, node_id: str, root_id: str, title_prefix: str = "🛠 コーディングエージェント"):
+        """ノードのツールボックス・ログ出力・状態通知を配線する。
+
+        title_prefix は毎iterのタイトル更新に使う。追加指示(会話継続)のノードでは
+        「🛠 追加指示」を保つ必要がある(UIがノード種別を接頭辞で見分けるため。
+        固定文字列で上書きすると、送信した追加指示がスレッドから消える)。
+        """
         bus, run = self.bus, self.run
         subdir = f"run_{run.id}"
 
@@ -694,23 +719,27 @@ class CodeOrchestrator:
 
         def on_status(d: dict) -> None:
             if d.get("type") == "iter":
-                bus.set_title(node_id, f"🛠 コーディングエージェント iter {d['iter']}/{d['max']} [{d['phase']}]")
+                bus.set_title(node_id, f"{title_prefix} iter {d['iter']}/{d['max']} [{d['phase']}]")
                 bus.set_progress(root_id, d["iter"], d["max"])
             elif d.get("type") == "usage":
-                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
+                # 実測の累計で確定させる(deltaによる概算カウントを置き換える)
+                bus.set_tokens(node_id, d.get("total", d["tokens"]), ctx_fill=d.get("ctx_fill"))
             elif d.get("type") == "start":
                 bus.set_status(node_id, "running")
+            else:
+                _agent_stream(bus, node_id, d)
 
         return toolbox, emit, on_status
 
     async def _one_round(self, goal: str, node_id: str, root_id: str,
                          extra_system: str = "", max_iter: int | None = None,
-                         history: list | None = None) -> tuple[str | None, list | None]:
+                         history: list | None = None,
+                         title_prefix: str = "🛠 コーディングエージェント") -> tuple[str | None, list | None]:
         """1回分のエージェント実行。(要約, 最終メッセージ列)を返す。
 
         history を渡すとその続きとして実行する(会話継続)。
         """
-        toolbox, emit, on_status = self._wire(node_id, root_id)
+        toolbox, emit, on_status = self._wire(node_id, root_id, title_prefix)
         history_out: list = []
         # 実行中の会話も10秒チェックポイントが拾えるよう、開始前に run.history へ共有する
         # (run_agent は毎反復 history_out を最新の messages で更新する)。
@@ -840,7 +869,8 @@ class CodeOrchestrator:
                 extra = (f"元の依頼: {run.task}\n\nこれまでの結果:\n{prev[:4000]}\n\n"
                          "この続きとして、以下の追加指示に対応すること。") if prev else ""
             summary, history = await self._one_round(
-                message, node_id, root_id, extra_system=extra, history=run.history)
+                message, node_id, root_id, extra_system=extra, history=run.history,
+                title_prefix="🛠 追加指示")
             bus.complete(node_id, summary or "(中断または上限到達)")
             run.history = history or run.history
 
@@ -931,7 +961,9 @@ class SwarmCodeOrchestrator:
                 bus.set_title(node_id,
                               f"🛠 サブコーダー{i+1}: {sub['title']} iter {d['iter']}/{d['max']} [{d['phase']}]")
             elif d.get("type") == "usage":
-                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
+                bus.set_tokens(node_id, d.get("total", d["tokens"]), ctx_fill=d.get("ctx_fill"))
+            else:
+                _agent_stream(bus, node_id, d)
 
         extra = (f"これは大きなタスクの一部。元のタスク全体:\n{task}\n\n"
                  f"あなたの担当: {sub['title']}。担当分だけを完成させること。")
@@ -974,7 +1006,9 @@ class SwarmCodeOrchestrator:
             if d.get("type") == "iter":
                 bus.set_title(node_id, f"🧩 統合ラウンド iter {d['iter']}/{d['max']}")
             elif d.get("type") == "usage":
-                bus.add_tokens(node_id, d["tokens"], ctx_fill=d.get("ctx_fill"))
+                bus.set_tokens(node_id, d.get("total", d["tokens"]), ctx_fill=d.get("ctx_fill"))
+            else:
+                _agent_stream(bus, node_id, d)
 
         body = "\n".join(f"- sub_{i}/: {t} — {s[:300]}" for i, (t, s) in enumerate(results))
         goal = (f"並列開発された部品を統合して、動く最終成果物を作る。\n"

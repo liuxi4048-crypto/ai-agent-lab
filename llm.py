@@ -185,15 +185,25 @@ def _classify_http(status, body):
     return OllamaError(f"Ollama HTTP {status}: {body[:500]}")
 
 
-async def _stream_collect(payload, timeout):
+async def _stream_collect(payload, timeout, on_delta=None):
     """ストリーミング受信して1つの message dict に結合する。
 
     content / thinking / tool_calls を蓄積し、done チャンクから
     _usage(eval_count) / _prompt_tokens / _done_reason を添付する。
+    on_delta(kind, piece) を渡すと、受信の都度 kind="content"/"thinking" で通知する
+    (ツールループ側が生成の進行をUIへ流すために使う。同期・軽量な処理のみ想定)。
     """
     msg = {"role": "assistant", "content": ""}
     thinking: list = []
     tool_calls: list = []
+
+    def notify(kind, piece):
+        if on_delta is None:
+            return
+        try:
+            on_delta(kind, piece)
+        except Exception:
+            pass   # 表示用の通知が失敗しても生成本体は続行する
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
             if resp.status_code != 200:
@@ -208,8 +218,10 @@ async def _stream_collect(payload, timeout):
                 m = chunk.get("message") or {}
                 if m.get("content"):
                     msg["content"] += m["content"]
+                    notify("content", m["content"])
                 if m.get("thinking"):
                     thinking.append(m["thinking"])
+                    notify("thinking", m["thinking"])
                 if m.get("tool_calls"):
                     tool_calls.extend(m["tool_calls"])
                 if chunk.get("done"):
@@ -232,11 +244,13 @@ async def _stream_collect(payload, timeout):
 
 async def chat(cfg, key, messages, tools=None, temperature=None,
                num_ctx=None, json_mode=False, json_schema=None,
-               think=None, num_predict=None, timeout=None, retries=RETRIES):
+               think=None, num_predict=None, timeout=None, retries=RETRIES,
+               on_delta=None):
     """1回のLLM呼び出し(内部はストリーミング受信)。message dict を返す。
 
     temperature=None のときは models.yaml の options(公式推奨値)が使われる。
     json_schema に dict を渡すと Ollama の structured outputs で構造を強制する。
+    on_delta(kind, piece) を渡すと生成の進行が逐次通知される(ツールループのUI表示用)。
     返り値には "_usage" 等のメタキーが付く。履歴に足す前に strip_meta() を呼ぶこと。
     """
     info = resolve(cfg, key)
@@ -247,7 +261,7 @@ async def chat(cfg, key, messages, tools=None, temperature=None,
     async with _gate(info):
         for attempt in range(max(1, retries)):
             try:
-                return await _stream_collect(payload, t)
+                return await _stream_collect(payload, t, on_delta)
             except OllamaFatal:
                 raise    # 4xx はリトライしても無駄。即時失敗
             except httpx.ConnectError as e:

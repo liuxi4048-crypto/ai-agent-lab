@@ -1,16 +1,18 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, Pencil, Play, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Play, Loader2, X, Sparkles } from "lucide-react";
 
 // 進め方(mode)と成果物形式(deliverable)はメインエージェントが自動で決めるため、
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
 
 /**
- * 折りたたみ式タスク入力ペイン。実行開始で自動的に1行サマリーへ最小化。
- * prefill: [📝 設定変更して再実行] からの流し込み {task, mode, model, ...}
+ * タスク入力パネル。開閉は App が管理する(サイドバーの「+ 新しいタスク」/ Nキー)。
+ * 実行を開始すると App 側が閉じる。入力途中の内容は hidden で隠されるだけなので失われない。
+ * prefill: [設定変更して再実行] からの流し込み {task, mode, model, ...}
+ * onClose: パネルを閉じる(未指定なら閉じるボタンを出さない)
  */
-export default function TaskInput({ models, onStart, running, prefill }) {
-  const [open, setOpen] = useState(true);
+export default function TaskInput({ models, onStart, running, prefill, onClose, visible }) {
   const [task, setTask] = useState("");
+  const taskRef = useRef(null);
   const [model, setModel] = useState("auto");
   const [critique, setCritique] = useState(false);
   const [approve, setApprove] = useState(true);
@@ -29,8 +31,12 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     setMaxIter(prefill.max_iter ?? 18);
     setAllowRam(!!prefill.allow_ram);
     setClaudeReview(!!prefill.claude_review);
-    setOpen(true);
   }, [prefill]);
+
+  // パネルが開いたら入力欄へフォーカスを移す(Nキーだけで書き始められるように)
+  useEffect(() => {
+    if (visible) taskRef.current?.focus({ preventScroll: true });
+  }, [visible]);
 
   const submit = async () => {
     if (!task.trim() || busy) return;
@@ -41,7 +47,7 @@ export default function TaskInput({ models, onStart, running, prefill }) {
       await onStart({ task: task.trim(), model, critique, approve,
                       max_iter: maxIter, allow_ram: allowRam,
                       claude_review: claudeReview });
-      setOpen(false); // 実行開始 → 1行サマリーへ自動最小化
+      setTask("");   // 実行を開始したら入力を空に戻す(パネルは App 側が閉じる)
     } catch (e) {
       setError(e.message);
     } finally {
@@ -68,32 +74,34 @@ export default function TaskInput({ models, onStart, running, prefill }) {
     if (cur && isLightHybrid(cur) && !cur.ram_ok) setModel("auto");
   }, [allowRam, model, modelOptions]);
 
-  if (!open) {
-    return (
-      <div className="flex items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2">
-        <ChevronDown size={14} className="-rotate-90 text-zinc-500" />
-        <span className="min-w-0 flex-1 truncate text-xs text-zinc-400">
-          {task || "(タスク未入力)"}
-        </span>
-        <button
-          onClick={() => setOpen(true)}
-          className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-blue-500 hover:text-blue-400"
-          title="タスクを再編集"
-        >
-          <Pencil size={11} /> 編集
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="border-b border-zinc-800 bg-zinc-900/60 px-4 py-3">
+      <div className="mb-2 flex items-center gap-2">
+        <Sparkles size={13} className="text-blue-400" />
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+          新しいタスク
+        </h2>
+        <span className="text-[10px] text-zinc-600">
+          進め方・成果物の形式はエージェントが自動で決めます
+        </span>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="ml-auto rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+            title="閉じる(Esc)"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
       <div className="flex flex-wrap items-start gap-2">
         <textarea
+          ref={taskRef}
           value={task}
           onChange={(e) => setTask(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit();
+            // IME変換中は確定のためのEnterなので送信しない
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) submit();
           }}
           rows={2}
           placeholder="全体タスクを入力 (Ctrl+Enterで実行)…"
@@ -179,11 +187,6 @@ export default function TaskInput({ models, onStart, running, prefill }) {
             className="w-14 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-zinc-200 outline-none focus:border-blue-500"
           />
         </label>
-        {running && (
-          <button onClick={() => setOpen(false)} className="ml-auto text-zinc-500 hover:text-zinc-300">
-            折りたたむ ▲
-          </button>
-        )}
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>

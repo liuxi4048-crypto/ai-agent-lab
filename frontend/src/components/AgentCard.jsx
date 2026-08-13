@@ -1,6 +1,6 @@
 import {
   Zap, Hourglass, Clock, Wrench, CheckCircle2, XCircle, Ban, Square,
-  AlertTriangle, RotateCcw, FileCog, BookOpen, Timer,
+  AlertTriangle, BookOpen, Timer,
 } from "lucide-react";
 import { AGENT_STATES, KIND_LABEL, fmtElapsed, lastLine, isModelLoading, ctxFillLevel } from "../derive.js";
 
@@ -16,16 +16,17 @@ const STATE_ICON = {
 
 /**
  * エージェントカード(コンパクト設計)。
- * デフォルトは名前/役割/状態/依存/経過時間/最新1行のみ。ログ全文はサイドドロワーへ。
+ * 表示は名前/役割/状態/依存/経過/最新1行のみ。ログ全文はサイドドロワーへ。
+ *
+ * Run単位の操作(中断・再実行)はここには置かない。カード=1エージェントなのに
+ * 「カードの再実行」がRun全体の再実行になり誤解を生んでいたため、RunHeaderへ集約した。
  */
 export default function AgentCard({
-  node, agentState, dep, depState, tps, sinceMs, now,
-  onOpen, onAbort, onRerun, onEditRerun,
+  node, agentState, dep, depState, tps, sinceMs, now, onOpen,
 }) {
   const meta = AGENT_STATES[agentState.key];
   const Icon = STATE_ICON[agentState.key];
   const isLive = ["active", "tool", "stalled"].includes(agentState.key);
-  const isFinished = ["completed", "failed", "aborted", "canceled"].includes(agentState.key);
   const loading = agentState.key === "active" && isModelLoading(node, now);
   const ctxLevel = ctxFillLevel(node.ctx_fill);
   const stalledSec = sinceMs != null ? Math.floor(sinceMs / 1000) : null;
@@ -39,8 +40,17 @@ export default function AgentCard({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${node.title} — ${meta.label}。詳細ログを開く`}
       onClick={onOpen}
-      className={`group flex cursor-pointer flex-col gap-2 rounded-xl border bg-zinc-900 p-3.5 transition-colors hover:border-blue-500/70 ${
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className={`group flex cursor-pointer flex-col gap-2 rounded-xl border bg-zinc-900 p-3.5 transition-colors hover:border-blue-500/70 focus-visible:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
         agentState.key === "stalled" ? "stall-blink border-orange-500" : meta.border
       }`}
     >
@@ -54,33 +64,31 @@ export default function AgentCard({
         </span>
         <span className={`flex shrink-0 items-center gap-1 rounded-full bg-zinc-800/80 px-2 py-0.5 text-[11px] font-semibold ${meta.text} ${isLive ? "soft-pulse" : ""}`}>
           <Icon size={11} />
-          {loading ? "モデル準備中(ロード/プロンプト評価)" : meta.label}
+          {loading ? "モデル準備中" : meta.label}
           {agentState.key === "queued" && agentState.pos != null && ` #${agentState.pos}`}
         </span>
       </div>
 
-      {/* 2行目: 依存バッジ + 経過時間 + t/s */}
+      {/* 2行目: 依存 + 経過 + t/s + トークン + 進捗 + ctx + 詳細導線 */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
         {dep ? (
-          <span className="flex items-center gap-1 truncate">
-            Depends on:
-            <span className={`flex items-center gap-1 rounded-full border border-zinc-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-zinc-400"}`}>
-              <span className={`inline-block h-1.5 w-1.5 rounded-full ${depState ? AGENT_STATES[depState.key].dot : "bg-zinc-500"}`} />
-              <span className="max-w-36 truncate">{dep.title}</span>
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="shrink-0 text-zinc-600">前段:</span>
+            <span className={`flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-zinc-400"}`}>
+              <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${depState ? AGENT_STATES[depState.key].dot : "bg-zinc-500"}`} />
+              <span className="max-w-32 truncate">{dep.title}</span>
             </span>
           </span>
-        ) : (
-          <span className="text-zinc-600">依存なし</span>
-        )}
+        ) : null}
         <span className="flex items-center gap-1 tabular-nums">
           <Timer size={11} /> {fmtElapsed(elapsed)}
         </span>
-        {agentState.key === "active" && tps != null && (
-          <span className="tabular-nums text-blue-400">{tps.toFixed(1)} t/s</span>
+        {agentState.key === "active" && tps != null && tps > 0 && (
+          <span className="tabular-nums font-semibold text-blue-400">{tps.toFixed(1)} t/s</span>
         )}
         {node.tokens > 0 && <span className="tabular-nums">{node.tokens.toLocaleString()} tok</span>}
         {node.progress && (
-          <span className="tabular-nums">進捗 {node.progress[0]}/{node.progress[1]}</span>
+          <span className="tabular-nums">{node.progress[0]}/{node.progress[1]}</span>
         )}
         {ctxLevel !== "none" && (
           <span
@@ -90,6 +98,9 @@ export default function AgentCard({
             ctx {Math.round(node.ctx_fill * 100)}%
           </span>
         )}
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-zinc-600 transition-colors group-hover:text-blue-400">
+          <BookOpen size={11} /> 詳細
+        </span>
       </div>
 
       {/* Stalled警告 / エラーサマリー / 最新1行ログ */}
@@ -109,47 +120,10 @@ export default function AgentCard({
       ) : line ? (
         <p className="truncate px-0.5 font-mono text-[11px] text-zinc-500">{line}</p>
       ) : (
-        <p className="px-0.5 font-mono text-[11px] text-zinc-700">
+        <p className="px-0.5 font-mono text-[11px] text-zinc-500">
           {agentState.key === "waiting" ? "前段の完了を待機中…" : agentState.key === "queued" ? "GPUの空きを待機中…" : " "}
         </p>
       )}
-
-      {/* アクション */}
-      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-        {isLive && (
-          <button
-            onClick={onAbort}
-            className="flex items-center gap-1 rounded-md border border-red-500/60 px-2 py-1 text-[11px] text-red-400 hover:bg-red-500/10"
-            title="推論の性質上「一時停止」はできません。中断後はコンテキストを保持した再実行になります"
-          >
-            <Square size={10} fill="currentColor" /> 中断
-          </button>
-        )}
-        {isFinished && (
-          <>
-            <button
-              onClick={onRerun}
-              className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-blue-500 hover:text-blue-400"
-              title="同条件でRunを再実行(元の設定を引き継いで新しいRunを開始)"
-            >
-              <RotateCcw size={10} /> 再実行
-            </button>
-            <button
-              onClick={onEditRerun}
-              className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-blue-500 hover:text-blue-400"
-              title="タスク・モデル等を変更して再実行"
-            >
-              <FileCog size={10} /> 設定変更して再実行
-            </button>
-          </>
-        )}
-        <button
-          onClick={onOpen}
-          className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-zinc-500 opacity-60 transition-opacity hover:text-blue-400 group-hover:opacity-100"
-        >
-          <BookOpen size={11} /> 詳細を表示
-        </button>
-      </div>
     </div>
   );
 }

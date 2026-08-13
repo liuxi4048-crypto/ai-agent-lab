@@ -20,6 +20,62 @@ export const KIND_LABEL = {
   merger: "統合", task: "タスク", claude: "Claudeレビュー",
 };
 
+// Run一覧・Runヘッダーで共用する「Run全体の状態」表示メタ。
+export const RUN_STATUS = {
+  running: { label: "実行中", dot: "bg-blue-400 soft-pulse", text: "text-blue-400", chip: "border-blue-500/50 bg-blue-500/10" },
+  queued: { label: "待機中", dot: "bg-yellow-400", text: "text-yellow-400", chip: "border-yellow-500/40 bg-yellow-500/10" },
+  done: { label: "完了", dot: "bg-green-400", text: "text-green-400", chip: "border-green-500/40 bg-green-500/10" },
+  error: { label: "エラー", dot: "bg-red-400", text: "text-red-400", chip: "border-red-500/50 bg-red-500/10" },
+  cancelled: { label: "中断", dot: "bg-zinc-500", text: "text-zinc-400", chip: "border-zinc-700 bg-zinc-800/60" },
+  interrupted: { label: "強制終了", dot: "bg-zinc-600", text: "text-zinc-400", chip: "border-zinc-700 bg-zinc-800/60" },
+};
+
+// 内部のモード名・成果物形式は出さず、「何をするか」が分かる日本語で見せる。
+export const MODE_LABEL = {
+  code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲",
+};
+export const DELIVERABLE_LABEL = { html: "HTMLアプリ", exe: "exe", script: "スクリプト" };
+
+// 工程(フェーズ)。ノードのkindから導出し、ワークスペースを段階ごとに区切って
+// 「計画→実行→レビュー→統合→回答」の流れが一目で追えるようにする。
+export const PHASE_META = {
+  plan: { label: "計画", hint: "タスクの分解・方針決め" },
+  work: { label: "実行", hint: "実際に作る・書く" },
+  review: { label: "レビュー", hint: "成果の批評・検証" },
+  merge: { label: "統合", hint: "成果のまとめ" },
+  answer: { label: "回答", hint: "最終成果物・レポート" },
+};
+
+const KIND_PHASE = {
+  planner: "plan",
+  subagent: "work", coder: "work", author: "work", round: "work",
+  reviewer: "review", claude: "review",
+  aggregator: "merge", merger: "merge",
+  answer: "answer",
+};
+
+export function phaseOf(node) {
+  return KIND_PHASE[node.kind] ?? "work";
+}
+
+/**
+ * ノード列(表示順・taskを除く)を「連続する同一フェーズ」でまとめ、工程セグメントの配列にする。
+ *
+ * 時系列を組み替えずにフェーズ見出しを差し込む方式にしている。kindで並べ替えると
+ * codeモードの「実行→レビュー→修正→再レビュー」のようなループ構造が消えてしまうため。
+ * 同種の並列ノード(subagent/サブコーダー)は自然に1セグメントへ入り、横並びで表示される。
+ */
+export function segmentByPhase(nodes) {
+  const segments = [];
+  for (const node of nodes) {
+    const phase = phaseOf(node);
+    const last = segments[segments.length - 1];
+    if (last && last.phase === phase) last.nodes.push(node);
+    else segments.push({ phase, nodes: [node] });
+  }
+  return segments;
+}
+
 // Stalled判定の閾値(ms)。generating=トークン生成が止まった場合は仕様どおり10秒。
 // thinking=プロンプト評価中はトークン0が正常のため、誤警報を避けて長めに取る。
 export const STALL_MS_GENERATING = 10_000;
@@ -105,6 +161,17 @@ export function fmtElapsed(sec) {
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** Run一覧用の相対時刻(epoch秒 → 「3分前」等)。日付が変わるものは月/日で出す。 */
+export function fmtAgo(epochSec) {
+  if (!epochSec) return "";
+  const diff = Date.now() / 1000 - epochSec;
+  if (diff < 60) return "たった今";
+  if (diff < 3600) return `${Math.floor(diff / 60)}分前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}時間前`;
+  const d = new Date(epochSec * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 export function fmtGB(bytes) {

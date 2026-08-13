@@ -42,7 +42,9 @@ function applyEvent(state, ev) {
         artifacts: ev.artifacts || [],
         // receivedAt: バックエンドは受付時刻を送らないため、UI側で観測した時刻を
         // カウントダウン表示の基準に用いる(サーバー側の実際の自動却下時刻とは近似)。
-        approvals: (ev.approvals || []).map((a) => ({ receivedAt: Date.now(), ...a })),
+        // snapshot由来のものは既に何分か経過している可能性があるため、残り時間を
+        // 断定しないよう fromSnapshot で区別する(リロードで15:00に戻る嘘を防ぐ)。
+        approvals: (ev.approvals || []).map((a) => ({ receivedAt: Date.now(), fromSnapshot: true, ...a })),
         finished: !ev.running,
       };
     }
@@ -155,6 +157,10 @@ function appendPreview(node, ev) {
 }
 
 function reducer(state, action) {
+  // Run切替・選択解除で状態を捨てる。空のbatchでは reduce が同じstateを返すだけで
+  // リセットにならず、前Runのノード・成果物・承認要求が残る(削除直後は
+  // snapshotが永遠に来ないためカードが出続け、承認は別Runへ誤送信される)
+  if (action.type === "clear") return initialRunState;
   if (action.type === "batch") return action.events.reduce(applyEvent, state);
   if (action.type === "disconnect") return { ...state, connected: false };
   return applyEvent(state, action);
@@ -177,14 +183,11 @@ export function useRunEvents(runId) {
   nodesRef.current = state.nodes;
 
   useEffect(() => {
-    dispatch({ type: "batch", events: [] });
+    dispatch({ type: "clear" });
     bufferRef.current = [];
     speedRef.current = {};
     setSpeeds({});
-    if (!runId) {
-      dispatch({ type: "disconnect" });
-      return;
-    }
+    if (!runId) return;   // clear で connected=false まで戻っている
 
     const es = new EventSource(`/events/${runId}`);
     es.onmessage = (e) => {

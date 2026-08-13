@@ -183,11 +183,21 @@ class EventBus:
         self._schedule_flush()
 
     def think_progress(self, node_id: str, piece: str) -> None:
-        """thinking(推論)テキストのストリーム。出力本文とは別枠で保持・配信する。"""
+        """thinking(推論)テキストのストリーム。出力本文とは別枠で保持・配信する。
+
+        思考トークンもGPUが生成している負荷そのものなので、状態とトークン計数は
+        content と同じ扱いにする(ツール呼び出し中心の応答では content が空のまま
+        思考だけが流れるため、これを数えないと t/s も停滞検知も働かない)。
+        実測値は区切りごとに set_tokens で上書きされるため、近似カウントでよい。
+        """
         node = self.nodes[node_id]
         node.think += piece
         if len(node.think) > THINK_CAP:
             node.think = node.think[-THINK_CAP:]
+        node.tokens += 1
+        if node.status != "generating":
+            self.set_status(node_id, "generating")
+        self._tok_dirty.add(node_id)
         self._think_buf.setdefault(node_id, []).append(piece)
         self._schedule_flush()
 
@@ -230,14 +240,18 @@ class EventBus:
         self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens,
                        "ctx_fill": getattr(node, "ctx_fill", None)})
 
-    def set_tokens(self, node_id: str, total: int) -> None:
-        """トークン数を実測値で確定する(ストリーミングノードの完了時用)。
+    def set_tokens(self, node_id: str, total: int, ctx_fill: float | None = None) -> None:
+        """トークン数を実測値で確定する(ストリーミングノードの区切り時用)。
 
         token_progress はチャンク数≒トークンの近似カウントなので、done チャンクの
         eval_count(thinking含む実測)で置き換える。加算だと二重計上になる。
+        コーディングエージェントは1ノードで複数回LLMを呼ぶため、呼び出し側が
+        累計値を渡す。
         """
         node = self.nodes[node_id]
         node.tokens = total
+        if ctx_fill is not None:
+            node.ctx_fill = ctx_fill
         self._publish({"type": "tokens", "id": node_id, "tokens": node.tokens,
                        "ctx_fill": getattr(node, "ctx_fill", None)})
 

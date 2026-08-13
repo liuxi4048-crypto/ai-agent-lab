@@ -154,7 +154,9 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     on_status(dict): 構造化イベント通知。任意。
       {'type':'start','model':key,'tag':tag}
       {'type':'iter','iter':i,'max':max_iter,'phase':phase}
-      {'type':'usage','tokens':n,'prompt_tokens':n,'ctx_fill':0.42}
+      {'type':'phase','state':'infer'|'tool'}   -- 推論中 / ツール実行中の切り替え
+      {'type':'delta','kind':'content'|'thinking','text':piece}  -- 生成の逐次通知
+      {'type':'usage','tokens':n,'total':n,'prompt_tokens':n,'ctx_fill':0.42}
       {'type':'end','reason':'done'|'stopped'|'maxiter'}
     toolbox: Toolbox インスタンス(per-run サンドボックス+承認)。None なら既定。
     extra_system: system prompt への追記(swarmのサブタスク指示・継続時の批評文等)。
@@ -189,6 +191,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     phase = "BUILD" if history else "PLAN"  # 継続時は既存成果への追加作業から始める
     finish_rejects = 0
     prompt_tokens = 0        # 直近のOllama実測プロンプトトークン
+    total_tokens = 0         # このRunの累計生成トークン(実測の積み上げ)
     no_tool_streak = 0       # tool_calls 無し応答の連続回数
     fail_streak = 0          # 同一ツール+同一引数の連続失敗回数
     last_fail_key = None
@@ -229,12 +232,17 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
             if loop_hint:
                 hint += "\n" + loop_hint
                 loop_hint = ""
+            # 推論の開始と生成の進行をUIへ流す(状態表示・t/s・停滞検知の実データになる)
+            _status({"type": "phase", "state": "infer"})
             msg = await llm.chat(cfg, key, messages + [{"role": "user", "content": hint}],
-                                 tools=TOOLS_SCHEMA)
+                                 tools=TOOLS_SCHEMA,
+                                 on_delta=lambda kind, piece: _status(
+                                     {"type": "delta", "kind": kind, "text": piece}))
             meta = llm.strip_meta(msg)
             if meta.get("_usage"):
                 prompt_tokens = meta.get("_prompt_tokens", prompt_tokens)
-                _status({"type": "usage", "tokens": meta["_usage"],
+                total_tokens += meta["_usage"]
+                _status({"type": "usage", "tokens": meta["_usage"], "total": total_tokens,
                          "prompt_tokens": prompt_tokens,
                          "ctx_fill": round(prompt_tokens / info["num_ctx"], 3)
                          if prompt_tokens else None})
@@ -266,6 +274,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                 continue
             no_tool_streak = 0
 
+            _status({"type": "phase", "state": "tool"})   # ここからGPUは解放される
             tool_names, last_run_ok, summary = [], True, None
             for idx, tc in enumerate(tool_calls):
                 fn = tc.get("function", {})

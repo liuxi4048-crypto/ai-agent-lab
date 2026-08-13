@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { FlaskConical, MemoryStick, Zap, Hourglass, Square, AlertTriangle, WifiOff } from "lucide-react";
+import {
+  FlaskConical, MemoryStick, Zap, Hourglass, Square, AlertTriangle, WifiOff, Menu,
+} from "lucide-react";
 import { fmtGB } from "../derive.js";
 
 /**
  * トップヘッダー: VRAMメーター / アクティブ推論 / キュー数 / 全停止。
  * gpu: /gpu のレスポンス, active: {name, tps}|null, queueCount: number
  * pendingApprovals: 全Run合計の承認待ち数, onJumpToPending: バッジクリック時のRun選択(任意)
+ * onToggleSidebar: lg未満でRun一覧(オフキャンバス)を開閉する
  */
 export default function Header({
   gpu, health, active, queueCount, onStopAll, stoppable,
-  pendingApprovals = 0, onJumpToPending,
+  pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false,
 }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -24,7 +27,16 @@ export default function Header({
   const oom = ratio > 0.9;
 
   return (
-    <header className="sticky top-0 z-30 flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-zinc-800 bg-zinc-900/95 px-4 py-2.5 backdrop-blur">
+    <header className="z-30 flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-b border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur">
+      <button
+        onClick={onToggleSidebar}
+        className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 lg:hidden"
+        title={sidebarOpen ? "タスク一覧を閉じる" : "タスク一覧を開く"}
+        aria-expanded={!!sidebarOpen}
+        aria-label="タスク一覧の開閉"
+      >
+        <Menu size={16} />
+      </button>
       <div className="flex items-center gap-2">
         <FlaskConical size={18} className="text-blue-400" />
         <h1 className="text-sm font-semibold tracking-wide text-zinc-100">ai-agent-lab</h1>
@@ -33,7 +45,7 @@ export default function Header({
       {/* VRAMメーター */}
       <div className="flex items-center gap-2 text-xs" title="Ollamaにロード中のモデルのVRAM使用量">
         <MemoryStick size={14} className={oom ? "text-red-400" : "text-zinc-400"} />
-        <div className="h-2 w-36 overflow-hidden rounded-full bg-zinc-800">
+        <div className="h-2 w-24 overflow-hidden rounded-full bg-zinc-800 sm:w-32">
           <div
             className={`h-full rounded-full transition-all duration-500 ${
               oom ? "bg-red-500" : ratio > 0.7 ? "bg-yellow-500" : "bg-blue-500"
@@ -41,7 +53,7 @@ export default function Header({
             style={{ width: `${Math.min(100, ratio * 100)}%` }}
           />
         </div>
-        <span className={`tabular-nums ${oom ? "font-semibold text-red-400" : "text-zinc-300"}`}>
+        <span className={`hidden tabular-nums sm:inline ${oom ? "font-semibold text-red-400" : "text-zinc-300"}`}>
           {gpu?.available ? `${fmtGB(used)} / ${fmtGB(total)} GB` : `-- / ${fmtGB(total)} GB`}
         </span>
         {oom && (
@@ -52,7 +64,7 @@ export default function Header({
       </div>
 
       {/* アクティブ推論 */}
-      <div className="flex items-center gap-1.5 text-xs text-zinc-300">
+      <div className="hidden items-center gap-1.5 text-xs text-zinc-300 sm:flex">
         <Zap size={14} className={active ? "text-blue-400" : "text-zinc-600"} />
         {active ? (
           <span>
@@ -65,7 +77,7 @@ export default function Header({
       </div>
 
       {/* キュー数 */}
-      <div className="flex items-center gap-1.5 text-xs text-zinc-300" title="GPU空き待ちのRun数">
+      <div className="hidden items-center gap-1.5 text-xs text-zinc-300 sm:flex" title="GPU空き待ちのRun数">
         <Hourglass size={14} className={queueCount > 0 ? "text-yellow-400" : "text-zinc-600"} />
         <span>
           Queue: <b className={`tabular-nums ${queueCount > 0 ? "text-yellow-400" : "text-zinc-400"}`}>{queueCount}</b>
@@ -107,7 +119,9 @@ export default function Header({
         title="実行中・待機中の全Runを中断"
       >
         <Square size={12} fill="currentColor" />
-        {armed ? "もう一度クリックで全停止" : "Stop All"}
+        <span className={armed ? "" : "hidden sm:inline"}>
+          {armed ? "もう一度クリックで全停止" : "Stop All"}
+        </span>
       </button>
     </header>
   );

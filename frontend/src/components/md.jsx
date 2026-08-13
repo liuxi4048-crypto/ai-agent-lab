@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 // 依存追加なしの最小限Markdown整形コンポーネント(react-markdown等は導入しない方針)。
 // 対応するのは以下のみ:
 //   ```コードブロック```  /  `インラインコード`  /  **強調**  /  行頭「- 」リスト  /  「## 」見出し
@@ -88,8 +90,14 @@ function renderBlocks(text) {
   return blocks;
 }
 
-/** 完了済みテキスト(エージェントの最終出力・レポート等)を簡易整形して表示する。 */
+/** 完了済みテキスト(エージェントの最終出力・レポート等)を簡易整形して表示する。
+ *
+ * App は経過時間表示のため毎秒再描画される。text が同じなら再パースしないよう
+ * useMemo で固定する(数十万字のレポートをドロワーで開いたまま放置するのが常態のため、
+ * 毎秒の全再パースは体感を明確に落とす)。
+ */
 export default function Markdown({ text, className = "" }) {
-  if (!text) return null;
-  return <div className={`space-y-0.5 text-[12.5px] leading-relaxed ${className}`}>{renderBlocks(text)}</div>;
+  const blocks = useMemo(() => (text ? renderBlocks(text) : null), [text]);
+  if (!blocks) return null;
+  return <div className={`space-y-0.5 text-[12.5px] leading-relaxed ${className}`}>{blocks}</div>;
 }
