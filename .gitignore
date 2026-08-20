@@ -3,6 +3,7 @@ __pycache__/
 runs/
 workspace/
 projects/run_*/
+projects/chat_*/
 app.log
 dist/
 build/
