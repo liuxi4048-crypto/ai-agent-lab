@@ -84,14 +84,20 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
 
     if mode == "code":
         if heavy:
-            k = first_ok("next", "pro", "smart", "glimmer", "coder")
+            # 並びは2026-08-20の実測(同一課題・エージェントで完走できたか)に合わせる:
+            #   smart 16分◯ / glimmer 7.8分◯ / coder 14分◯ / pro 44.5分×(25反復使い切り) /
+            #   next 45分で1反復のみ(単体ベンチ21tok/sでも長文脈では実効1tok/s)
+            # ベンチ値ではなくエージェントで完走した実績を優先する。1課題の結果なので
+            # 反例が出たら見直すこと。
+            k = first_ok("smart", "glimmer", "coder", "pro", "next")
             if k:
                 return k
         return first_ok("coder", "smart", "pro", "glimmer", "worker") or fallback()
 
     # orchestra / critique(chat系: tools不問)
     if heavy:
-        k = first_ok("heavy", "next", "pro", "smart")
+        # next はエージェントループでは実効1tok/s(実測)なので後ろへ回す
+        k = first_ok("heavy", "smart", "pro", "next")
         if k:
             return k
     if code:

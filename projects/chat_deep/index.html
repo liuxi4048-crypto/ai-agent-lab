@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Mario Game</title>
+</head>
+<body style="margin:0; overflow:hidden;">
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+    <div style="position:absolute; top:10px; left:10px; color:white;">
+        <p>Score: <span id="score">0</span></p>
+        <p>操作方法:</p>
+        <p>←→ : 左右移動</p>
+        <p>↑ : ジャンプ</p>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreElement = document.getElementById('score');
+
+// ゲーム状態
+const gameState = {
+    player: {
+        x: 50,
+        y: 300,
+        width: 40,
+        height: 40,
+        speedX: 0,
+        speedY: 0,
+        isJumping: false,
+        canJump: true
+    },
+    enemies: [],
+    goal: {
+        x: 700,
+        y: 350,
+        width: 50,
+        height: 50
+    },
+    score: 0,
+    ground: 350
+};
+
+// 物理定数
+const GRAVITY = 0.8;
+const JUMP_FORCE = -15;
+const MOVE_SPEED = 5;
+const ENEMY_SPEED = 2;
+
+function initGame() {
+    // 敵の初期配置
+    gameState.enemies = [
+        { x: 300, y: 350, width: 40, height: 40 },
+        { x: 500, y: 350, width: 40, height: 40 }
+    ];
+}
+
+function updatePlayer() {
+    // 移動
+    gameState.player.x += gameState.player.speedX;
+    
+    // 重力
+    gameState.player.speedY += GRAVITY;
+    gameState.player.y += gameState.player.speedY;
+    
+    // 地面判定
+    if (gameState.player.y > gameState.ground - gameState.player.height) {
+        gameState.player.y = gameState.ground - gameState.player.height;
+        gameState.player.speedY = 0;
+        gameState.player.isJumping = false;
+        gameState.player.canJump = true;
+    }
+    
+    // 左右の壁判定
+    if (gameState.player.x < 0) gameState.player.x = 0;
+    if (gameState.player.x + gameState.player.width > canvas.width) {
+        gameState.player.x = canvas.width - gameState.player.width;
+    }
+}
+
+function updateEnemies() {
+    gameState.enemies.forEach(enemy => {
+        // 敵の移動
+        enemy.x += ENEMY_SPEED;
+        
+        // 敵の往復
+        if (enemy.x + enemy.width > canvas.width || enemy.x < 0) {
+            ENEMY_SPEED = -ENEMY_SPEED;
+        }
+        
+        // プレイヤーとの当たり判定
+        if (checkCollision(gameState.player, enemy)) {
+            resetPlayer();
+        }
+    });
+}
+
+function updateGoal() {
+    if (checkCollision(gameState.player, gameState.goal)) {
+        alert('ゴール達成！');
+        resetPlayer();
+    }
+}
+
+function checkCollision(rect1, rect2) {
+    return rect1.x < rect2.x + rect2.width &&
+           rect1.x + rect1.width > rect2.x &&
+           rect1.y < rect2.y + rect2.height &&
+           rect1.y + rect1.height > rect2.y;
+}
+
+function resetPlayer() {
+    gameState.player.x = 50;
+    gameState.player.y = 300;
+    gameState.player.speedY = 0;
+    gameState.score = 0;
+}
+
+function draw() {
+    // キャンバスをクリア
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // プレイヤーを描画
+    ctx.fillStyle = 'red';
+    ctx.fillRect(gameState.player.x, gameState.player.y, 
+                gameState.player.width, gameState.player.height);
+    
+    // 敵を描画
+    ctx.fillStyle = 'green';
+    gameState.enemies.forEach(enemy => {
+        ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+    });
+    
+    // ゴールを描画
+    ctx.fillStyle = 'gold';
+    ctx.fillRect(gameState.goal.x, gameState.goal.y, 
+                gameState.goal.width, gameState.goal.height);
+    
+    // 地面を描画
+    ctx.strokeStyle = '#4a4a4a';
+    ctx.beginPath();
+    ctx.moveTo(0, gameState.ground);
+    ctx.lineTo(canvas.width, gameState.ground);
+    ctx.stroke();
+    
+    // スコア更新
+    gameState.score++;
+    scoreElement.textContent = gameState.score;
+}
+
+function gameLoop() {
+    updatePlayer();
+    updateEnemies();
+    updateGoal();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// キー操作
+document.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    
+    switch(e.key) {
+        case 'ArrowLeft':
+            gameState.player.speedX = -MOVE_SPEED;
+            break;
+        case 'ArrowRight':
+            gameState.player.speedX = MOVE_SPEED;
+            break;
+        case 'ArrowUp':
+            if (gameState.player.canJump) {
+                gameState.player.speedY = JUMP_FORCE;
+                gameState.player.isJumping = true;
+                gameState.player.canJump = false;
+            }
+            break;
+    }
+});
+
+// キーを離したときの処理
+document.addEventListener('keyup', (e) => {
+    switch(e.key) {
+        case 'ArrowLeft':
+        case 'ArrowRight':
+            gameState.player.speedX = 0;
+            break;
+    }
+});
+
+// ゲーム開始
+initGame();
+gameLoop();
+</script>
+</body>
+</html>

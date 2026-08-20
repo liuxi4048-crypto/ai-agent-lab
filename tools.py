@@ -55,6 +55,18 @@ ESCAPE_PATTERNS = [
 ]
 ESCAPE_RE = re.compile("|".join(ESCAPE_PATTERNS))
 
+# 終了しない常駐プロセス。実行してもタイムアウトまで待つだけで何も得られないため、
+# 待たずに理由を返す(実測: `python -m http.server` で120秒を丸ごと浪費した例がある)。
+# 成果物のHTMLはダッシュボードが /projects で配信するので、開発サーバは不要。
+SERVER_CMD_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:"
+    r"python[0-9.]*\s+-m\s+http\.server|http-server|npx\s+serve|serve\s+-|"
+    r"npm\s+(?:run\s+)?(?:dev|start|serve)|yarn\s+(?:dev|start)|pnpm\s+(?:dev|start)|"
+    r"flask\s+run|uvicorn\s|gunicorn\s|php\s+-S|rails\s+s(?:erver)?|"
+    r"vite(?:\s|$)|webpack\s+serve|ollama\s+serve"
+    r")",
+    re.IGNORECASE)
+
 RESULT_CAP = 12000   # ツール結果の履歴挿入上限(コンテキスト保護の最終防衛線)
 MAX_TIMEOUT = 600    # run_command でモデルが指定できるタイムアウトの上限秒
 SEARCH_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
@@ -467,6 +479,10 @@ class Toolbox:
             timeout = 120
         if DENY_RE.search(command):
             return f"[拒否] 破壊的コマンドの疑い(denylist): {command}"
+        if SERVER_CMD_RE.search(command):
+            return ("[スキップ] 常駐サーバの起動は不要です(終了しないためタイムアウトするだけ)。"
+                    "HTML成果物はダッシュボードが配信します。動作確認は read_file で"
+                    "中身を読み返すか、テスト用スクリプトを1回実行する形で行ってください。")
         if not self.approve and ESCAPE_RE.search(command):
             return ("[拒否] ワークスペース外参照の疑い(絶対パス/UNC/../環境変数)。"
                     "作業ルートからの相対パスに書き直して再実行して")
