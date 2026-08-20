@@ -80,26 +80,26 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
     reason = bool(_REASON_RE.search(task))
 
     if mode == "swarm-code":
-        return first_ok("worker", "coder", "glimmer") or fallback()
+        return first_ok("worker", "coder", "pro", "glimmer") or fallback()
 
     if mode == "code":
         if heavy:
-            k = first_ok("next", "smart", "glimmer", "coder")
+            k = first_ok("next", "pro", "smart", "glimmer", "coder")
             if k:
                 return k
-        return first_ok("coder", "smart", "glimmer", "worker") or fallback()
+        return first_ok("coder", "smart", "pro", "glimmer", "worker") or fallback()
 
     # orchestra / critique(chat系: tools不問)
     if heavy:
-        k = first_ok("heavy", "next", "smart")
+        k = first_ok("heavy", "next", "pro", "smart")
         if k:
             return k
     if code:
-        k = first_ok("coder", "smart", "glimmer", "worker")
+        k = first_ok("coder", "smart", "pro", "glimmer", "worker")
         if k:
             return k
     if reason:
-        k = first_ok("reasoner", "smart")
+        k = first_ok("reasoner", "pro", "smart")
         if k:
             return k
     return first_ok("worker") or fallback()

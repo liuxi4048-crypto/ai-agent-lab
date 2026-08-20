@@ -59,6 +59,25 @@ models:
     strengths: [tool, coding, reasoning]
     for: "エージェント特化(Meta)。ツール呼び出しに強い"
     use: "agentic特化 / SWE-bench V 76.0 / dense28B・13.4tok/s実測 / reasoning effort可変"
+  pro:
+    tag: "qwen3.8:27b"
+    family: qwen35           # qwen3系とはthink/サンプリングの作法が違うので family を分ける
+    placement: hybrid        # 18GB(本体17GB + vision projector 0.9GB) → 25%/75% CPU/GPU 実測
+    tools: true
+    num_ctx: 16384           # ネイティブ256Kだが、KVを積むとVRAMを食うので既定は据え置き
+    ram_gb: 6
+    keep_alive: "10m"
+    # thinking時のQwen公式推奨。repeat_penalty=1.0(無効)がモデルの焼き込み既定でもある
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    # think:false のときに使う non-thinking(Instruct)側の公式推奨。presence_penalty=1.5 が特徴
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"             # 既定ONかつ深めなので明示的に浅くする(tools併用も実測で正常)
+    strengths: [coding, tool, reasoning]   # visionは対応するがアプリ側に画像送信の経路が無い
+    for: "最新Qwen。高品質・長文脈のエージェント"
+    use: "dense27.3B+vision / 64層中16層のみfull attention=KVが通常の約1/4 / MTP自己投機ON /
+      23 tok/s実測(同サイズdenseのglimmer 13.4の1.7倍) /
+      SWE-bench Pro 61.7・Terminal-Bench2.1 73.0・OSWorld 84.3(いずれもQwen自己計測)"
+
   reasoner:
     tag: "deepseek-r1:14b"
     family: deepseek
@@ -129,6 +148,7 @@ critique_pairs:
   smart: reasoner
   worker: reasoner
   glimmer: reasoner
+  pro: reasoner
   next: reasoner
   heavy: reasoner
   reasoner: worker

@@ -5,6 +5,9 @@ agent-orchestra(並列分解・批評ループ・SSEダッシュボード)と ai
 コーディングエージェント)を統合した v2。**API課金なし**・全処理ローカル完結
 (任意機能の「Claudeが最終レビュー」もサブスクのClaude Code CLIを使うため課金なし)。
 
+> **2026-08-20**: Qwen3.8-27B(`pro`)を追加。同サイズdenseの1.7倍速(23 tok/s実測)で、
+> 既定のRAM併用OFFでも使える「難所用」の新しい既定になった。Ollamaは0.32.14へ更新。
+>
 > **2026-08-13 大規模改修**: モデル世代交代(Muse Glimmer / Qwen3-Coder-Next 導入)、
 > モデル別公式サンプリング値、structured outputs(スキーマ強制)、thinking の分離表示、
 > 実測ベースのコンテキスト管理、finishゲートの厳密化、swarm の実統合ラウンド、
@@ -164,7 +167,7 @@ python app.py        # デスクトップアプリ(WebView2)。Ollama自動起�
 python agent.py "todo-cli に TODO CLI を作って動かして" [--model coder] [--yes]   # CLI
 ```
 
-## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT / Ollama 0.32.9)
+## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT / Ollama 0.32.14)
 
 models.yaml の各モデルは `family` / `placement` / `strengths` / **`options`(公式推奨
 サンプリング値)** / **`think`(reasoning既定)** を持つ。従来の「全モデル一律
@@ -182,6 +185,7 @@ temperature=0.2」はQwen公式(貪欲寄り禁止=反復ループの原因)等�
 | coder | qwen3:30b | qwen | hybrid(軽量) | 50 tok/s | 主力コーダー(MoE活性≈3B)。codeモード既定 |
 | smart | qwen3.6:35b | qwen | hybrid | — | 上位MoE(SWE-bench 73.4%) |
 | glimmer | muse-glimmer:30b | meta | hybrid(軽量) | 13.4 tok/s | **新規(2026-08)**。Metaのagentic特化dense 28B+vision 2B。SWE-bench V 76.0 / ツール呼び出しに強い。effort可変(low〜xhigh) |
+| **pro** | **qwen3.8:27b** | qwen35 | hybrid(軽量) | **23 tok/s** | **新規(2026-08-20)**。Qwen最新のdense 27.3B+vision。64層中16層のみfull attentionで**KVが通常の約1/4**、MTP自己投機ONにより同サイズdense(glimmer 13.4)の**1.7倍速**。SWE-bench Pro 61.7 / Terminal-Bench2.1 73.0 / OSWorld 84.3(Qwen自己計測) |
 | next | qwen3-coder-next | qwen | hybrid | 21.2 tok/s | **新規(2026-08)**。Qwen3-Next-80B-A3Bベースのコーディング特化(51GB, MoE活性3B)。SWE-bench V 70+。**hybrid筆頭** |
 | reasoner | deepseek-r1:14b | deepseek | vram | 55.3 tok/s | 深い推論・数学。**批評レビュアー既定**(tools非対応) |
 | deep | deepseek-r1:70b | deepseek | hybrid | 1.6 tok/s | dense=帯域律速の遅さの実例。最深推論枠 |
@@ -205,6 +209,7 @@ ollama pull qwen3:30b
 ollama pull deepseek-r1:14b
 ollama pull muse-glimmer:30b       # 2026-08新モデル(要 Ollama 0.32.8+)
 ollama pull qwen3-coder-next       # 2026-08新モデル(51GB)
+ollama pull qwen3.8:27b            # 2026-08新モデル(18GB。要 Ollama 0.32.12+)
 ```
 
 環境変数(ユーザーレベル、設定後 Ollama 再起動):
@@ -219,7 +224,8 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 ### GPUバックエンド(RX 9070 XT / gfx1201)
 
 - Ollama 0.32.x は **ROCm 7.1 ライブラリ同梱で gfx1201 をネイティブサポート**。
-  **0.32.9 以上必須**(0.32.8でMuse GlimmerのAMD対応、0.32.9でそのtool callingパーサ修正)
+  **0.32.14 を使用**(0.32.8=Muse GlimmerのAMD対応、0.32.9=そのtool callingパーサ修正、
+  0.32.12=Qwen3.8対応。未対応バージョンでは pull 自体が 412 で弾かれる)
 - **`ollama ps` の PROCESSOR が `100% CPU` になっていたらまず dGPU の状態を疑う**:
 
   ```powershell
@@ -242,7 +248,10 @@ setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
   長い生成が「900秒で全体打ち切り」にならない。tools+stream で tool_calls も蓄積
 - structured outputs: `json_schema=` にJSONスキーマを渡すと文法制約デコードで構造保証
   (triage / planner / 批評JSON が使用。パース失敗によるフォールバックが激減)
-- thinking 対応: `think` パラメータ(gpt-oss/glimmer=effort文字列, deepseek/qwen=bool)。
+- thinking 対応: `think` パラメータ(gpt-oss/glimmer/qwen3.8=effort文字列, deepseek=bool)。
+  thinking を切ると `options_no_think`(non-thinking用の公式サンプリング)へ自動で切り替わる
+  — Qwen3.8 は thinking(temp1.0/top_p0.95)と instruct(temp0.7/top_p0.8/presence1.5)で
+  推奨値が別物のため
   応答の thinking は `_thinking` メタで分離され、履歴へ再送しない(コンテキスト節約)
 - 応答メタ: `_prompt_tokens`(実測プロンプトトークン)/`_done_reason`(length打ち切り検知)
 - リトライ整理: 4xxは即時失敗、接続系・途中切断のみ指数バックオフでリトライ

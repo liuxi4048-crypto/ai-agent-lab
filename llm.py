@@ -87,7 +87,8 @@ def resolve(cfg, key):
     if m is None:
         return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
-                "num_gpu": None, "ram_gb": 0, "options": {}, "think": None,
+                "num_gpu": None, "ram_gb": 0, "options": {}, "options_no_think": {},
+                "think": None,
                 "strengths": [], "for": "", "use": ""}
     return {
         "key": key,
@@ -100,6 +101,8 @@ def resolve(cfg, key):
         "num_gpu": m.get("num_gpu"),   # None=Ollama自動 / 0=CPU専用 / n=GPUへ載せる層数
         "ram_gb": m.get("ram_gb", 0),  # RAM側に必要な概算容量
         "options": m.get("options") or {},  # モデル公式推奨のサンプリング設定
+        # thinking を切ったときに使う別プロファイル(Qwen3.8等は thinking/instruct で推奨値が別物)
+        "options_no_think": m.get("options_no_think") or {},
         "think": m.get("think"),       # 既定のthinking指定(bool / "low"等)。None=モデル既定
         "strengths": m.get("strengths", []),
         "for": m.get("for", ""),       # UI表示用の短い用途
@@ -130,6 +133,10 @@ def effort(info, level):
         return level if level in ("low", "medium", "high") else "high"
     if fam == "meta":
         return level if level in ("low", "medium", "high", "xhigh") else "high"
+    if fam == "qwen35":
+        # Qwen3.8系。Ollamaの think は low/medium/high を受理する(実測)。
+        # ただし指定レベルと実際の推論量は単調に対応しないため、深さの目安として扱う
+        return level if level in ("low", "medium", "high") else "high"
     if fam == "deepseek":
         return level == "high" or None
     return None
@@ -149,7 +156,11 @@ def strip_meta(msg):
 
 def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream,
              json_schema=None, think=None, num_predict=None):
-    options = dict(info.get("options") or {})
+    tk = think if think is not None else info.get("think")
+    # thinking を切る場合、サンプリングも non-thinking 用の公式推奨へ入れ替える
+    # (Qwen3.8: thinking=temp1.0/top_p0.95 ⇄ instruct=temp0.7/top_p0.8/presence1.5)
+    use_no_think = tk is False and info.get("options_no_think")
+    options = dict((info.get("options_no_think") if use_no_think else info.get("options")) or {})
     if temperature is not None:
         options["temperature"] = temperature
     options["num_ctx"] = num_ctx or info["num_ctx"]
@@ -173,7 +184,6 @@ def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream,
         payload["format"] = json_schema   # 文法制約デコードでスキーマ準拠を強制
     elif json_mode:
         payload["format"] = "json"
-    tk = think if think is not None else info.get("think")
     if tk is not None:
         payload["think"] = tk
     return payload
