@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Trash2, X } from "lucide-react";
-import { RUN_STATUS, MODE_LABEL, DELIVERABLE_LABEL, fmtAgo } from "../derive.js";
+import { Plus, Search, Sparkles, Trash2, X } from "lucide-react";
+import { RUN_STATUS, fmtAgo } from "../derive.js";
 
 /**
  * 左サイドバー: 新規タスク導線 + Run一覧(縦)。
  *
- * 横並びチップだったRun切り替えを縦リストへ移した。履歴が20件を超えると横スクロールでは
- * 探せなくなるため、検索と「実行中/履歴」のグループ分けを持たせている。
+ * Master-Detail の「選択ハイライト=右ペインの表示」を全状態で成立させるため、
+ * 下書き(drafting)中は一覧最上部に擬似行「新しいタスク(下書き)」を出して
+ * そこへハイライトを移す。Run行は識別に必要な情報(状態・タスク文・時刻)に絞った
+ * 2行構成(モード/成果物・モデルタグは RunHeader の実行条件ポップオーバーへ退避)。
  * lg未満ではオフキャンバス(ハンバーガーで開閉)、lg以上は常設カラム。
  */
-export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, open, onClose }) {
+export default function Sidebar({
+  runs, currentId, drafting, onSelect, onDelete, onNew, open, onClose,
+}) {
   const [query, setQuery] = useState("");
   // 削除は誤操作防止の2段階確認(1回目で「削除?」→3秒以内の再クリックで実行)
   const [armedId, setArmedId] = useState(null);
@@ -39,7 +43,7 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
 
   const row = (r) => {
     const meta = RUN_STATUS[r.status] ?? RUN_STATUS.cancelled;
-    const selected = r.id === currentId;
+    const selected = !drafting && r.id === currentId;
     const finished = !["running", "queued"].includes(r.status);
     return (
       <li key={r.id}>
@@ -61,7 +65,7 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
               onClose?.();
             }
           }}
-          title={r.task}
+          title={`${r.task}\n${r.model_tag || r.model || ""}`}
           className={`group relative cursor-pointer border-l-2 px-3 py-2 transition-colors ${
             selected
               ? "border-blue-500 bg-blue-500/10"
@@ -81,10 +85,6 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
           </div>
           <div className="mt-1 flex items-center gap-1.5 pl-4 text-[10.5px] text-zinc-500">
             <span className={meta.text}>{meta.label}</span>
-            <span className="text-zinc-700">·</span>
-            <span className="min-w-0 truncate">
-              {[MODE_LABEL[r.mode] ?? r.mode, DELIVERABLE_LABEL[r.deliverable]].filter(Boolean).join(" / ")}
-            </span>
             <span className="ml-auto shrink-0 tabular-nums">{fmtAgo(r.created_at)}</span>
             {finished && (
               <button
@@ -100,7 +100,6 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
               </button>
             )}
           </div>
-          <p className="pl-4 text-[10px] text-zinc-500">{r.model_tag || r.model}</p>
         </div>
       </li>
     );
@@ -109,7 +108,7 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
   const group = (label, items) =>
     items.length > 0 && (
       <>
-        <li className="sticky top-0 z-10 flex items-center gap-2 bg-zinc-900/95 px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 backdrop-blur">
+        <li className="sticky top-0 z-10 flex items-center gap-2 bg-zinc-900 px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
           {label}
           <span className="tabular-nums text-zinc-400">{items.length}</span>
         </li>
@@ -165,9 +164,18 @@ export default function Sidebar({ runs, currentId, onSelect, onDelete, onNew, op
         </div>
 
         <ul className="min-h-0 flex-1 overflow-y-auto pb-3">
+          {/* 下書き擬似行: 選択ハイライトの行き先(右ペイン=Composer と1対1対応) */}
+          {drafting && (
+            <li>
+              <div className="flex cursor-default items-center gap-2 border-l-2 border-blue-500 bg-blue-500/10 px-3 py-2.5">
+                <Sparkles size={13} className="shrink-0 text-blue-400" />
+                <span className="text-[12.5px] font-semibold text-zinc-100">新しいタスク(下書き)</span>
+              </div>
+            </li>
+          )}
           {group("実行中・待機中", live)}
           {group("履歴", history)}
-          {!live.length && !history.length && (
+          {!live.length && !history.length && !drafting && (
             <li className="px-3 py-6 text-center text-[12px] text-zinc-500">
               {query ? "一致するタスクがありません" : "まだタスクがありません"}
             </li>

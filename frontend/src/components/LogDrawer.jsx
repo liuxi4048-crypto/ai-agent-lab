@@ -285,6 +285,13 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
           </button>
         )}
         <CopyButton text={node.output} />
+        {/* AgentCard から退避した数値(トークン・進捗)はここで見る */}
+        {node.tokens > 0 && (
+          <span className="tabular-nums text-[11px] text-zinc-500">{node.tokens.toLocaleString()} tok</span>
+        )}
+        {node.progress && (
+          <span className="tabular-nums text-[11px] text-zinc-500">{node.progress[0]}/{node.progress[1]}</span>
+        )}
         {node.ctx_fill != null && (
           <span
             className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] tabular-nums ${CTX_METER_CLASS[ctxFillLevel(node.ctx_fill)]}`}

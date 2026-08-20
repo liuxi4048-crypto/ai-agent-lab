@@ -69,9 +69,17 @@ export default function AgentCard({
         </span>
       </div>
 
-      {/* 2行目: 依存 + 経過 + t/s + トークン + 進捗 + ctx + 詳細導線 */}
+      {/* 2行目: 経過 + t/s + 依存(待機系のみ) + ctx警告。tok/進捗は LogDrawer ヘッダーへ退避 */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-        {dep ? (
+        <span className="flex items-center gap-1 tabular-nums">
+          <Timer size={11} /> {fmtElapsed(elapsed)}
+        </span>
+        {agentState.key === "active" && tps != null && tps > 0 && (
+          <span className="tabular-nums font-semibold text-blue-400">{tps.toFixed(1)} t/s</span>
+        )}
+        {/* 前段依存は「何を待っているか」が意味を持つ待機系状態のときだけ表示する
+            (完了後まで出し続けると全カードに常設チップが並び雑音になる) */}
+        {dep && ["waiting", "queued"].includes(agentState.key) ? (
           <span className="flex min-w-0 items-center gap-1">
             <span className="shrink-0 text-zinc-600">前段:</span>
             <span className={`flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-zinc-400"}`}>
@@ -80,16 +88,6 @@ export default function AgentCard({
             </span>
           </span>
         ) : null}
-        <span className="flex items-center gap-1 tabular-nums">
-          <Timer size={11} /> {fmtElapsed(elapsed)}
-        </span>
-        {agentState.key === "active" && tps != null && tps > 0 && (
-          <span className="tabular-nums font-semibold text-blue-400">{tps.toFixed(1)} t/s</span>
-        )}
-        {node.tokens > 0 && <span className="tabular-nums">{node.tokens.toLocaleString()} tok</span>}
-        {node.progress && (
-          <span className="tabular-nums">{node.progress[0]}/{node.progress[1]}</span>
-        )}
         {ctxLevel !== "none" && (
           <span
             className={`rounded-full border px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${CTX_PILL_CLASS[ctxLevel]}`}
@@ -98,8 +96,9 @@ export default function AgentCard({
             ctx {Math.round(node.ctx_fill * 100)}%
           </span>
         )}
-        <span className="ml-auto flex shrink-0 items-center gap-1 text-zinc-600 transition-colors group-hover:text-blue-400">
-          <BookOpen size={11} /> 詳細
+        {/* 詳細導線はカード全体がクリック可能なので、hover/focus時のアイコンのみに抑える */}
+        <span className="ml-auto shrink-0 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <BookOpen size={11} aria-hidden="true" />
         </span>
       </div>
 

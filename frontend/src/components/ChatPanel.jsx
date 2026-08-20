@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Send, Loader2, User, Bot, Play } from "lucide-react";
+import { MessageSquare, Send, Loader2, User, Bot, Sparkles } from "lucide-react";
 import { continueRun } from "../api.js";
 import Markdown from "./md.jsx";
 
 const TEXTAREA_MAX_PX = 128; // max-h-32 (8rem) と揃える
 
 /**
- * 成果物に会話形式で修正を加えるパネル(ワークスペース下部に常設)。
+ * 成果物に会話形式で修正を加えるドック(ワークスペース下部)。
+ *
+ * 既定は入力1行のコンパクト表示。見出し行と状態注記は placeholder へ畳み、
+ * スレッド履歴は「履歴 n」バッジで開閉する(層1)。
+ * 継続できないRunでは行き止まりにせず「新しいタスクとして始める」へ導線を出す
+ * (書いた本文は下書きへ引き継ぐ)。
  *
  * 実行ツリーのノードから会話スレッドを組み立てて表示する:
  *   task ノード          → 最初の依頼(ユーザー)
@@ -14,7 +19,7 @@ const TEXTAREA_MAX_PX = 128; // max-h-32 (8rem) と揃える
  *   answer ノード        → その回の結果(エージェント)
  * 送信すると同じRun・同じワークスペースの続きとして実行される。
  */
-export default function ChatPanel({ runId, nodes, order, running, resumable, runStatus, onSent }) {
+export default function ChatPanel({ runId, nodes, order, running, resumable, runStatus, onSent, onStartDraft }) {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -59,14 +64,16 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
     const t = setTimeout(() => setSentAt(null), 20_000);
     return () => clearTimeout(t);
   }, [sentAt, running]);
-  // Runを切り替えたら送信ロック・楽観バブル・エラーを捨てる(別Runの会話に混ざる)
-  useEffect(() => { setSentAt(null); setPendingMsg(null); setError(null); }, [runId]);
+  // Runを切り替えたら送信ロック・楽観バブル・エラー・履歴展開を捨てる(別Runの会話に混ざる)
+  useEffect(() => { setSentAt(null); setPendingMsg(null); setError(null); setExpanded(false); }, [runId]);
 
   if (!runId) return null;
 
   const send = async () => {
     const text = msg.trim();
-    if (!text || busy || running || sentAt) return;
+    // resumable も見る: 送信ボタンのdisabledと同じ条件をEnter経由でも守る
+    // (待機中Runでボタンは押せないのにEnterだけ通る、という食い違いを防ぐ)
+    if (!text || busy || running || sentAt || !resumable) return;
     setBusy(true);
     setError(null);
     setPendingMsg(text);
@@ -84,29 +91,22 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
     }
   };
 
-  // 実行中でも下書きは書けるようにする(送信は send() 側で弾く)
-  const canType = resumable || running;
+  // 継続不可(完了扱いでresumeもできない)なら、行き止まりにせず新規タスクへ流す。
+  // 待機中(queued)は開始すれば送れるようになるので行き止まり扱いにしない
+  const deadEnd = !resumable && !running && runStatus !== "queued";
   const sendDisabled = busy || running || !resumable || !!sentAt;
   const placeholder = running
     ? "実行中 — 完了後に送信できます(下書きは保持されます)"
-    : "成果物への追加指示(例: 難易度を上げて / 色を変えて / スコア表示を追加して)";
+    : runStatus === "queued"
+      ? "待機中 — 開始後に追加指示を送れます"
+      : deadEnd
+        ? "このRunは継続できません — 新しいタスクとして始められます"
+        : "成果物への追加指示(例: 難易度を上げて / 色を変えて / スコア表示を追加して)";
 
   return (
-    <section className="border-t border-zinc-800 bg-zinc-950/80">
-      <div className="flex items-center gap-2 px-4 pt-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-        <MessageSquare size={12} /> 会話で修正する
-        {(thread.length > 0 || pendingMsg) && (
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="ml-auto flex items-center gap-1 normal-case tracking-normal text-zinc-400 hover:text-zinc-200"
-          >
-            履歴 {thread.length}件 {expanded ? "▴" : "▾"}
-          </button>
-        )}
-      </div>
-
+    <section className="border-t border-zinc-800 bg-zinc-900">
       {expanded && (thread.length > 0 || pendingMsg) && (
-        <div className="max-h-56 space-y-2 overflow-y-auto px-4 py-2">
+        <div className="max-h-56 space-y-2 overflow-y-auto border-b border-zinc-800 px-4 py-2">
           {thread.map((m, i) => (
             <div key={i} className="flex gap-2 text-[12.5px]">
               <span
@@ -120,7 +120,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
                   {m.text}
                 </p>
               ) : (
-                <Markdown text={m.text} className="min-w-0 flex-1 rounded-lg bg-zinc-900 px-2.5 py-1.5 text-zinc-300" />
+                <Markdown text={m.text} className="min-w-0 flex-1 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-zinc-300" />
               )}
             </div>
           ))}
@@ -138,7 +138,8 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
         </div>
       )}
 
-      <div className="flex items-end gap-2 px-4 pb-3 pt-1">
+      <div className="flex items-end gap-2 px-4 py-2.5">
+        <MessageSquare size={14} className="mb-2.5 shrink-0 text-zinc-600" aria-hidden="true" />
         <textarea
           ref={textareaRef}
           value={msg}
@@ -147,36 +148,48 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
             // IME変換確定のEnterで誤送信しないよう isComposing を確認する
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              send();
+              if (deadEnd) onStartDraft?.(msg.trim());
+              else send();
             }
           }}
           rows={1}
-          disabled={!canType}
           placeholder={placeholder}
-          className="max-h-32 min-h-[38px] flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500 disabled:opacity-50"
+          aria-label="このRunへの追加指示"
+          className="max-h-32 min-h-[38px] flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500"
         />
-        <button
-          onClick={send}
-          disabled={sendDisabled || !msg.trim()}
-          title="Enterで送信 / Shift+Enterで改行"
-          className="flex h-[38px] items-center gap-1.5 rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-        >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          送信
-        </button>
+        {(thread.length > 0 || pendingMsg) && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className={`mb-0.5 shrink-0 rounded-md border px-2 py-1.5 text-[11px] tabular-nums ${
+              expanded ? "border-blue-500 text-blue-400" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+            }`}
+            title="このRunの会話履歴を開閉"
+          >
+            履歴 {thread.length}
+          </button>
+        )}
+        {deadEnd ? (
+          <button
+            onClick={() => onStartDraft?.(msg.trim())}
+            title="この内容で新しいタスクの下書きを開く"
+            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md border border-blue-500/70 px-3 text-[12.5px] font-semibold text-blue-400 hover:bg-blue-500/10"
+          >
+            <Sparkles size={13} /> 新しいタスクとして始める
+          </button>
+        ) : (
+          <button
+            onClick={send}
+            disabled={sendDisabled || !msg.trim()}
+            title="Enterで送信 / Shift+Enterで改行"
+            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+          >
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            送信
+          </button>
+        )}
       </div>
 
       {error && <p className="px-4 pb-2 text-xs text-red-400">{error}</p>}
-      {!resumable && !running && (
-        <p className="flex items-center gap-1.5 px-4 pb-3 text-[11px] text-zinc-600">
-          <Play size={10} />
-          {runStatus === "queued"
-            ? "待機中 — 開始後に追加指示を送れます"
-            : runStatus === "interrupted" || runStatus === "error"
-              ? "中断・失敗したRunです。追加指示を送ると続きから修正できます"
-              : "このRunは継続できません(完了後に再度お試しください)"}
-        </p>
-      )}
     </section>
   );
 }

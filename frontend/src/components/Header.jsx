@@ -1,20 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  FlaskConical, MemoryStick, Zap, Hourglass, Square, AlertTriangle, WifiOff, Menu,
+  FlaskConical, Zap, Square, AlertTriangle, WifiOff, Menu, Plus, Gauge, ChevronDown,
 } from "lucide-react";
-import { fmtGB } from "../derive.js";
+import SystemStatusPopover from "./SystemStatusPopover.jsx";
 
 /**
- * トップヘッダー: VRAMメーター / アクティブ推論 / キュー数 / 全停止。
- * gpu: /gpu のレスポンス, active: {name, tps}|null, queueCount: number
- * pendingApprovals: 全Run合計の承認待ち数, onJumpToPending: バッジクリック時のRun選択(任意)
- * onToggleSidebar: lg未満でRun一覧(オフキャンバス)を開閉する
+ * トップヘッダー。常設は「ロゴ / ステータスピル」だけに絞り、
+ * 要対応のもの(OOM・Ollama未接続・承認待ち・全停止)は条件を満たすときだけ出す。
+ * VRAMメーター・Active推論・Queue数の詳細はステータスピルのポップオーバー(層1)へ。
+ *
+ * runningCount/queueCount は runs 由来(全Run)。選択中RunのSSEから作る active とは
+ * 集計元が違うことに注意(draft中でも実行中件数が正しく出るのはこのため)。
  */
 export default function Header({
-  gpu, health, active, queueCount, onStopAll, stoppable,
-  pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false,
+  gpu, health, active, queueCount, runningCount, onStopAll, stoppable,
+  pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false, onNewTask,
 }) {
   const [armed, setArmed] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const pillRef = useRef(null);
   useEffect(() => {
     if (!armed) return;
     const t = setTimeout(() => setArmed(false), 3000);
@@ -23,11 +27,10 @@ export default function Header({
 
   const used = gpu?.used_bytes ?? 0;
   const total = gpu?.total_bytes ?? 16 * 1024 ** 3;
-  const ratio = total ? used / total : 0;
-  const oom = ratio > 0.9;
+  const oom = total ? used / total > 0.9 : false;
 
   return (
-    <header className="z-30 flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 border-b border-zinc-800 bg-zinc-900/95 px-3 py-2 backdrop-blur">
+    <header className="z-30 flex h-11 shrink-0 items-center gap-x-3 border-b border-zinc-800 bg-zinc-900 px-3">
       <button
         onClick={onToggleSidebar}
         className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 lg:hidden"
@@ -42,55 +45,27 @@ export default function Header({
         <h1 className="text-sm font-semibold tracking-wide text-zinc-100">ai-agent-lab</h1>
       </div>
 
-      {/* VRAMメーター */}
-      <div className="flex items-center gap-2 text-xs" title="Ollamaにロード中のモデルのVRAM使用量">
-        <MemoryStick size={14} className={oom ? "text-red-400" : "text-zinc-400"} />
-        <div className="h-2 w-24 overflow-hidden rounded-full bg-zinc-800 sm:w-32">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${
-              oom ? "bg-red-500" : ratio > 0.7 ? "bg-yellow-500" : "bg-blue-500"
-            }`}
-            style={{ width: `${Math.min(100, ratio * 100)}%` }}
-          />
-        </div>
-        <span className={`hidden tabular-nums sm:inline ${oom ? "font-semibold text-red-400" : "text-zinc-300"}`}>
-          {gpu?.available ? `${fmtGB(used)} / ${fmtGB(total)} GB` : `-- / ${fmtGB(total)} GB`}
+      {/* 狭幅: サイドバーを開かずに新規タスクへ */}
+      <button
+        onClick={onNewTask}
+        className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-blue-400 lg:hidden"
+        title="新しいタスク(N)"
+        aria-label="新しいタスク"
+      >
+        <Plus size={16} />
+      </button>
+
+      {/* 要対応バッジ群(条件を満たすときだけ現れる) */}
+      {oom && (
+        <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-[11px] font-bold text-red-400">
+          <AlertTriangle size={11} /> VRAM残りわずか
         </span>
-        {oom && (
-          <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-[11px] font-bold text-red-400">
-            <AlertTriangle size={11} /> OOM Warning
-          </span>
-        )}
-      </div>
-
-      {/* アクティブ推論 */}
-      <div className="hidden items-center gap-1.5 text-xs text-zinc-300 sm:flex">
-        <Zap size={14} className={active ? "text-blue-400" : "text-zinc-600"} />
-        {active ? (
-          <span>
-            Active: <b className="text-blue-400">{active.name}</b>
-            <span className="ml-1 tabular-nums text-zinc-400">({active.tps.toFixed(1)} t/s)</span>
-          </span>
-        ) : (
-          <span className="text-zinc-500">GPU Idle</span>
-        )}
-      </div>
-
-      {/* キュー数 */}
-      <div className="hidden items-center gap-1.5 text-xs text-zinc-300 sm:flex" title="GPU空き待ちのRun数">
-        <Hourglass size={14} className={queueCount > 0 ? "text-yellow-400" : "text-zinc-600"} />
-        <span>
-          Queue: <b className={`tabular-nums ${queueCount > 0 ? "text-yellow-400" : "text-zinc-400"}`}>{queueCount}</b>
-        </span>
-      </div>
-
-      {health && !health.ollama && (
-        <div className="flex items-center gap-1.5 text-xs text-red-400">
-          <WifiOff size={13} /> Ollama未接続
-        </div>
       )}
-
-      {/* 承認待ち(全Run合計) */}
+      {health && !health.ollama && (
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-red-400">
+          <WifiOff size={13} /> Ollama未接続
+        </span>
+      )}
       {pendingApprovals > 0 && (
         <button
           onClick={onJumpToPending}
@@ -101,28 +76,66 @@ export default function Header({
         </button>
       )}
 
-      {/* 全停止 */}
-      <button
-        onClick={() => {
-          if (!armed) return setArmed(true);
-          setArmed(false);
-          onStopAll();
-        }}
-        disabled={!stoppable}
-        className={`ml-auto flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-bold transition-colors ${
-          armed
-            ? "border-red-500 bg-red-600 text-white"
-            : stoppable
-              ? "border-red-500/70 bg-transparent text-red-400 hover:bg-red-500/10"
-              : "cursor-not-allowed border-zinc-700 text-zinc-600"
-        }`}
-        title="実行中・待機中の全Runを中断"
-      >
-        <Square size={12} fill="currentColor" />
-        <span className={armed ? "" : "hidden sm:inline"}>
-          {armed ? "もう一度クリックで全停止" : "Stop All"}
-        </span>
-      </button>
+      {/* ステータスピル: 稼働の要約 + クリックでシステム状態(層1) */}
+      <div className="relative ml-auto">
+        <button
+          ref={pillRef}
+          onClick={() => setStatusOpen((v) => !v)}
+          aria-expanded={statusOpen}
+          aria-haspopup="dialog"
+          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+            statusOpen
+              ? "border-blue-500 text-blue-400"
+              : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+          }`}
+          title="システム状態(VRAM・推論・キュー)"
+        >
+          {runningCount > 0 ? (
+            <>
+              <Zap size={12} className="text-blue-400" />
+              <span className="tabular-nums font-semibold text-blue-400">{runningCount}</span>
+              <span className="hidden sm:inline">実行中</span>
+            </>
+          ) : (
+            <Gauge size={13} className="text-zinc-500" />
+          )}
+          {queueCount > 0 && (
+            <span className="tabular-nums text-yellow-400">⏳{queueCount}</span>
+          )}
+          <ChevronDown size={11} className="text-zinc-500" />
+        </button>
+        <SystemStatusPopover
+          open={statusOpen}
+          onClose={() => setStatusOpen(false)}
+          gpu={gpu}
+          health={health}
+          active={active}
+          queueCount={queueCount}
+          returnFocusRef={pillRef}
+        />
+      </div>
+
+      {/* 全停止: 止められるものがあるときだけ現れる(2段階クリック) */}
+      {stoppable && (
+        <button
+          onClick={() => {
+            if (!armed) return setArmed(true);
+            setArmed(false);
+            onStopAll();
+          }}
+          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-bold transition-colors ${
+            armed
+              ? "border-red-500 bg-red-600 text-white"
+              : "border-red-500/70 bg-transparent text-red-400 hover:bg-red-500/10"
+          }`}
+          title="実行中・待機中の全Runを中断"
+        >
+          <Square size={12} fill="currentColor" />
+          <span className={armed ? "" : "hidden sm:inline"}>
+            {armed ? "もう一度クリックで全停止" : "全停止"}
+          </span>
+        </button>
+      )}
     </header>
   );
 }
