@@ -50,6 +50,16 @@ def usable(cfg, key: str, mode: str, installed: set | None = None,
     m = cfg.get("models", {}).get(key)
     if m is None:
         return False
+    # tier ゲート(2026-08-22 再設計): archive/external は自動ルーティングから常に除外。
+    # probation はツール必須経路(code/swarm-code)のみ除外し、chat系の候補には残す
+    # (chat難問分岐で唯一 usable な pro を無条件除外すると「最高品質」依頼が黙って
+    #  worker 固定になるため)。明示指定(req.model)は pick_model を通らないので、
+    # archive の heavy も model=heavy と書けば使える。
+    tier = m.get("tier", "agent")
+    if tier in ("archive", "external"):
+        return False
+    if tier == "probation" and _tools_required(mode):
+        return False
     tag = m.get("tag", "")
     if not (installed is None or tag in installed or f"{tag}:latest" in installed):
         return False
@@ -94,7 +104,7 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
     reason = bool(_REASON_RE.search(task))
 
     if mode == "swarm-code":
-        return first_ok("worker", "coder", "pro", "glimmer") or fallback()
+        return first_ok("worker", "coder", "glimmer") or fallback()
 
     if mode == "code":
         if heavy:
@@ -103,15 +113,17 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
             #   next 45分で1反復のみ(単体ベンチ21tok/sでも長文脈では実効1tok/s)
             # ベンチ値ではなくエージェントで完走した実績を優先する。1課題の結果なので
             # 反例が出たら見直すこと。
-            k = first_ok("smart", "glimmer", "coder", "pro", "next")
+            k = first_ok("smart", "glimmer", "coder")
             if k:
                 return k
-        return first_ok("coder", "smart", "pro", "glimmer", "worker") or fallback()
+        return first_ok("coder", "smart", "glimmer", "worker") or fallback()
 
     # orchestra / critique(chat系: tools不問)
     if heavy:
         # next はエージェントループでは実効1tok/s(実測)なので後ろへ回す
-        k = first_ok("heavy", "smart", "pro", "next")
+        # heavy は tier=archive(明示指定のみ)なので難問の最終段は smart。
+        # 既定 allow_ram=False では smart(ram_gb=10>8) が落ち pro が受ける
+        k = first_ok("smart", "pro")
         if k:
             return k
     if code:
@@ -130,8 +142,8 @@ FIRST_RESPONDER_KEYS = ("worker",)
 
 # エスカレーション先の品質順(良い順)。2026-08-20のエージェント完走実測に合わせた
 # pick_model の並びと同じ根拠を使う。
-_ESCALATE_CODE = ("smart", "glimmer", "coder", "pro", "next")
-_ESCALATE_CHAT = ("heavy", "smart", "pro", "next")
+_ESCALATE_CODE = ("smart", "glimmer", "coder")
+_ESCALATE_CHAT = ("smart", "pro")
 
 
 def escalation_ladder(cfg, task: str, mode: str, target_key: str,

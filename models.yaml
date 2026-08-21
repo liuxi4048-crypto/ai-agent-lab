@@ -1,4 +1,18 @@
 # 16GB VRAM (RX 9070 XT / ROCm gfx1201) + 64GB RAM 前提のモデルマトリクス。
+#
+# 【共有契約】このファイルは ai-agent-lab 専用ではない。vault-search
+# (vaultsearch/config.py: ASK_DEFAULT_MODEL="fast") と vault-distill
+# (vaultdistill/config.py: EXTRACT_MODEL="fast") が読み取り専用で参照し、
+# キーが無いと SystemExit で即死する。キーを消す前に、拡張子を絞らず
+# C:\dev と ~/.claude を横断 grep して外部参照ゼロを確認すること。
+#
+# tier: モデルの選定状態(2026-08-22 再設計で導入。router.usable() が参照)
+#   agent     = エージェント適格(実タスク完走の実測あり)。自動ルーティング対象
+#   critic    = 批評専用(tools非対応でも可)。自動ルーティング対象(chat系のみ)
+#   probation = 保留。ツール必須経路(code/swarm-code)からのみ自動除外。
+#               chat系では候補に残る(再ベンチで agent か archive へ確定させる)
+#   external  = 外部システム専用。ai-agent-lab の自動ルーティングから常に除外
+#   archive   = 退役。自動ルーティングから常に除外(明示指定でのみ使用可)
 # placement:
 #   vram   = VRAMに全載り → 並列スロット(OLLAMA_NUM_PARALLEL)の対象にできる
 #   hybrid = VRAM+RAMオフロード(=本機での実用的な「RAM仮想VRAM」) → 直列実行を強制
@@ -27,6 +41,7 @@ models:
   worker:
     tag: "gpt-oss:20b"
     family: gpt-oss
+    tier: agent          # 実タスク5.6分◯(2026-08-20)・108.7 tok/s(08-21)
     placement: vram          # ~13GB 全載り。swarm並列の主役
     tools: true
     mtp: false
@@ -38,6 +53,7 @@ models:
   coder:
     tag: "qwen3:30b"
     family: qwen
+    tier: agent          # 実タスク14分◯(2026-08-20)・44.2 tok/s(08-21)
     placement: hybrid        # 18GB・77%GPU(50 tok/s実測)。spillするため並列不可
     tools: true
     mtp: false
@@ -50,6 +66,7 @@ models:
   smart:
     tag: "qwen3.6:35b"
     family: qwen
+    tier: agent          # 実タスク16分◯・成果物22KB最大(2026-08-20)
     placement: hybrid
     tools: true
     mtp: false
@@ -62,6 +79,7 @@ models:
   glimmer:
     tag: "muse-glimmer:30b"
     family: meta
+    tier: agent          # 実タスク7.8分◯=完走2位(2026-08-20)。tok/s(9.7)と完走時間が逆転する実測反例
     placement: hybrid        # 18GB dense(28Bデコーダ+2B vision)。9.7 tok/s実測(2026-08-21)
                              # ※2026-08-12の13.4は別条件の値。同一条件で測り直すと9.7。
                              # 公開時アナウンスのドラフタDFlashはOllamaパッケージに入って
@@ -79,6 +97,9 @@ models:
   pro:
     tag: "qwen3.8:27b"
     family: qwen35           # qwen3系とはthink/サンプリングの作法が違うので family を分ける
+    tier: probation      # 実タスク44.5分×(25反復未完・2026-08-20・1サンプル)のためツール必須経路から除外。
+                         # ただし chat難問分岐(既定allow_ram=False)では唯一の受け皿なので chat系には残す。
+                         # 再ベンチ(html/script/chatの3課題・num_ctx16384)で agent か archive へ確定させること
     placement: hybrid        # 18GB(本体17GB + vision projector 0.9GB) → 25%/75% CPU/GPU 実測
     tools: true
     mtp: true                # draft_num_predict 4 が焼き込み済み。切ると 21.5→9.4 tok/s
@@ -100,6 +121,7 @@ models:
   reasoner:
     tag: "deepseek-r1:14b"
     family: deepseek
+    tier: critic         # vram 9GB=交代質量最小の批評役。異ファミリーレビューの要
     placement: vram          # 9.3GB 全載り
     tools: false             # R1系はfunction calling非対応(批評・推論専用)
     num_ctx: 16384
@@ -107,39 +129,17 @@ models:
     strengths: [reasoning, math]
     for: "推論・数学。考察向き(コード生成は不可)"
     use: "深い推論・数学(CoT) / 批評ループの異ファミリーレビュアー"
-  deep:
-    tag: "deepseek-r1:70b"
-    family: deepseek
-    placement: hybrid        # 42GB dense → 1.6 tok/s実測。時間をかけてよい推論専用
-    tools: false
-    num_ctx: 8192
-    keep_alive: "10m"        # 大型hybridはRAM占有を抑えるため短め(既定30m)
-    ram_gb: 42               # dense 42GB。帯域律速で1.6 tok/s実測
-    options: {temperature: 0.6, top_p: 0.95, min_p: 0}
-    strengths: [reasoning, math]
-    for: "最も深い推論。非常に低速(コード生成は不可)"
-    use: "DeepSeek最大 / VRAM+RAM / 低速・最深推論枠"
-  next:
-    tag: "qwen3-coder-next"
-    family: qwen
-    placement: hybrid        # 51GB MoE(80B総/活性3B) → 21.2 tok/s実測・ロード29s(2026-08-12)
-    tools: true
-    num_ctx: 16384
-    keep_alive: "10m"
-    ram_gb: 46               # 51GBのうちVRAM超過分
-    options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}  # Qwen3-Coder公式
-    strengths: [coding, tool, reasoning]
-    for: "最高品質コーディング(RAM併用・エージェントでは非常に低速)"
-    # 単体ベンチ21.2 tok/s は短いプロンプトでの値。実運用(16K文脈のツールループ)では
-    # 2026-08-20の実測で45分に1反復=実効約1 tok/s。成果物自体は1反復で合格品だった。
-    use: "Qwen3-Next-80B-A3Bベースのコーディング特化 / SWE-bench V 70+ /
-      単発は21.2 tok/s だがエージェントループでは実効1 tok/s(45分で1反復)。長時間放置向け"
-  # 旧 next(hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M)は空応答バグで無効化
-  # (0.32.9 でも再現を確認 2026-08-12)。公式パッケージの qwen3-coder-next を後継として採用。
-  # 旧GGUF(48GB)は不要なら `ollama rm hf.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Q4_K_M` で解放可。
+  # --- 2026-08-22 退役・削除(再設計。詳細は docs/DESIGN-claude-code-integration.md) ---
+  # deep (deepseek-r1:70b, 42GB): 1.6 tok/s・21分でconst再代入× (2026-08-20実測)。
+  #   ram_gb=42はアイドル実効空きRAM(≈38.5GB)でもロード不能圏。批評役はreasonerに完全代替。ollama rm済み
+  # next (qwen3-coder-next, 51GB): エージェントループ実効≈1 tok/s(45分で1反復)。
+  #   スループットの物理限界で再ベンチ不要と判定。ollama rm済み。復帰は ollama pull qwen3-coder-next + エントリ再追加
   heavy:
     tag: "gpt-oss:120b"
     family: gpt-oss
+    tier: archive        # 2026-08-22退役: 65GB・9.4 tok/s・ram_gb見積りが2度外れた不確実性。
+                         # 難問の最終段は smart が担う。明示指定(model=heavy)でのみ使用可。
+                         # 90日(2026-11-20頃)使用実績ゼロなら ollama rm を検討
     placement: hybrid        # 65GB MoE(活性5.1B) → 10.7 tok/s実測
     tools: true
     num_ctx: 16384
@@ -155,6 +155,8 @@ models:
   fast:
     tag: "gemma3:12b"
     family: gemma
+    tier: external       # vault-search/vault-distill の既定モデル(共有契約)。
+                         # ai-agent-lab の自動ルーティングからは除外。このキーを消すと両ツールが即死する
     placement: vram
     tools: false             # gemma3はtools非対応=chat専用
     num_ctx: 16384
@@ -182,7 +184,5 @@ critique_pairs:
   worker: reasoner
   glimmer: reasoner
   pro: reasoner
-  next: reasoner
   heavy: reasoner
   reasoner: worker
-  deep: worker

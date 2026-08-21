@@ -69,7 +69,8 @@ PRESETS = {
 }
 
 # 希望モデルが未インストールのときの降格順(vram配置=軽いものを優先)
-FALLBACK = ["worker", "reasoner", "fast", "coder", "smart", "heavy"]
+# fast(tier:external=vault専用)と heavy(tier:archive=退役)は降格先から外す(2026-08-22)
+FALLBACK = ["worker", "reasoner", "coder", "smart"]
 
 SYSTEM_PROMPT = """あなたはコードレビュアーです。与えられた観点**だけ**に集中し、他の観点は無視してください。
 
