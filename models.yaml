@@ -8,6 +8,15 @@
 # ram_gb: モデル本体がRAM側に必要とする概算容量(GB)。空きRAMが足りないモデルは
 #   選択肢から外し、ページング(極端な低速化)を避けるための目安。
 # tools: function calling 対応。false のモデルはチャット/批評専用(コーディングエージェント不可)。
+# mtp: MTP(Multi-Token Prediction)テンソルを同梱し、Ollamaの自己投機デコードが効くか。
+#   判定は `ollama show <tag>` の Parameters に draft_num_predict があるかどうか。
+#   ※選定の判断軸であって、コードからは読んでいない(Ollamaがモデル側の既定で有効化する)。
+#   2026-08-21実測: MTP有無で2倍以上開く。パラメータ数やファイルサイズより効く。
+#     qwen3.8:27b  21.5 tok/s → draft_num_predict=0 で 9.4 tok/s (2.3倍)
+#     nemotron-3.5-lightning 42.4 → 33.5 (1.27倍)
+#   外付けドラフタは不可: 別GGUFを DRAFT に指定すると Ollama 0.32.14 は MTP 経路に入り
+#   「context type MTP requested but model doesn't contain MTP layers」で起動に失敗する
+#   (qwen3:30b + qwen3:1.7b、vocab 151936 一致でも不可)。恩恵はMTP同梱モデルに限られる。
 # options: モデル公式推奨のサンプリング値(llm.py が既定として送る。呼び出し側の明示指定が優先)。
 #   min_p は llama.cpp 既定 0.1 に上書きされないよう必ず明示する(Qwen/gpt-oss 公式は 0)。
 # think: thinking の既定指定(gpt-oss系="low"/"medium"/"high", deepseek系=true/false)。
@@ -20,6 +29,7 @@ models:
     family: gpt-oss
     placement: vram          # ~13GB 全載り。swarm並列の主役
     tools: true
+    mtp: false
     num_ctx: 16384
     options: {temperature: 1.0, top_p: 1.0, top_k: 0, min_p: 0}   # OpenAI公式推奨
     strengths: [tool, speed, reasoning]
@@ -30,6 +40,7 @@ models:
     family: qwen
     placement: hybrid        # 18GB・77%GPU(50 tok/s実測)。spillするため並列不可
     tools: true
+    mtp: false
     num_ctx: 16384
     ram_gb: 6                # 18GBのうちVRAMに載り切らない分だけRAMへ
     options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}  # Qwen3公式(non-thinking/coder)
@@ -41,6 +52,7 @@ models:
     family: qwen
     placement: hybrid
     tools: true
+    mtp: false
     num_ctx: 16384
     ram_gb: 10
     options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}
@@ -50,20 +62,26 @@ models:
   glimmer:
     tag: "muse-glimmer:30b"
     family: meta
-    placement: hybrid        # 18GB dense(28Bデコーダ+2B vision) → 13.4 tok/s実測(2026-08-12)
+    placement: hybrid        # 18GB dense(28Bデコーダ+2B vision)。9.7 tok/s実測(2026-08-21)
+                             # ※2026-08-12の13.4は別条件の値。同一条件で測り直すと9.7。
+                             # 公開時アナウンスのドラフタDFlashはOllamaパッケージに入って
+                             # おらず、draft_num_predictを4/8にしても変化しない(実測)。
     tools: true
+    mtp: false
     num_ctx: 16384           # GQA 16:1 でKVが小さく128K対応だが、hybrid時はVRAM節約を優先
     ram_gb: 6
     options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}  # Meta公式推奨
     think: "low"             # 既定でthinkingが長く、13tok/sではループが重い。planner等はeffortで上げる
     strengths: [tool, coding, reasoning]
     for: "エージェント特化(Meta)。ツール呼び出しに強い"
-    use: "agentic特化 / SWE-bench V 76.0 / dense28B・13.4tok/s実測 / reasoning effort可変"
+    use: "agentic特化 / SWE-bench V 76.0 / dense28B・9.7tok/s実測(2026-08-21) /
+      MTP非同梱で自己投機が効かず、同サイズのproに2.2倍差をつけられる / reasoning effort可変"
   pro:
     tag: "qwen3.8:27b"
     family: qwen35           # qwen3系とはthink/サンプリングの作法が違うので family を分ける
     placement: hybrid        # 18GB(本体17GB + vision projector 0.9GB) → 25%/75% CPU/GPU 実測
     tools: true
+    mtp: true                # draft_num_predict 4 が焼き込み済み。切ると 21.5→9.4 tok/s
     num_ctx: 16384           # ネイティブ256Kだが、KVを積むとVRAMを食うので既定は据え置き
     ram_gb: 6
     keep_alive: "10m"
@@ -75,7 +93,7 @@ models:
     strengths: [coding, tool, reasoning]   # visionは対応するがアプリ側に画像送信の経路が無い
     for: "最新Qwen。高品質・長文脈のエージェント"
     use: "dense27.3B+vision / 64層中16層のみfull attention=KVが通常の約1/4 / MTP自己投機ON /
-      23 tok/s実測(同サイズdenseのglimmer 13.4の1.7倍) /
+      21.5 tok/s実測(2026-08-21。同サイズdenseのglimmer 9.7 の2.2倍。差はMTP自己投機) /
       SWE-bench Pro 61.7・Terminal-Bench2.1 73.0・OSWorld 84.3(いずれもQwen自己計測) /
       実タスク(マリオ風ゲーム)では44分・25反復を使い切って未完(2026-08-20、1サンプル)"
 
@@ -146,6 +164,14 @@ models:
     use: "高速チャット・多言語 / 非エージェント"
 
 default: coder
+
+# カスケード(安価な一次受け → 本命 → 上位のエスカレーション)。
+# router.escalation_ladder が参照する。false にすると従来どおり pick_model の
+# 一発選択で最後まで走る。
+# 2026-08-21実測: worker(gpt-oss:20b, VRAM全載り) 108.7 tok/s・ロード17.3s に対し
+# coder(qwen3:30b, hybrid) 44.2 tok/s・ロード27.1s。簡単なタスクは worker が
+# 3反復で完了し、hybrid のロードもスピルも一切払わずに済む(実測)。
+cascade: true
 
 # 批評ループの異ファミリーペア既定(router.pyが参照)。
 # レビュアーは原則 vram 常駐の reasoner に寄せる: hybrid 同士のペア(旧 heavy→smart 等)は

@@ -148,7 +148,7 @@ def _is_failure(name, result):
 async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                     should_stop=None, on_status=None, toolbox=None,
                     extra_system="", history=None, history_out=None,
-                    deliverable=None):
+                    deliverable=None, cascade=None, cascade_state=None):
     """エージェント本体(await 可能)。
 
     emit(str): 出力先(既定 print / サーバでは EventBus のログへ)。
@@ -168,11 +168,34 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
       (チェックポイント保存が実行途中の会話を拾えるように)。
     deliverable: 成果物の形式(html / exe / script)。指定すると
       「そのまま動かせるもの」を作らせる指示が system prompt に追加される。
+    cascade: エスカレーション梯子(models.yaml のキー列。router.escalation_ladder が作る)。
+      渡すと先頭の安価なモデルで走り出し、検証の差し戻し・同一失敗の連続・一次受けの
+      反復上限のいずれかで次の段へ上げる。会話履歴は引き継ぐ(作り直さない)。
+      None なら従来どおり model 単独で最後まで走る。
+    cascade_state: 到達済みの段を持ち回すための dict(呼び出し側が保持する)。
+      run_agent は開始時に state['rung'] から再開し、交代のたびに書き戻す。
+      これが無いと FIX ラウンドや継続実行のたびに一次受けへ巻き戻り、
+      hybrid の再ロードを払い直すことになる(カスケードの目的を自ら潰す)。
     返り値: finish の summary / REPORT 本文 / None(停止時)。
     """
     cfg = llm.load_config()
-    key = model or cfg.get("default", "coder")
+    # target = 呼び出し側が選んだ本命。梯子はこの前後に段を足したもの。
+    target = model or cfg.get("default", "coder")
+    # 梯子は「安価な一次受け → 本命 → 上位」。未知キーは落とし、空なら単独実行に戻す。
+    ladder = [k for k in (cascade or []) if k in cfg.get("models", {})] or [target]
+    # 前の実行で上げた段から再開する(FIXラウンド・継続実行で巻き戻さない)。
+    rung = 0
+    if cascade_state:
+        try:
+            rung = min(max(int(cascade_state.get("rung", 0)), 0), len(ladder) - 1)
+        except (TypeError, ValueError):
+            rung = 0
+    key = ladder[rung]
     info = llm.resolve(cfg, key)
+    # 一次受け = 本命より前に置かれた段。placement から推測せず target と直接比べる
+    # (vram のモデルが本命に選ばれたケースを一次受けと誤判定しないため)。
+    first_is_cheap = rung == 0 and ladder[0] != target
+    first_budget = max(4, max_iter // 3)
     if not info["tools"]:
         raise ValueError(f"モデル '{key}' ({info['tag']}) は tools 非対応のためエージェント実行不可")
     tb = toolbox or Toolbox(approve=approve)
@@ -207,10 +230,42 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
         if history_out is not None:
             history_out[:] = messages
 
+    def _escalate(why: str) -> bool:
+        """梯子の次の段へモデルを上げる。上げられたら True。
+
+        会話履歴はそのまま引き継ぎ、交代の事実と理由だけをユーザーターンで伝える
+        (system への後挿入はチャットテンプレート依存になるため避ける)。
+        """
+        nonlocal rung, key, info, first_is_cheap, loop_hint
+        nonlocal finish_rejects, fail_streak, last_fail_key, no_tool_streak
+        while rung + 1 < len(ladder):
+            rung += 1
+            cand = ladder[rung]
+            cand_info = llm.resolve(cfg, cand)
+            if not cand_info["tools"]:
+                continue          # tools非対応の段は飛ばす(エージェント実行不可)
+            key, info = cand, cand_info
+            first_is_cheap = False        # 一段でも上げたら反復での足切りはしない
+            finish_rejects = fail_streak = no_tool_streak = 0
+            last_fail_key = None
+            loop_hint = ""                # 旧モデル宛の警告文を持ち越さない
+            if cascade_state is not None:
+                cascade_state["rung"] = rung   # 次の run_agent はこの段から再開する
+            emit(f"\n[エスカレーション] {why} → {cand} ({cand_info['tag']}) へ交代")
+            messages.append({"role": "user", "content":
+                             f"【モデル交代】ここから別のモデルが引き継ぐ。理由: {why}\n"
+                             "これまでの経緯と失敗した手を踏まえ、同じ手を繰り返さずに進めること。"})
+            _status({"type": "escalate", "model": cand, "tag": cand_info["tag"],
+                     "reason": why, "rung": rung, "rungs": len(ladder)})
+            _sync_out()
+            return True
+        return False
+
     try:
         _status({"type": "start", "model": key, "tag": info["tag"]})
         _sync_out()   # 開始直後から history_out に会話を共有(チェックポイント用)
         emit(f"[agent] model={key} ({info['tag']})  approve={tb.approve}  max_iter={max_iter}"
+             + (f"  cascade={'→'.join(ladder)}" if len(ladder) > 1 else "")
              + ("  (継続)" if history else ""))
         emit(f"[goal] {goal}\n")
 
@@ -219,6 +274,11 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                 emit("\n[停止] ユーザーにより中断されました。")
                 _status({"type": "end", "reason": "stopped"})
                 return None
+            # 一次受けの足切り。安価なモデルは外れても損が小さいが、粘らせると
+            # 「速いだけで終わらない」に転ぶので反復数で上限を切る。
+            # _compress_history より前に上げる(交代後の num_ctx で圧縮するため)。
+            if first_is_cheap and i > first_budget:
+                _escalate(f"一次受けが{first_budget}反復で決着しなかった")
             _status({"type": "iter", "iter": i, "max": max_iter, "phase": phase})
             emit(f"=== iter {i}/{max_iter}  phase={phase} ===")
             _compress_history(messages, info["num_ctx"], emit, measured=prompt_tokens)
@@ -278,6 +338,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
 
             _status({"type": "phase", "state": "tool"})   # ここからGPUは解放される
             tool_names, last_run_ok, summary = [], True, None
+            pending_escalation = None      # この反復で発生した交代理由(tool ループ後に実行)
             for idx, tc in enumerate(tool_calls):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
@@ -302,6 +363,12 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                         reason += f"(差し戻し {finish_rejects}/{MAX_FINISH_REJECTS}回目)"
                         emit("  " + reason)
                         messages.append({"role": "tool", "tool_name": name, "content": reason})
+                        # 成果物の検証を続けて落とすのは能力不足の最も確かな兆候なので、
+                        # 差し戻し上限に達する前に上の段へ渡す。ただし tool_calls の
+                        # 途中で user メッセージを挟むと tool 応答の並びが壊れるため、
+                        # 実際の交代はこの反復の tool ループを抜けてから行う。
+                        if finish_rejects >= 2 and not pending_escalation:
+                            pending_escalation = f"成果物の検証に{finish_rejects}回連続で失敗"
                         continue
                     summary = args.get("summary", "")
                     emit("\n[FINISH] " + summary)
@@ -326,13 +393,24 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                     fail_streak = fail_streak + 1 if fk == last_fail_key else 1
                     last_fail_key = fk
                     if fail_streak >= 3:
-                        loop_hint = (f"警告: {name} が同じ引数で{fail_streak}回連続失敗している。"
-                                     "同じ操作を繰り返さないこと。read_file で現物を確認し、"
-                                     "引数を変える・別のツールを使うなど方法を変えること。")
+                        # 上の段が残っていれば交代に委ねる(交代は tool ループを抜けてから)。
+                        # 上げられない場合だけ、従来どおり警告文で介入する。
+                        if rung + 1 < len(ladder) and not pending_escalation:
+                            pending_escalation = f"{name} が同じ引数で{fail_streak}回連続失敗"
+                        else:
+                            loop_hint = (f"警告: {name} が同じ引数で{fail_streak}回連続失敗している。"
+                                         "同じ操作を繰り返さないこと。read_file で現物を確認し、"
+                                         "引数を変える・別のツールを使うなど方法を変えること。")
                 else:
                     if (name, json.dumps(args, ensure_ascii=False, sort_keys=True)[:1000]) == last_fail_key:
                         fail_streak, last_fail_key = 0, None
 
+            # 保留していた交代をここで実行する(tool 応答の並びを壊さない位置)。
+            # summary が確定している(finishが通った)なら交代しない。使われない
+            # モデルへの交代イベントと user メッセージを履歴に残さないため。
+            if pending_escalation and summary is None:
+                _escalate(pending_escalation)
+            pending_escalation = None
             _sync_out()
             if summary is not None:
                 emit("\n=== 完了 ===")
@@ -453,9 +531,22 @@ def main():
     ap.add_argument("--yes", action="store_true", help="run_command の承認を省略(自走)")
     ap.add_argument("--deliverable", choices=sorted(DELIVERABLE_PROMPTS),
                     default=None, help="成果物の形式(html=単一HTMLアプリ / exe / script)")
+    ap.add_argument("--cascade", default=None,
+                    help="エスカレーション梯子をカンマ区切りで明示(例: worker,coder,glimmer)。"
+                         "'auto' で router.escalation_ladder に組ませる")
     args = ap.parse_args()
+    cascade = None
+    if args.cascade == "auto":
+        import router
+        cfg = llm.load_config()
+        cascade = router.escalation_ladder(
+            cfg, args.goal, "code", args.model or cfg.get("default", "coder"),
+            installed=set(asyncio.run(llm.list_models())), free_ram_gb=llm.free_ram_gb())
+    elif args.cascade:
+        cascade = [k.strip() for k in args.cascade.split(",") if k.strip()]
     asyncio.run(run_agent(args.goal, model=args.model, max_iter=args.max_iter,
-                          approve=not args.yes, deliverable=args.deliverable))
+                          approve=not args.yes, deliverable=args.deliverable,
+                          cascade=cascade))
 
 
 if __name__ == "__main__":

@@ -36,6 +36,34 @@ def _tools_required(mode: str) -> bool:
     return mode in ("code", "swarm-code")
 
 
+def usable(cfg, key: str, mode: str, installed: set | None = None,
+           allow_ram: bool = False, free_ram_gb: float | None = None) -> bool:
+    """models.yaml のキーが今この環境で選択可能か。
+
+    pick_model / escalation_ladder が共有する候補フィルタ。
+    - installed が渡されていれば、Ollamaに実在するタグだけを可とする
+    - tools 必須モードでは tools 非対応モデルを除外する
+    - hybrid は ram_gb が LIGHT_HYBRID_GB 以下なら常に可(実測で実用速度)。
+      それ以上は allow_ram=True のときだけ可。いずれも空きRAMが足りなければ
+      不可(ページングによる激遅化を回避)。
+    """
+    m = cfg.get("models", {}).get(key)
+    if m is None:
+        return False
+    tag = m.get("tag", "")
+    if not (installed is None or tag in installed or f"{tag}:latest" in installed):
+        return False
+    if _tools_required(mode) and not m.get("tools", False):
+        return False
+    if m.get("placement") == "hybrid":
+        need = m.get("ram_gb", 0)
+        if not allow_ram and need > LIGHT_HYBRID_GB:
+            return False
+        if free_ram_gb is not None and need and need > free_ram_gb:
+            return False
+    return True
+
+
 def pick_model(cfg, task: str, mode: str, installed: set | None = None,
                allow_ram: bool = False, free_ram_gb: float | None = None) -> str:
     """タスク文とモードから models.yaml のキーを選ぶ。
@@ -48,22 +76,8 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
     """
     models = cfg.get("models", {})
 
-    def _found(tag: str) -> bool:
-        return installed is None or tag in installed or f"{tag}:latest" in installed
-
     def ok(key: str) -> bool:
-        m = models.get(key)
-        if m is None or not _found(m.get("tag", "")):
-            return False
-        if _tools_required(mode) and not m.get("tools", False):
-            return False
-        if m.get("placement") == "hybrid":
-            need = m.get("ram_gb", 0)
-            if not allow_ram and need > LIGHT_HYBRID_GB:
-                return False
-            if free_ram_gb is not None and need and need > free_ram_gb:
-                return False   # ページングして極端に遅くなるので使わない
-        return True
+        return usable(cfg, key, mode, installed, allow_ram, free_ram_gb)
 
     def first_ok(*keys: str) -> str | None:
         for k in keys:
@@ -109,6 +123,66 @@ def pick_model(cfg, task: str, mode: str, installed: set | None = None,
         if k:
             return k
     return first_ok("worker") or fallback()
+
+
+# 一次受けの候補(安価・高速な側)。VRAM全載り・tools対応のものだけを置く。
+FIRST_RESPONDER_KEYS = ("worker",)
+
+# エスカレーション先の品質順(良い順)。2026-08-20のエージェント完走実測に合わせた
+# pick_model の並びと同じ根拠を使う。
+_ESCALATE_CODE = ("smart", "glimmer", "coder", "pro", "next")
+_ESCALATE_CHAT = ("heavy", "smart", "pro", "next")
+
+
+def escalation_ladder(cfg, task: str, mode: str, target_key: str,
+                      installed: set | None = None, allow_ram: bool = False,
+                      free_ram_gb: float | None = None) -> list[str]:
+    """「安価な一次受け → 本命 → 上位」の順にモデルキーを並べて返す。
+
+    pick_model は一発ルータで、最初から本命(多くは hybrid)を選ぶ。そのため
+    簡単なタスクでも hybrid のロード(実測25〜28秒)とRAMスピルを毎回払う。
+    2026-08-21実測(同一プロンプト / num_ctx 4096 / think off / RX 9070 XT):
+      gpt-oss:20b(VRAM全載り) 108.7 tok/s ・ロード17.3s
+      qwen3:30b(hybrid)        44.2 tok/s ・ロード27.1s
+      nemotron-3.5-lightning   42.4 tok/s / qwen3.8:27b 21.5 / muse-glimmer 9.7
+    一次受けは本命の約2.5倍速くスワップも起きないので、外れても損失が小さい。
+
+    根拠(外部): Together AI の DeepSWE 実測では、安価なモデルを一次実行に置き
+    失敗時のみ上位へ回すカスケードが、理想的な一発ルータの上限(80.8%)を上回る
+    83.0% を約1/2.5のコストで達成した。単体モデルの順位ではなく配分方式が効く。
+
+    `cascade: false` を models.yaml に置けば無効化でき、[target_key] だけを返す。
+    """
+    if not cfg.get("cascade", True):
+        return [target_key]
+
+    models = cfg.get("models", {})
+
+    def ok(key: str) -> bool:
+        return usable(cfg, key, mode, installed, allow_ram, free_ram_gb)
+
+    ladder: list[str] = []
+
+    # (1) 一次受け。本命が hybrid のときだけ前に置く。本命が既に VRAM 全載りなら
+    #     カスケードの利得(ロード+スピルの回避)が無いので何も足さない。
+    if models.get(target_key, {}).get("placement") == "hybrid":
+        for k in FIRST_RESPONDER_KEYS:
+            if k != target_key and models.get(k, {}).get("placement") == "vram" and ok(k):
+                ladder.append(k)
+                break
+
+    # (2) 本命
+    ladder.append(target_key)
+
+    # (3) 上位は1段だけ。ロード時間が段ごとに二重に乗るので深追いしない。
+    order = _ESCALATE_CODE if mode in ("code", "swarm-code") else _ESCALATE_CHAT
+    if target_key in order:
+        for k in order[:order.index(target_key)]:
+            if k not in ladder and ok(k):
+                ladder.append(k)
+                break
+
+    return ladder
 
 
 # 成果物形式の自動判定。「そのまま遊べる/使える」ものになりやすい形式を選ぶ。

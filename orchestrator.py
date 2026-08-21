@@ -17,6 +17,7 @@ import re
 
 import claude_review
 import llm
+import router
 from agent import run_agent
 from artifacts import save_artifacts
 from events import EventBus
@@ -751,8 +752,48 @@ class CodeOrchestrator:
             should_stop=lambda: self.run.cancelled,
             on_status=on_status, toolbox=toolbox, extra_system=extra_system,
             history=history, history_out=history_out,
-            deliverable=self.run.deliverable)
+            deliverable=self.run.deliverable,
+            cascade=await self._ladder(), cascade_state=self._cascade_state())
         return summary, (history_out or None)
+
+    async def _ladder(self) -> list[str] | None:
+        """このRunのエスカレーション梯子。1段しか無ければ None(従来動作)。
+
+        1Runにつき1回だけ組み立てて使い回す(継続実行でも同じ梯子を保つ)。
+        並列サブコーダー(swarm)には渡さない: 複数のサブが同時に上の段へ上がると
+        hybrid モデルの交互ロードでVRAMを取り合い、かえって遅くなるため。
+        """
+        cached = getattr(self, "_ladder_cache", False)
+        if cached is not False:
+            return cached
+        try:
+            installed = set(await llm.list_models())
+            ladder = router.escalation_ladder(
+                self.cfg, self.run.task, self.run.mode, self.run.model,
+                installed=installed, allow_ram=self.run.hybrid,
+                free_ram_gb=llm.free_ram_gb())
+        except Exception as e:      # 梯子が組めないことで本体を落とさない
+            print(f"[cascade] 梯子の構築に失敗、単独実行に戻す: {type(e).__name__}: {e}")
+            ladder = None
+        if ladder and len(ladder) < 2:
+            ladder = None
+        self._ladder_cache = ladder
+        return ladder
+
+    def _cascade_state(self) -> dict:
+        """到達済みの段を Run に紐づけて保持する入れ物。
+
+        オーケストレータのインスタンスではなく Run に持たせるのは、FIXラウンド
+        (同一インスタンス)だけでなく継続実行(server.py が CodeOrchestrator を
+        作り直す)でも段を引き継ぐため。一度 hybrid まで上げたのに、次のラウンドで
+        また一次受けから始めてロードを payし直す、という取りこぼしを防ぐ。
+        プロセスをまたぐ永続化はしない(新しいセッションは安価な段から試してよい)。
+        """
+        state = getattr(self.run, "cascade_state", None)
+        if state is None:
+            state = {}
+            self.run.cascade_state = state
+        return state
 
     async def _maybe_review_and_fix(self, task_desc: str, summary: str | None,
                                     history: list | None, root_id: str,
