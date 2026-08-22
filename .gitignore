@@ -4,6 +4,7 @@ runs/
 workspace/
 projects/run_*/
 projects/chat_*/
+projects/bench_*/
 app.log
 dist/
 build/

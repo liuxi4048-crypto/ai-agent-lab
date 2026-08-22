@@ -1,9 +1,0 @@
-```json
-{
-  "company": "株式会社サンプル",
-  "product": "ライトノート",
-  "price_jpy": 19800,
-  "release_date": "2026-09-15",
-  "os": ["Windows", "macOS"]
-}
-```
