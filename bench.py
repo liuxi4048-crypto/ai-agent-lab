@@ -136,11 +136,8 @@ def _fenced_blocks(text: str, langs: tuple[str, ...]) -> list[str]:
             if (m.group(1) or "").lower() in langs]
 
 
-def _balanced_json(text: str) -> str | None:
-    """最初の { または [ から対応する閉じ括弧までを切り出す(フェンス無し出力の保険)。"""
-    start = min((i for i in (text.find("{"), text.find("[")) if i >= 0), default=-1)
-    if start < 0:
-        return None
+def _balanced_span(text: str, start: int) -> str | None:
+    """text[start] の { / [ から対応する閉じ括弧までを切り出す(文字列内の括弧は無視)。"""
     depth, in_str, esc = 0, False, False
     for i in range(start, len(text)):
         ch = text[i]
@@ -160,6 +157,23 @@ def _balanced_json(text: str) -> str | None:
             depth -= 1
             if depth == 0:
                 return text[start:i + 1]
+    return None
+
+
+def _balanced_json(text: str) -> str | None:
+    """フェンス無し出力の保険: JSON として読める最初の { … } / [ … ] を返す。
+
+    地の文に含まれる括弧(「{注}」等)から始めても読めないので、開始候補を順に試す。
+    """
+    for m in re.finditer(r"[{\[]", text):
+        span = _balanced_span(text, m.start())
+        if span is None:
+            return None
+        try:
+            json.loads(span)
+            return span
+        except ValueError:
+            continue
     return None
 
 
