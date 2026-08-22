@@ -167,6 +167,32 @@ claude    # 一度起動してログイン(サブスクアカウント)してお
 - **削除・全停止は2段階クリック**。空状態にはサンプルタスクのチップ
 - `prefers-reduced-motion` を尊重(点滅を止め、色分けは維持)
 
+## ローカルLLM性能ベンチ(2026-08-22追加)
+
+サイドバーのゲージアイコン(性能ベンチ)から、**選んだ1モデルに固定の課題集を投げて、
+LLM自体の速度と成果物の質を2軸で測る**。結果は通常のRunとして履歴に残り、
+設定画面の下に**モデル比較表**(完了したベンチの横並び)が出る。
+
+- 課題は `bench_suite.yaml`(ゲーム/推論×2/コーディング/データ整形/文章の6件)。
+  単発生成(ツールループなし)なので tools 非対応の reasoner/fast も測れる。
+  課題はチェックボックスで絞れ、反復回数(1〜5)で速度のばらつき(±)も見られる
+- **速度軸**: 生成 tok/s(thinking含む)・初トークンまでの時間(TTFT)・モデルロード時間・生成トークン数。
+  `llm.py` の `_timing` メタ(クライアント実測 + Ollama 申告の `eval_duration` 等)から出す。
+  TTFT はロード込みの実測値なので、ウォーム値(ロードが乗っていない課題の平均)を別に出す
+- **品質軸**: ①決定論チェック(LLM不使用: 正答の正規表現、`python main.py` の実行と期待出力、
+  index.html の DOM スタブ起動検査、JSON の構文・値一致、字数)と ②LLM採点
+  (要件充足/正確性/完成度を 1〜5 の絶対採点。judge は `critique_pairs` で**対象と別ファミリー**を自動選択。
+  pairwise 比較は提示順で勝者が入れ替わる位置バイアスが知られているため採らない)
+- 実行順は「全課題を生成 → チェック → judge で全件採点」の3フェーズ直列。
+  `OLLAMA_MAX_LOADED_MODELS=1` で対象⇄judge を課題ごとに交互ロードすると計測が汚れるため
+- **tier ゲートを通さない**: 保留(probation)/退役(archive)のモデルも選べる。再ベンチして
+  models.yaml の tier を確定させる用途(`pro` の再ベンチ TODO 参照)
+- 成果物は `projects/bench_<run_id>/<課題>/r<n>/` に保存(生応答 `response.md`・thinking・抽出物)。
+  表の成果物リンクから開ける。API: `GET /bench/suite` / `POST /bench {model, tasks, repeats, judge}`
+- **注意**: 単発生成の tok/s はエージェント実運用の完走性能を保証しない(2026-08-20実測:
+  9.7 tok/s の glimmer が 21.5 tok/s の pro より先に完走)。ルーティング順位は従来どおり完走実績で決める。
+  LLM採点は judge の癖を含むので、同じ judge・同じ課題セットの Run 同士で比べる
+
 ## 起動
 
 ```
@@ -174,6 +200,8 @@ python server.py     # → http://127.0.0.1:8765
 python app.py        # デスクトップアプリ(WebView2)。Ollama自動起動付き
 python agent.py "todo-cli に TODO CLI を作って動かして" [--model coder] [--yes]   # CLI
 ```
+
+ベンチはUI(サイドバーのゲージ)か `curl -X POST localhost:8765/bench -d '{"model":"coder"}'`。
 
 ## モデル戦略(16GB VRAM + 64GB RAM / RX 9070 XT / Ollama 0.32.14)
 
@@ -334,7 +362,9 @@ claude_review.py  【任意】Claude Code CLI(サブスク認証)を呼ぶ最終
                   既定OFF、シェル渡さず、中断watchdog付き、修正後はローカル検証を必ず通す
 hooks/            claude_review が CLI に噛ませる PreToolUse フック(ルート外書き込み拒否)
 panel.py          観点別並列レビューCLI(local-reviewer / codex-reviewer の実体)
-server.py         FastAPI(/run /run/{id} /events SSE /approvals /models /claude /health)
+bench.py          ローカルLLM性能ベンチ(固定課題→速度/品質の2軸計測。mode=bench の Run)
+bench_suite.yaml  ベンチの課題集(プロンプト・決定論チェック・採点観点)
+server.py         FastAPI(/run /run/{id} /events SSE /approvals /models /claude /health /bench)
 static/index.html 旧ダッシュボード(/legacy で残置)
 app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
 step1_chat.py     学習用: 最小チャット / step2_tool.py 学習用: 最小ツールループ

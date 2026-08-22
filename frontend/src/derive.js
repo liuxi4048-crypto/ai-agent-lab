@@ -33,6 +33,7 @@ export const RUN_STATUS = {
 // 内部のモード名・成果物形式は出さず、「何をするか」が分かる日本語で見せる。
 export const MODE_LABEL = {
   code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲",
+  bench: "ベンチ",
 };
 export const DELIVERABLE_LABEL = { html: "HTMLアプリ", exe: "exe", script: "スクリプト" };
 
@@ -176,6 +177,17 @@ export function fmtAgo(epochSec) {
 
 export function fmtGB(bytes) {
   return (bytes / 1024 ** 3).toFixed(1);
+}
+
+/** ベンチ表示用: 数値を固定小数で、未計測(null)は「—」 */
+export function fmtNum(v, digits = 1) {
+  return v == null ? "—" : Number(v).toFixed(digits);
+}
+
+/** ベンチ表示用: ミリ秒を 1秒未満は ms、以上は s で */
+export function fmtMs(v) {
+  if (v == null) return "—";
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`;
 }
 
 /** カードに出す最新1行(coderログ優先、なければ生成プレビュー末尾行) */

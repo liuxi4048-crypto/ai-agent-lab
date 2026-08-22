@@ -45,3 +45,13 @@ export const resolveApproval = (runId, aid, approved) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approved }),
   }).then(jsonOrThrow);
+
+// ---- ベンチ(固定プロンプト集による性能測定) ----
+export const fetchBenchSuite = () => fetch("/bench/suite").then(jsonOrThrow);
+
+export const startBench = (payload) =>
+  fetch("/bench", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(jsonOrThrow);

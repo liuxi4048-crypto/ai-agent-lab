@@ -82,7 +82,7 @@ _SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=", re.IGNORECASE)
 _node_available = None  # None=未判定 / True / False
 
 
-async def _js_syntax_check(path, content):
+async def js_syntax_check(path, content):
     """HTML内のインラインJS・.js を Node で構文チェックする。
 
     Node が無い環境では黙ってスキップする(必須依存にしない)。
@@ -268,13 +268,17 @@ class Toolbox:
     approver: async callable(command, cwd) -> bool。None かつ approve=True ならコンソール承認。
     """
 
-    def __init__(self, subdir="", approve=True, approver=None):
+    def __init__(self, subdir="", approve=True, approver=None, env=None):
         root = os.path.normpath(os.path.join(WORKSPACE, subdir)) if subdir else WORKSPACE
         if not (root == WORKSPACE or root.startswith(WORKSPACE + os.sep)):
             raise ValueError(f"subdir が projects/ の外を指している: {subdir}")
         self.root = root
         self.approve = approve
         self.approver = approver
+        # 子プロセス(run_command / verify_runtime)へ渡す環境変数。None=親プロセスを継承。
+        # 無人実行(bench等)では秘密情報(APIキー等)を剥いだ env を渡し、生成コードが
+        # 環境変数経由で持ち出せないようにする
+        self.env = env
         # この Run が書き込んだ相対パス。finishゲートの検査対象を「今回作ったもの」に
         # 限定するために使う(root=projects/ 共有時に過去Runの残骸で誤通過しないように)。
         self.touched = set()
@@ -496,7 +500,7 @@ class Toolbox:
         proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
-                command, cwd=cwd,
+                command, cwd=cwd, env=self.env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -594,7 +598,7 @@ class Toolbox:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(harness)
             proc = await asyncio.create_subprocess_exec(
-                "node", tmp,
+                "node", tmp, env=self.env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
         except FileNotFoundError:
@@ -711,7 +715,7 @@ class Toolbox:
         try:
             p = self._safe_path(path)
             with open(p, "r", encoding="utf-8", errors="replace") as f:
-                return await _js_syntax_check(path, f.read())
+                return await js_syntax_check(path, f.read())
         except (OSError, ValueError):
             return None
 

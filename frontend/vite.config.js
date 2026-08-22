@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 const BACKEND = "http://127.0.0.1:8765";
 // SSE(/events)含め全APIを FastAPI(8765) へプロキシ
 const proxy = Object.fromEntries(
-  ["/run", "/runs", "/events", "/models", "/health", "/gpu", "/workspace", "/projects"].map(
+  ["/run", "/runs", "/events", "/models", "/health", "/gpu", "/workspace", "/projects", "/bench"].map(
     (p) => [p, { target: BACKEND, changeOrigin: true }],
   ),
 );

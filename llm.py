@@ -15,13 +15,17 @@ tool_call_id は存在しない。ツール結果は role=tool を呼び出し�
   明示指定が上書きする。全モデル一律 temperature の旧方式は品質劣化要因だった
   (Qwen公式は貪欲寄りデコードを反復ループの原因として禁止、gpt-ossはtemp1.0推奨)。
 - 応答メタは "_" プレフィックスのキーで返す(_usage/_prompt_tokens/_thinking/
-  _done_reason)。履歴に追加する前に strip_meta() で剥がすこと。
+  _done_reason/_timing)。履歴に追加する前に strip_meta() で剥がすこと。
+- _timing はベンチ(bench.py)用の速度計測: 初トークンまでの実測(ttft_ms)と、
+  done チャンクが持つ Ollama 内部の所要時間(load/prompt_eval/eval/total)を ms で返す。
+  tok_per_s は eval_count / eval_duration(thinking含む純粋な生成速度)。
 """
 import asyncio
 import contextlib
 import json
 import os
 import sys
+import time
 
 import httpx
 import yaml
@@ -88,7 +92,7 @@ def resolve(cfg, key):
         return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
                 "num_gpu": None, "ram_gb": 0, "options": {}, "options_no_think": {},
-                "think": None,
+                "think": None, "tier": "agent",
                 "strengths": [], "for": "", "use": ""}
     return {
         "key": key,
@@ -104,6 +108,7 @@ def resolve(cfg, key):
         # thinking を切ったときに使う別プロファイル(Qwen3.8等は thinking/instruct で推奨値が別物)
         "options_no_think": m.get("options_no_think") or {},
         "think": m.get("think"),       # 既定のthinking指定(bool / "low"等)。None=モデル既定
+        "tier": m.get("tier", "agent"),  # 選定状態(agent/critic/probation/external/archive)。UI表示用
         "strengths": m.get("strengths", []),
         "for": m.get("for", ""),       # UI表示用の短い用途
         "use": m.get("use", ""),
@@ -195,6 +200,30 @@ def _classify_http(status, body):
     return OllamaError(f"Ollama HTTP {status}: {body[:500]}")
 
 
+def _timing_from_done(chunk, t_start, t_first):
+    """done チャンクの所要時間(ns)と実測タイムスタンプから速度メタ(ms単位)を組む。
+
+    ttft_ms はクライアント実測(ロード+プロンプト評価+キュー待ちを含む体感値)。
+    load_ms は Ollama 申告のモデルロード時間で、0 に近ければウォーム状態。
+    tok_per_s は eval_count/eval_duration(thinking を含む純粋な生成速度)。
+    """
+    now = time.monotonic()
+    ns = lambda k: (chunk.get(k) or 0) / 1e6   # ns → ms
+    eval_tokens = chunk.get("eval_count") or 0
+    eval_ms = ns("eval_duration")
+    return {
+        "ttft_ms": round(((t_first or now) - t_start) * 1000, 1),
+        "wall_ms": round((now - t_start) * 1000, 1),
+        "load_ms": round(ns("load_duration"), 1),
+        "prompt_eval_ms": round(ns("prompt_eval_duration"), 1),
+        "eval_ms": round(eval_ms, 1),
+        "total_ms": round(ns("total_duration"), 1),
+        "prompt_tokens": chunk.get("prompt_eval_count") or 0,
+        "eval_tokens": eval_tokens,
+        "tok_per_s": round(eval_tokens / (eval_ms / 1000), 2) if eval_ms > 0 else None,
+    }
+
+
 async def _stream_collect(payload, timeout, on_delta=None):
     """ストリーミング受信して1つの message dict に結合する。
 
@@ -206,6 +235,8 @@ async def _stream_collect(payload, timeout, on_delta=None):
     msg = {"role": "assistant", "content": ""}
     thinking: list = []
     tool_calls: list = []
+    t_start = time.monotonic()
+    t_first = None   # 最初の content/thinking チャンク到着時刻(TTFT)
 
     def notify(kind, piece):
         if on_delta is None:
@@ -226,6 +257,8 @@ async def _stream_collect(payload, timeout, on_delta=None):
                 if chunk.get("error"):
                     raise OllamaError(chunk["error"])
                 m = chunk.get("message") or {}
+                if t_first is None and (m.get("content") or m.get("thinking")):
+                    t_first = time.monotonic()
                 if m.get("content"):
                     msg["content"] += m["content"]
                     notify("content", m["content"])
@@ -244,6 +277,7 @@ async def _stream_collect(payload, timeout, on_delta=None):
                         # "length" = num_ctx/num_predict による打ち切り。
                         # 呼び出し側が不完全な生成物と判断できるように残す。
                         msg["_done_reason"] = reason
+                    msg["_timing"] = _timing_from_done(chunk, t_start, t_first)
                     break
     if tool_calls:
         msg["tool_calls"] = tool_calls

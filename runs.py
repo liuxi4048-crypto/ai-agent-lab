@@ -8,6 +8,7 @@ agent-orchestra からの移植 + 拡張:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import threading
@@ -60,7 +61,7 @@ class Run:
                  deliverable: str | None = None, claude_review: bool = False):
         self.id = uuid.uuid4().hex[:10]
         self.task = task
-        self.mode = mode                  # orchestra / critique / code / swarm-code
+        self.mode = mode                  # orchestra / critique / code / swarm-code / bench
         self.model = model                # models.yaml のキー
         self.reviewer_model = reviewer_model
         self.approve = approve
@@ -86,6 +87,8 @@ class Run:
         self.task_obj: asyncio.Task | None = None
         self.pending_approvals: dict[str, asyncio.Future] = {}
         self.history: list = []  # codeモード: 会話継続用の最終メッセージ列
+        # benchモード: 速度/品質の計測記録(bench.py が逐次更新。summary() で一覧にも載せる)
+        self.bench: dict | None = None
         # persist の直列化と「最終記録を古いチェックポイントで上書きしない」ガード
         self._persist_lock = threading.Lock()
         self._finalized = False
@@ -129,6 +132,9 @@ class Run:
             "progress": list(root.progress) if root and root.progress else None,
             "tokens": sum(self.bus.nodes[i].tokens for i in self.bus.order),
             "pending_approvals": len(self.pending_approvals),
+            # deepcopy: persist は別スレッドで json.dumps するため、ループ側の逐次更新と
+            # 同じ dict を共有すると「dictionary changed size during iteration」になる
+            "bench": copy.deepcopy(self.bench) if self.bench else None,
         }
 
     # ---- 承認フロー ----

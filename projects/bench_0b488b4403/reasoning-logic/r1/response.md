@@ -1,0 +1,2 @@
+CABED  
+答え: CABED

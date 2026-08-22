@@ -9,9 +9,11 @@ import LogDrawer from "./components/LogDrawer.jsx";
 import ArtifactDrawer from "./components/ArtifactDrawer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import ApprovalBar from "./components/ApprovalBar.jsx";
+import BenchView from "./components/BenchView.jsx";
+import BenchPanel from "./components/BenchPanel.jsx";
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf, segmentByPhase, PHASE_META } from "./derive.js";
-import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun } from "./api.js";
+import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun, startBench } from "./api.js";
 
 const DEFAULT_TITLE = "ai-agent-lab";
 
@@ -29,12 +31,14 @@ export default function App() {
   const [gpu, setGpu] = useState(null);
   // ---- 単一の選択状態(Master-Detail の真実源) ----
   // {kind:"run", id} = そのRunを表示 / {kind:"draft", from} = 新しいタスクの下書き /
-  // {kind:"empty"} = 未選択。旧実装は currentId と taskOpen の2状態に割れていて、
+  // {kind:"bench", from} = ベンチ設定(固定課題の性能測定) / {kind:"empty"} = 未選択。旧実装は currentId と taskOpen の2状態に割れていて、
   // 「新しいタスク」を押しても旧Runの画面が下に残り続けた(不満1の直接原因)。
   const [view, setView] = useState({ kind: "empty" });
   const currentId = view.kind === "run" ? view.id : null;
   const drafting = view.kind === "draft";
+  const benching = view.kind === "bench";
   const [prefill, setPrefill] = useState(null);
+  const [benchPrefill, setBenchPrefill] = useState(null);   // [設定変更して再実行] からのベンチ設定
   const [drawerNodeId, setDrawerNodeId] = useState(null);
   const [artifactOpen, setArtifactOpen] = useState(false);
   // 通知スタック(最大3件)。他Runの完了・失敗と、操作の失敗をここに集約する
@@ -244,6 +248,8 @@ export default function App() {
   // 旧Runのカード・承認・成果物は個別の後始末なしに全て消える。実行中Runは止まらない。
   const draftingRef = useRef(false);
   draftingRef.current = drafting;
+  const benchingRef = useRef(false);
+  benchingRef.current = benching;
   const handleNewTask = useCallback((seedText) => {
     if (!draftingRef.current) setPrefill(seedText ? { task: seedText } : {});
     else if (seedText) setPrefill({ task: seedText });
@@ -267,6 +273,21 @@ export default function App() {
     });
   }, []);
 
+  // ベンチ設定ビューへ。下書きと同じく、戻り先(直前のRun)を from に持つ
+  const handleOpenBench = useCallback((pre = null) => {
+    setBenchPrefill(pre);
+    setView((v) => (v.kind === "bench" ? v : { kind: "bench", from: v.kind === "run" ? v.id : null }));
+    setSidebarOpen(false);
+  }, []);
+  const handleCancelBench = useCallback(() => {
+    setBenchPrefill(null);
+    setView((v) => {
+      if (v.kind !== "bench") return v;
+      if (v.from && runsViewRef.current.some((r) => r.id === v.from)) return { kind: "run", id: v.from };
+      return { kind: "empty" };
+    });
+  }, []);
+
   // ---- アクション ----
   // T3: 実行成功で初めて選択が新Runへ移る。失敗時は下書きに留まる(TaskInput側でエラー表示)
   const handleStart = async (payload) => {
@@ -286,6 +307,25 @@ export default function App() {
     refreshRuns();
   };
 
+  // ベンチ開始: mode="bench" の Run として一覧・選択へ反映する(通常Runと同じ楽観挿入)
+  const handleStartBench = async (payload) => {
+    const res = await startBench(payload);
+    setBenchPrefill(null);
+    setOptimisticRuns((list) => [{
+      id: res.run_id, task: `ベンチ: ${res.model_tag}`, status: "queued",
+      created_at: Date.now() / 1000, mode: "bench", model: res.model, model_tag: res.model_tag,
+      reviewer_model: res.judge, pending_approvals: 0, tokens: 0, approve: false,
+    }, ...list]);
+    setView({ kind: "run", id: res.run_id });
+    refreshRuns();
+  };
+
+  // ベンチRunの記録から、同じ条件で再実行するための起動パラメータを組む
+  const benchConfigOf = (run) => run?.bench && ({
+    model: run.bench.model, tasks: run.bench.task_ids ?? [],
+    repeats: run.bench.repeats ?? 1, judge: run.bench.judge_model ?? "none",
+  });
+
   const handleStopAll = async () => {
     const targets = runsView.filter((r) => r.status === "running" || r.status === "queued");
     const results = await Promise.allSettled(targets.map((r) => cancelRun(r.id)));
@@ -302,6 +342,13 @@ export default function App() {
 
   const handleRerun = () => {
     if (!currentRun) return;
+    if (currentRun.mode === "bench") {
+      // 開始前に中断されたベンチは記録(bench)が無い → 設定画面へ誘導
+      const cfg = benchConfigOf(currentRun);
+      if (cfg) handleStartBench(cfg).catch(notifyError);
+      else handleOpenBench(null);
+      return;
+    }
     handleStart({
       task: currentRun.task, mode: currentRun.mode, model: currentRun.model,
       critique: currentRun.critique, approve: currentRun.approve, max_iter: currentRun.max_iter,
@@ -313,6 +360,10 @@ export default function App() {
   // T7: 設定変更して再実行 → 設定を引き継いだ下書きへ遷移(キャンセルで元のRunに戻れる)
   const handleEditRerun = () => {
     if (!currentRun) return;
+    if (currentRun.mode === "bench") {
+      handleOpenBench(benchConfigOf(currentRun));
+      return;
+    }
     setPrefill({ ...currentRun, _inherit: true });
     setView({ kind: "draft", from: currentRun.id });
   };
@@ -322,7 +373,7 @@ export default function App() {
       .then(() => {
         setView((v) => {
           if (v.kind === "run" && v.id === id) return { kind: "empty" };
-          if (v.kind === "draft" && v.from === id) return { ...v, from: null };
+          if ((v.kind === "draft" || v.kind === "bench") && v.from === id) return { ...v, from: null };
           return v;
         });
         refreshRuns();
@@ -349,6 +400,7 @@ export default function App() {
         setSidebarOpen(false);
         // ドロワーやポップオーバーが開いていればそちらのEscが先(各自のリスナーで閉じる)
         if (!drawerNodeId && !artifactOpen && draftingRef.current) handleCancelDraft();
+        else if (!drawerNodeId && !artifactOpen && benchingRef.current) handleCancelBench();
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -359,7 +411,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleNewTask, handleCancelDraft, drawerNodeId, artifactOpen]);
+  }, [handleNewTask, handleCancelDraft, handleCancelBench, drawerNodeId, artifactOpen]);
 
   // ---- 接続・実行状態バナー(承認要求が無いときだけ、排他的に1本表示) ----
   const banner = useMemo(() => {
@@ -405,6 +457,8 @@ export default function App() {
           onSelect={selectRun}
           onDelete={handleDelete}
           onNew={() => handleNewTask()}
+          onBench={() => handleOpenBench()}
+          benching={benching}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -423,6 +477,17 @@ export default function App() {
               suggestions={suggestions}
             />
           </div>
+
+          {benching && (
+            <BenchView
+              models={models}
+              runs={runsView}
+              onStart={handleStartBench}
+              onCancel={view.from || runsView.length ? handleCancelBench : null}
+              prefill={benchPrefill}
+              onSelectRun={selectRun}
+            />
+          )}
 
           {!drafting && currentRun && (
             <>
@@ -460,8 +525,16 @@ export default function App() {
                 </div>
               ) : null}
 
-              {/* ワークスペース: 工程セグメント別のエージェントカード */}
-              <main className="min-h-0 flex-1 overflow-y-auto p-4">
+              {/* ワークスペース: 工程セグメント別のエージェントカード(ベンチは2軸パネルを先頭に) */}
+              <main className="min-h-0 flex-1 overflow-y-auto">
+              {currentRun.mode === "bench" && (
+                <BenchPanel
+                  bench={currentRun.bench}
+                  status={currentRun.status}
+                  othersRunning={runsView.filter((r) => r.status === "running" && r.id !== currentId).length}
+                />
+              )}
+              <div className="p-4">
                 {agentNodes.length === 0 ? (
                   <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-zinc-600">
                     <Inbox size={36} strokeWidth={1.2} />
@@ -511,10 +584,11 @@ export default function App() {
                     );
                   })
                 )}
+              </div>
               </main>
 
-              {/* 会話で成果物を修正する(既定は1行のドック) */}
-              <ChatPanel
+              {/* 会話で成果物を修正する(既定は1行のドック)。ベンチは固定課題なので会話継続は無い */}
+              {currentRun.mode !== "bench" && <ChatPanel
                 runId={currentId}
                 nodes={state.nodes}
                 order={state.order}
@@ -523,11 +597,11 @@ export default function App() {
                 runStatus={currentRun?.status}
                 onSent={refreshRuns}
                 onStartDraft={(text) => handleNewTask(text || undefined)}
-              />
+              />}
             </>
           )}
 
-          {!drafting && !currentRun && (
+          {!drafting && !benching && !currentRun && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-600">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">左の一覧からタスクを選ぶか、新しいタスクを開始してください</p>

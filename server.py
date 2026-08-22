@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import bench
 import claude_review
 import llm
 import router
@@ -76,6 +77,19 @@ def _is_hybrid(cfg, *keys: str) -> bool:
 def _installed(cfg, key: str, installed: set) -> bool:
     tag = llm.resolve(cfg, key)["tag"]
     return tag in installed or f"{tag}:latest" in installed
+
+
+def _ram_error(info: dict, free_ram: float | None) -> str | None:
+    """RAM併用モデルが空きRAMに収まらないときの理由文(収まるなら None)。
+
+    黙って遅くなる(ページング)より先に弾くための共通チェック(/run と /bench)。
+    """
+    if info["placement"] == "hybrid" and info["ram_gb"] and free_ram is not None \
+            and info["ram_gb"] > free_ram:
+        return (f"'{info['tag']}' は約{info['ram_gb']}GBのRAMが必要ですが、"
+                f"空きは{free_ram:.1f}GBです。他のアプリを閉じるか、VRAMに収まる"
+                "モデルを選んでください")
+    return None
 
 
 @app.get("/")
@@ -202,13 +216,8 @@ async def start_run(req: RunRequest) -> dict:
 
     # 明示指定のモデルがRAMを食い過ぎる場合は、黙って遅くならないよう先に弾く
     chosen = llm.resolve(cfg, model)
-    if chosen["placement"] == "hybrid" and chosen["ram_gb"] and free_ram is not None:
-        if chosen["ram_gb"] > free_ram:
-            raise HTTPException(
-                400,
-                f"'{chosen['tag']}' は約{chosen['ram_gb']}GBのRAMが必要ですが、"
-                f"空きは{free_ram:.1f}GBです。他のアプリを閉じるか、VRAMに収まる"
-                "モデルを選んでください")
+    if (ram_msg := _ram_error(chosen, free_ram)):
+        raise HTTPException(400, ram_msg)
 
     reviewer = None
     if mode == "critique" or (mode == "code" and req.critique):
@@ -243,6 +252,70 @@ async def start_run(req: RunRequest) -> dict:
             "reviewer_model": reviewer, "hybrid": hybrid,
             "claude_review": claude_on,
             "decided_by": decided_by, "reason": reason}
+
+
+# ============================================================ bench ----
+class BenchRequest(BaseModel):
+    model: str                     # models.yaml のキー(tier ゲートなし: 退役/保留モデルの再ベンチ用)
+    tasks: list[str] = []          # bench_suite.yaml の課題ID。空なら全課題
+    repeats: int = 1               # 各課題の反復回数(速度のばらつきを見るとき 2〜5)
+    judge: str = "auto"            # LLM採点モデル: auto(異ファミリー自動) / none / キー
+
+
+@app.get("/bench/suite")
+async def bench_suite() -> dict:
+    try:
+        return bench.suite_catalog(bench.load_suite())
+    except (OSError, ValueError, KeyError) as e:
+        raise HTTPException(500, f"bench_suite.yaml を読めません: {e}")
+
+
+@app.post("/bench")
+async def start_bench(req: BenchRequest) -> dict:
+    """固定プロンプト集を1モデルに投げる性能ベンチ。mode="bench" の Run として走る。
+
+    並列スロット・hybrid直列化・永続化・SSE・UIの履歴は通常Runと共通。
+    """
+    if not await llm.is_alive():
+        raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
+    cfg = llm.load_config()
+    if req.model not in cfg.get("models", {}):
+        raise HTTPException(400, f"未知のモデルキー: {req.model}")
+    if not 1 <= req.repeats <= 5:
+        raise HTTPException(400, "repeats は 1〜5")
+    installed = set(await llm.list_models())
+    info = llm.resolve(cfg, req.model)
+    if not _installed(cfg, req.model, installed):
+        raise HTTPException(400, f"モデル {info['tag']} は未導入です(ollama pull {info['tag']})")
+    if (ram_msg := _ram_error(info, llm.free_ram_gb())):
+        raise HTTPException(400, ram_msg)
+    try:
+        suite = bench.load_suite()
+        tasks = bench.select_tasks(suite, req.tasks)
+        judge = bench.pick_judge(cfg, req.model, req.judge, installed)
+    except (OSError, ValueError, KeyError) as e:
+        raise HTTPException(400, str(e))
+    if len(tasks) * req.repeats > bench.MAX_REPS_PER_RUN:
+        raise HTTPException(400, f"課題数×反復は {bench.MAX_REPS_PER_RUN} 以下にしてください")
+
+    # ベンチは常に hybrid 扱い(hybrid_lock を占有)にする。OLLAMA_MAX_LOADED_MODELS=1 では
+    # 他Runとモデルを取り合うだけで速度計測が汚れるため、少なくとも大型モデルのRunとは重ねない
+    label = f"ベンチ: {info['tag']} ({len(tasks)}課題" + (f"×{req.repeats}" if req.repeats > 1 else "") + ")"
+    run = manager.create(label, "bench", req.model, reviewer_model=judge, approve=False,
+                         max_iter=0, hybrid=True)
+
+    async def checkpoint():
+        # 課題完了ごとの中間保存。定期チェックポイントと同じく、書き込みはスレッドへ逃がす
+        data = manager._encode(run, final=False)
+        await asyncio.to_thread(manager._write_record, run, data, False)
+
+    orch = bench.BenchOrchestrator(run, cfg, suite, tasks, req.repeats, judge, checkpoint=checkpoint)
+    manager.start(run, orch.run_bench)
+    return {"status": "started", "run_id": run.id, "model": req.model,
+            "model_tag": info["tag"], "mode": "bench", "judge": judge,
+            "judge_tag": llm.resolve(cfg, judge)["tag"] if judge else None,
+            "tasks": [t["id"] for t in tasks], "repeats": req.repeats,
+            "hybrid": _is_hybrid(cfg, req.model, judge or "")}
 
 
 @app.post("/run/{run_id}/cancel")

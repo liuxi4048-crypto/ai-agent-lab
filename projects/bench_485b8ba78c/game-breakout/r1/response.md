@@ -1,0 +1,217 @@
+ファイル: index.html
+```html
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ブロック崩し</title>
+<style>
+  body{margin:0;background:#222;color:#fff;font-family:sans-serif;}
+  canvas{display:block;background:#000;margin:auto;}
+  #overlay{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;
+    font-size:48px;cursor:pointer;user-select:none;pointer-events:all;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<div id="overlay">プレイするにはクリック</div>
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const width = canvas.width;
+  const height = canvas.height;
+
+  // Game constants
+  const PADDLE_WIDTH = 100;
+  const PADDLE_HEIGHT = 20;
+  const BALL_RADIUS = 10;
+  const BLOCK_ROWS = 5;
+  const BLOCK_COLS = 10;
+  const BLOCK_WIDTH = 70;
+  const BLOCK_HEIGHT = 20;
+  const BLOCK_PADDING = 10;
+  const BLOCK_OFFSET_TOP = 50;
+  const BLOCK_OFFSET_LEFT = 35;
+  const SCORE_PER_BLOCK = 10;
+
+  // Game state
+  let paddleX = (width - PADDLE_WIDTH) / 2;
+  let ballX = width / 2;
+  let ballY = height - 30;
+  let ballDX = 4;
+  let ballDY = -4;
+  let rightPressed = false;
+  let leftPressed = false;
+  let mouseX = null;
+  let score = 0;
+  let blocks = [];
+  let gameStatus = 'waiting'; // 'waiting', 'playing', 'over', 'clear'
+
+  // Initialize blocks
+  function initBlocks() {
+    blocks = [];
+    for (let row = 0; row < BLOCK_ROWS; row++) {
+      for (let col = 0; col < BLOCK_COLS; col++) {
+        const blockX = BLOCK_OFFSET_LEFT + col * (BLOCK_WIDTH + BLOCK_PADDING);
+        const blockY = BLOCK_OFFSET_TOP + row * (BLOCK_HEIGHT + BLOCK_PADDING);
+        blocks.push({ x: blockX, y: blockY, alive: true });
+      }
+    }
+  }
+
+  // Start or restart game
+  function startGame() {
+    paddleX = (width - PADDLE_WIDTH) / 2;
+    ballX = width / 2;
+    ballY = height - 30;
+    const angle = Math.random() * Math.PI / 4 + Math.PI / 4; // 45-90 degrees
+    ballDX = 5 * Math.cos(angle);
+    ballDY = -5 * Math.sin(angle);
+    score = 0;
+    initBlocks();
+    gameStatus = 'playing';
+    overlay.style.display = 'none';
+  }
+
+  // Draw functions
+  function drawPaddle() {
+    ctx.fillStyle = '#0095DD';
+    ctx.fillRect(paddleX, height - PADDLE_HEIGHT - 10, PADDLE_WIDTH, PADDLE_HEIGHT);
+  }
+
+  function drawBall() {
+    ctx.beginPath();
+    ctx.arc(ballX, ballY, BALL_RADIUS, 0, Math.PI*2);
+    ctx.fillStyle = '#FF5722';
+    ctx.fill();
+    ctx.closePath();
+  }
+
+  function drawBlocks() {
+    blocks.forEach(block => {
+      if (block.alive) {
+        ctx.fillStyle = '#00e676';
+        ctx.fillRect(block.x, block.y, BLOCK_WIDTH, BLOCK_HEIGHT);
+      }
+    });
+  }
+
+  function drawScore() {
+    ctx.font = '20px Arial';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    ctx.fillText('Score: ' + score, 10, 30);
+  }
+
+  function drawMessage(msg) {
+    overlay.textContent = msg + '\nクリックでリスタート';
+    overlay.style.display = 'flex';
+  }
+
+  // Collision detection
+  function collisionDetection() {
+    // Blocks
+    blocks.forEach(block => {
+      if (!block.alive) return;
+      if (ballX > block.x && ballX < block.x + BLOCK_WIDTH &&
+          ballY > block.y && ballY < block.y + BLOCK_HEIGHT) {
+        ballDY = -ballDY;
+        block.alive = false;
+        score += SCORE_PER_BLOCK;
+      }
+    });
+
+    // Walls
+    if (ballX + ballDX > width - BALL_RADIUS || ballX + ballDX < BALL_RADIUS) {
+      ballDX = -ballDX;
+    }
+    if (ballY + ballDY < BALL_RADIUS) {
+      ballDY = -ballDY;
+    } else if (ballY + ballDY > height - BALL_RADIUS - PADDLE_HEIGHT -10) {
+      // Paddle
+      if (ballX > paddleX && ballX < paddleX + PADDLE_WIDTH) {
+        ballDY = -ballDY;
+        // Optional: adjust ballDX based on where it hit the paddle
+        const hitPos = (ballX - paddleX) / PADDLE_WIDTH - 0.5;
+        ballDX += hitPos * 2;
+      } else {
+        gameStatus = 'over';
+        drawMessage('Game Over');
+      }
+    }
+  }
+
+  // Game loop
+  function draw() {
+    ctx.clearRect(0, 0, width, height);
+    if (gameStatus === 'playing') {
+      collisionDetection();
+      ballX += ballDX;
+      ballY += ballDY;
+    }
+    drawPaddle();
+    drawBall();
+    drawBlocks();
+    drawScore();
+
+    // Check win
+    if (blocks.every(b => !b.alive)) {
+      gameStatus = 'clear';
+      drawMessage('Clear!');
+    }
+    requestAnimationFrame(draw);
+  }
+
+  // Handle input
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') rightPressed = true;
+    if (e.key === 'ArrowLeft') leftPressed = true;
+  });
+  document.addEventListener('keyup', e => {
+    if (e.key === 'ArrowRight') rightPressed = false;
+    if (e.key === 'ArrowLeft') leftPressed = false;
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+  });
+
+  canvas.addEventListener('click', () => {
+    if (gameStatus === 'waiting' || gameStatus === 'over' || gameStatus === 'clear') {
+      startGame();
+    }
+  });
+
+  overlay.addEventListener('click', () => {
+    if (gameStatus !== 'playing') {
+      startGame();
+    }
+  });
+
+  // Main loop for paddle movement
+  function loop() {
+    if (rightPressed && paddleX < width - PADDLE_WIDTH) paddleX += 7;
+    if (leftPressed && paddleX > 0) paddleX -= 7;
+    if (mouseX !== null) {
+      paddleX = mouseX - PADDLE_WIDTH / 2;
+      if (paddleX < 0) paddleX = 0;
+      if (paddleX > width - PADDLE_WIDTH) paddleX = width - PADDLE_WIDTH;
+    }
+    setTimeout(loop, 20);
+  }
+
+  // Initialize
+  startGame();
+  draw();
+  loop();
+})();
+</script>
+</body>
+</html>
+```
