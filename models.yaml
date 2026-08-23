@@ -149,6 +149,66 @@ models:
     use: "Qwen3.5派生の自己改善RLモデル / dense9B・Q8_0で9.5GB全載り / tools・thinking・vision対応
       (画像送信の経路はアプリ側に無い) / ターミナル型コーディングエージェント最適化 /
       実タスク未ベンチ=probation。MindStudio検証ではベンチ値ほど実用性能が出ないとの指摘あり要実測"
+  # === 2026-08-23 追加: 最新ローカルLLMの系統多様化(Google/IBM/Mistral/Zhipu)。いずれも未ベンチ=probation ===
+  # 選定根拠と実測は docs には未記載。各tool-calling疎通・placement・tok/sはこのファイル追加時にsmoke実測(2026-08-23)。
+  gemma:
+    tag: "gemma4:26b-a4b-it-qat"   # 公式QAT(Q4_0相当)。要Ollama>=0.30.5(現0.32.15)
+    family: gemma4           # effort()未対応=graded think不可。thinkはbool(True/False/"low"を受理、実測)
+    tier: probation      # 2026-08-23導入・未ベンチ。--model gemma と chat系で使用可、ツール必須経路からは自動除外
+    placement: vram          # 実測 94%GPU/14.4GB・59.5tok/s。VRAMほぼ全載り(~6%のみRAM)。MoE活性≈4Bで軽い
+    tools: true              # Capabilities: tools/thinking/vision すべて対応(vision projector 573M・画像経路はアプリに無い)
+    mtp: false               # 焼き込みdraftなし。公式ドラフタは別途Modelfile DRAFTで付与可(未適用)
+    num_ctx: 16384           # ネイティブ262K
+    # Google公式推奨。min_pはllama.cpp既定0.1に上書きされないよう明示
+    options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}
+    # think既定ON(<think>)。smokeでcontentは正常返却。速度優先ならthink:falseを呼び出し側で
+    strengths: [tool, reasoning, chat]
+    for: "Google新世代・マルチモーダル。VRAM全載りで高速"
+    use: "MoE 25.2B/活性≈4B(gemma4) / tools・thinking・vision対応 / 94%GPU・59.5tok/s実測(2026-08-23) /
+      ツールコール中断バグはdense31B版の報告でありMoE版では未再現(smoke OK) / 系統多様化(Google)"
+  granite:
+    tag: "granite4.1:8b-q8_0"   # 8B級はQ8でも軽い。tool-caller/ルーター役として品質優先でQ8採用
+    family: granite
+    tier: probation      # 2026-08-23導入・未ベンチ
+    placement: vram          # 実測 100%GPU/10.6GB・56.8tok/s。完全VRAM常駐で重量級と役割分担しやすい
+    tools: true              # Capabilities: tools のみ(thinking/vision なし)
+    mtp: false
+    num_ctx: 16384           # ネイティブ131K
+    # 焼き込みサンプリング値なし。tool-calling/ルーティング用途に低温度の保守設定(公式値ではない)
+    options: {temperature: 0.2, top_p: 0.95, top_k: 20, min_p: 0}
+    strengths: [tool, speed]
+    for: "IBM軽量tool-caller/ルーター(コーディング主力ではない)"
+    use: "dense8.8B・Q8_0 / BFCL v3 68.27(IBM自己申告)=tool-calling特化 / 100%GPU・56.8tok/s実測 /
+      エージェント型コーディングには非推奨の第三者評あり=ツール呼び出し・ルーティングの下請け役に限定 / 系統多様化(IBM)"
+  devstral:
+    tag: "devstral-small-2:24b-instruct-2512-q4_K_M"   # 2512版=真のDevstral2(旧devstral:24bは2505版で別物)
+    family: mistral
+    tier: probation      # 2026-08-23導入・未ベンチ
+    placement: hybrid        # 実測 88%GPU/14.9GB・22.6tok/s。dense24Bで一部RAMへ溢れ低速。直列実行
+    ram_gb: 3
+    tools: true              # Capabilities: tools/vision(thinkingなし・Instruct)
+    mtp: false
+    num_ctx: 16384           # ネイティブ393K
+    options: {temperature: 0.15, top_p: 0.95, min_p: 0}   # Mistralコーディング既定(焼き込みtemp0.15)
+    strengths: [coding, tool]
+    for: "Mistral系コーディングエージェント。OpenHands系で強い"
+    use: "dense24B(mistral3) / SWE-bench Verified 68%(Mistral自己申告・SWE-bench汚染問題で要割引) /
+      Aiderの厳密diff編集は苦手(第三者実測でQ8 4-8%)=SWE-Agent/OpenHands系ハーネス向き / tools・vision対応 /
+      hybrid 88%GPU・22.6tok/s実測 / 系統多様化(Mistral)"
+  glm:
+    tag: "glm-4.7-flash:q4_K_M"
+    family: glm              # thinkはbool(True/False/"low"を受理、実測)。effort()未対応
+    tier: probation      # 2026-08-23導入・未ベンチ
+    placement: hybrid        # 実測 80%GPU/15.8GB・37.9tok/s。MoE活性3Bで溢れても実用速度。直列実行
+    ram_gb: 4
+    tools: true              # Capabilities: tools/thinking(visionなし)
+    mtp: false
+    num_ctx: 16384           # ネイティブ203K
+    options: {temperature: 1.0, top_p: 0.95, min_p: 0.01, repeat_penalty: 1.0}   # Zhipu焼き込み既定
+    strengths: [tool, coding, reasoning]
+    for: "Zhipu新世代MoE・エージェント志向(MIT)"
+    use: "MoE 29.9B/活性3B(glm4moelite) / SWE-bench Verified 59.2%・τ²-Bench(マルチステップtool)79.5(自己申告) /
+      tools・thinking対応・think既定ON / hybrid 80%GPU・37.9tok/s実測 / 系統多様化(Zhipu)"
   # --- 2026-08-22 退役・削除(再設計。詳細は docs/DESIGN-claude-code-integration.md) ---
   # deep (deepseek-r1:70b, 42GB): 1.6 tok/s・21分でconst再代入× (2026-08-20実測)。
   #   ram_gb=42はアイドル実効空きRAM(≈38.5GB)でもロード不能圏。批評役はreasonerに完全代替。ollama rm済み
