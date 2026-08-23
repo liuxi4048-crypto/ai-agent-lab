@@ -129,6 +129,26 @@ models:
     strengths: [reasoning, math]
     for: "推論・数学。考察向き(コード生成は不可)"
     use: "深い推論・数学(CoT) / 批評ループの異ファミリーレビュアー"
+  ornith:
+    tag: "ornith:1.5-9b"     # = hf.co/ornith-ai/Ornith-1.5-9B-GGUF:Q8_0(同一blob・別タグ)
+    family: qwen35           # architecture=qwen35。think/サンプリングはQwen3.5系の作法(effort()対応済み)
+    tier: probation      # 2026-08-23導入・未ベンチ。tools対応だが実タスク完走の実測が無いため
+                         # ツール必須経路(code/swarm-code)からは自動除外。--model ornith と chat系では使用可。
+                         # bench_suite(html/script/chat)で測り agent か archive へ確定させること
+    placement: vram          # Q8_0=9.5GB → 16GB VRAM に全載り。KVはqwen35の間引きattentionで軽い
+    tools: true              # ollama show の Capabilities に tools あり(thinking/vision も対応)
+    mtp: false               # draft_num_predict の焼き込み無し(ollama show Parameters)=自己投機なし
+    num_ctx: 16384           # ネイティブ262K(YaRNで~1M)。KV節約のため既定は据え置き
+    think: "low"             # 推論デフォルトON(<think>)。思考は panel が strip。深追いは抑える(effortで可変)
+    # 公式推奨(精密コーディング側)。presence_penalty=0 でコードの反復トークンを過剰に罰しない
+    options: {temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    # think:false 時に使う一般タスク側の公式推奨(presence_penalty=1.5・temp1.0)
+    options_no_think: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    strengths: [coding, reasoning, tool]
+    for: "自己改善型・コーディング特化(9B)。省VRAM常駐"
+    use: "Qwen3.5派生の自己改善RLモデル / dense9B・Q8_0で9.5GB全載り / tools・thinking・vision対応
+      (画像送信の経路はアプリ側に無い) / ターミナル型コーディングエージェント最適化 /
+      実タスク未ベンチ=probation。MindStudio検証ではベンチ値ほど実用性能が出ないとの指摘あり要実測"
   # --- 2026-08-22 退役・削除(再設計。詳細は docs/DESIGN-claude-code-integration.md) ---
   # deep (deepseek-r1:70b, 42GB): 1.6 tok/s・21分でconst再代入× (2026-08-20実測)。
   #   ram_gb=42はアイドル実効空きRAM(≈38.5GB)でもロード不能圏。批評役はreasonerに完全代替。ollama rm済み
