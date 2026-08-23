@@ -6,6 +6,10 @@ projects/run_*/
 projects/chat_*/
 projects/bench_*/
 app.log
+launcher.log
+server.log
+server.err.log
+.server.pid
 dist/
 build/
 *.spec

@@ -195,9 +195,29 @@ LLM自体の速度と成果物の質を2軸で測る**。結果は通常のRun�
 
 ## 起動
 
+**ワンボタン**: デスクトップの「🧪 AI Agent Lab」ショートカットをダブルクリック。
+**Ollama起動 → サーバ起動 → 既定ブラウザで開く**を一度に行う(すでに動いているものは飛ばす)。
+
 ```
-python server.py     # → http://127.0.0.1:8765
-python app.py        # デスクトップアプリ(WebView2)。Ollama自動起動付き
+powershell -ExecutionPolicy Bypass -File install-shortcut.ps1   # ショートカットを作り直す
+powershell -ExecutionPolicy Bypass -File start.ps1              # 同じことをコンソールから
+powershell -ExecutionPolicy Bypass -File start.ps1 -Restart     # コード変更後にサーバだけ入れ替え
+powershell -ExecutionPolicy Bypass -File start.ps1 -NoBrowser   # ブラウザを開かない
+powershell -ExecutionPolicy Bypass -File stop.ps1 [-WithOllama] # 停止(既定でOllamaは残す)
+```
+
+- 入口は `start.vbs`(コンソール窓を出さずに `start.ps1` を呼ぶだけ)。動作記録は **`launcher.log`**、
+  サーバの出力は `server.log` / `server.err.log`。起動しないときはこの3つを見る
+- `setx` で設定した `OLLAMA_*`(KV_CACHE_TYPE / NUM_PARALLEL / MAX_LOADED_MODELS / FLASH_ATTENTION)は
+  **ユーザー環境変数から読み直して** Ollama へ引き継ぐ。setx は起動済みプロセスに反映されないため
+- サーバは `pythonw` でバックグラウンド起動し、PID を `.server.pid` に残す(`stop.ps1` / `-Restart` が使う)
+- 日本語を含む `.ps1` は **UTF-8 BOM付き**で保存すること(BOMなしだと PowerShell 5.1 が ANSI と誤読して構文エラー)
+
+その他の起動方法:
+
+```
+python server.py     # → http://127.0.0.1:8765(コンソールを開いたまま使う)
+python app.py        # デスクトップアプリ(WebView2)。ブラウザではなく専用ウィンドウで開く
 python agent.py "todo-cli に TODO CLI を作って動かして" [--model coder] [--yes]   # CLI
 ```
 
@@ -366,6 +386,8 @@ bench.py          ローカルLLM性能ベンチ(固定課題→速度/品質の
 bench_suite.yaml  ベンチの課題集(プロンプト・決定論チェック・採点観点)
 server.py         FastAPI(/run /run/{id} /events SSE /approvals /models /claude /health /bench)
 static/index.html 旧ダッシュボード(/legacy で残置)
+start.vbs/.ps1    ワンボタン起動(Ollama→サーバ→ブラウザ)。stop.ps1 で停止、
+                  install-shortcut.ps1 でデスクトップにショートカットを作る。app.ico はその絵柄
 app.py            デスクトップアプリ(pywebview + uvicorn + Ollama自動起動)
 step1_chat.py     学習用: 最小チャット / step2_tool.py 学習用: 最小ツールループ
 gui.py, web/      【非推奨・v1遺物】
