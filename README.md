@@ -402,6 +402,19 @@ gui.py, web/      【非推奨・v1遺物】
 - 「Claudeが最終レビュー」は既定OFF・Runごとの明示的な選択が必要。ONでもCLIには
   シェルを渡さず、`projects/run_<id>/` の外への書き込みはPreToolUseフックで拒否
 
+## 配布とライセンス
+
+- ライセンスは **MIT**(`LICENSE`)。改変・再配布・商用利用可、著作権表示の保持のみ。
+- 配布物の作成: `powershell -ExecutionPolicy Bypass -File make-dist.ps1`
+  - git 追跡ファイルのみを `dist\ai-agent-lab\` へ収集し、`dist\ai-agent-lab.zip` を生成する
+    (展開すると `ai-agent-lab\` 一式)。
+  - 作者の個人データ(`projects\` の試作物・`.claude\` エディタ設定)は除外。ログ・
+    `runs\`・`workspace\`・`__pycache__`・`node_modules` は未追跡のため元から入らない。
+  - 受け取った側は `README.md` の「セットアップ」→「起動」に従うだけで動く。
+    `static-react\`(ビルド済みUI)を同梱しているので Node ビルドは不要。
+- `models.yaml` は 16GB VRAM / 64GB RAM(RX 9070 XT)前提の実測値。別環境では
+  「モデル戦略」節を参考に `tag` / `placement` / `ram_gb` を各自の GPU・RAM に合わせて調整する。
+
 ## 将来拡張
 
 - llama-server(Vulkan)バックエンド: llm.py の `OLLAMA_BASE` 差し替え+`/v1`変換の薄い層で対応可能
