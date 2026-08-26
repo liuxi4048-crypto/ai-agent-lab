@@ -173,7 +173,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                 : m.needs_ram && !light ? " ※低速" : "";
               return (
                 <option key={m.key} value={m.key} disabled={blocked}>
-                  {m.tag}{m.for ? ` (${m.for})` : ""}{note}
+                  {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{note}
                 </option>
               );
             })}

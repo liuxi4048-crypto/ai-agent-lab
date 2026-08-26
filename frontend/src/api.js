@@ -15,7 +15,7 @@ async function jsonOrThrow(resp) {
 }
 
 export const fetchRuns = () => fetch("/runs").then(jsonOrThrow);
-export const fetchModels = () => fetch("/models").then(jsonOrThrow);
+export const fetchModels = () => fetch("/models", { cache: "no-store" }).then(jsonOrThrow);
 export const fetchHealth = () => fetch("/health").then(jsonOrThrow);
 export const fetchGpu = () => fetch("/gpu").then(jsonOrThrow);
 
