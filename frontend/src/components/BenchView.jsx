@@ -146,12 +146,13 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
               >
                 {modelOptions.map((m) => {
                   const tier = TIER_LABEL[m.tier];
-                  const note = !m.installed ? " ※未導入"
+                  const note = m.scanned ? ""
+                    : !m.installed ? " ※未導入"
                     : m.needs_ram && !m.ram_ok ? " ※RAM不足"
                     : m.needs_ram ? " ※RAM併用" : "";
                   return (
                     <option key={m.key} value={m.key} disabled={!usable(m)}>
-                      {m.tag}{m.for ? ` (${m.for})` : ""}{tier ? ` [${tier}]` : ""}{note}
+                      {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{tier ? ` [${tier}]` : ""}{note}
                     </option>
                   );
                 })}

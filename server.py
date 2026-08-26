@@ -132,8 +132,8 @@ async def claude() -> dict:
 @app.get("/models")
 async def models() -> dict:
     cfg = llm.load_config()
-    catalog = llm.model_catalog(cfg)
     installed = set(await llm.list_models())
+    catalog = llm.model_catalog(cfg, installed)
 
     def _found(tag: str) -> bool:
         return tag in installed or f"{tag}:latest" in installed

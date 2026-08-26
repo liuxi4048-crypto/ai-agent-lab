@@ -115,10 +115,26 @@ def resolve(cfg, key):
     }
 
 
-def model_catalog(cfg):
-    """UI用: 全モデルの情報リスト(既定キー含む)。"""
+def model_catalog(cfg, installed=None):
+    """UI用: 設定モデルと、Ollamaからスキャンした実在モデルの一覧。"""
+    configured = [resolve(cfg, k) for k in cfg.get("models", {})]
+    known_tags = {m["tag"] for m in configured}
+    # models.yaml に未登録でも、Ollama に導入済みならUIから選択できるようにする。
+    # 設定済みモデルは family/options 等の既存メタデータを優先する。
+    scanned = []
+    for tag in sorted(installed or set()):
+        base_tag = tag.removesuffix(":latest")
+        if tag in known_tags or base_tag in known_tags:
+            continue
+        scanned.append({
+            **resolve(cfg, tag),
+            "scanned": True,
+            "for": "PCから検出",
+        })
     return {
-        "models": [resolve(cfg, k) for k in cfg.get("models", {})],
+        # 実際にPCへ導入済みのモデルを先頭に置き、未導入モデルに埋もれないようにする。
+        "models": scanned + configured,
+        "installed_models": sorted(installed or set()),
         "default": cfg.get("default", ""),
     }
 
