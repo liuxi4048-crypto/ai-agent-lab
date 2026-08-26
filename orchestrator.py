@@ -16,6 +16,7 @@ import os
 import re
 
 import claude_review
+import api_review
 import llm
 import router
 from agent import run_agent
@@ -854,6 +855,26 @@ class CodeOrchestrator:
             run, self.bus, root_id, task_desc, summary)
         return summary, (new_artifacts if new_artifacts is not None else artifacts), ok
 
+    async def _maybe_api_review(self, task_desc: str, summary: str | None, root_id: str,
+                                artifacts: list[dict]) -> tuple[str | None, list[dict], bool]:
+        run = self.run
+        if not (run.api_review and not run.cancelled):
+            return summary, artifacts, False
+        model = api_review.MODEL or "未設定"
+        node_id = self.bus.create_node("api-review", f"🔌 APIレビュー ({model})",
+                                       "環境変数で指定された任意モデルによる読み取り専用レビュー", root_id)
+        self.bus.set_status(node_id, "running")
+        root = Toolbox(subdir=f"run_{run.id}", approve=False).root
+        res = await api_review.review(task=task_desc, root=root, summary=summary or "",
+                                      emit=lambda line: self.bus.emit_log(node_id, str(line)),
+                                      should_stop=lambda: run.cancelled)
+        if res["tokens"]: self.bus.add_tokens(node_id, res["tokens"])
+        if res["error"]:
+            self.bus.complete(node_id, error=f"APIレビューを実行できませんでした: {res['error']}")
+            return summary, artifacts, False
+        self.bus.complete(node_id, res["summary"])
+        return (summary or "") + "\n\n【任意APIモデルの最終レビュー】\n" + res["summary"], artifacts, True
+
     async def run_task(self, task: str) -> None:
         bus, run = self.bus, self.run
         bus.reset()
@@ -871,6 +892,8 @@ class CodeOrchestrator:
                 f"元のタスク: {task}", summary, run.history, root_id, root_dir)
 
             summary, artifacts, reviewed = await self._maybe_claude(
+                f"元のタスク: {task}", summary, root_id, artifacts)
+            summary, artifacts, _ = await self._maybe_api_review(
                 f"元のタスク: {task}", summary, root_id, artifacts)
 
             if artifacts:
@@ -921,6 +944,8 @@ class CodeOrchestrator:
                 task_desc, summary, run.history, root_id, root_dir)
 
             summary, artifacts, reviewed = await self._maybe_claude(
+                task_desc, summary, root_id, artifacts)
+            summary, artifacts, _ = await self._maybe_api_review(
                 task_desc, summary, root_id, artifacts)
 
             if artifacts:
@@ -1124,6 +1149,9 @@ class SwarmCodeOrchestrator:
                     run, bus, root_id, f"元のタスク: {task}", final)
                 if new_artifacts is not None:
                     artifacts = new_artifacts
+            if run.api_review and not run.cancelled:
+                final, artifacts, _ = await self._maybe_api_review(
+                    f"元のタスク: {task}", final, root_id, artifacts)
 
             if artifacts:
                 bus.set_artifacts(artifacts)
