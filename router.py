@@ -56,7 +56,7 @@ def usable(cfg, key: str, mode: str, installed: set | None = None,
     #  worker 固定になるため)。明示指定(req.model)は pick_model を通らないので、
     # archive の heavy も model=heavy と書けば使える。
     tier = m.get("tier", "agent")
-    if tier in ("archive", "external"):
+    if tier in ("archive", "external", "discovered"):
         return False
     if tier == "probation" and _tools_required(mode):
         return False

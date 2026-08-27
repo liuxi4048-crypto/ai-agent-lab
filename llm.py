@@ -82,6 +82,56 @@ def load_config(path=CONFIG_PATH):
         return yaml.safe_load(f)
 
 
+# 自動検出モデル(models.yaml未定義の導入済みタグ)に当てる、ファミリ別の公式推奨サンプリング。
+# 値は models.yaml の各系統エントリと揃える(min_p は llama.cpp 既定0.1に化けないよう明示)。
+FAMILY_OPTIONS = {
+    "qwen35":  {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0},
+    "qwen":    {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0, "repeat_penalty": 1.05},
+    "gemma4":  {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0},
+    "gemma":   {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0},
+    "meta":    {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0},
+    "gpt-oss": {"temperature": 1.0, "top_p": 1.0,  "top_k": 0,  "min_p": 0},
+    "deepseek": {"temperature": 0.6, "top_p": 0.95, "min_p": 0},
+    "glm":     {"temperature": 1.0, "top_p": 0.95, "min_p": 0.01, "repeat_penalty": 1.0},
+    "granite": {"temperature": 0.2, "top_p": 0.95, "top_k": 20, "min_p": 0},
+    "mistral": {"temperature": 0.15, "top_p": 0.95, "min_p": 0},
+    "unknown": {"min_p": 0},
+}
+
+# 埋め込み等、チャット/エージェントに使わない導入済みモデルは自動検出から除外
+_NON_CHAT_MARKERS = ("bge", "embed", "mxbai", "all-minilm", "nomic-embed", "reranker")
+
+
+def infer_family(tag: str) -> str:
+    """Ollamaタグ名からサンプリング系統を推定する(自動検出モデル用)。"""
+    t = tag.lower()
+    if any(s in t for s in ("qwen3.8", "qwen3.6", "qwen3.5", "qwen35", "ornith")):
+        return "qwen35"
+    if "qwen" in t:
+        return "qwen"
+    if "gemma4" in t:
+        return "gemma4"
+    if "gemma" in t:
+        return "gemma"
+    if "gpt-oss" in t:
+        return "gpt-oss"
+    if "deepseek" in t:
+        return "deepseek"
+    if "glm" in t:
+        return "glm"
+    if "granite" in t:
+        return "granite"
+    if any(s in t for s in ("devstral", "mistral", "magistral", "ministral")):
+        return "mistral"
+    if any(s in t for s in ("muse-glimmer", "glimmer")):
+        return "meta"
+    return "unknown"
+
+
+def default_options(family: str) -> dict:
+    return dict(FAMILY_OPTIONS.get(family, FAMILY_OPTIONS["unknown"]))
+
+
 def resolve(cfg, key):
     """モデルキー(coder等)→ モデル情報 dict。未知キーはタグ直指定として扱う。
 
@@ -89,11 +139,17 @@ def resolve(cfg, key):
     """
     m = cfg.get("models", {}).get(key)
     if m is None:
-        return {"key": key, "tag": key, "family": "unknown", "placement": "vram",
+        # models.yaml未定義キー=導入済みタグの直指定(自動検出)。
+        # タグからfamilyを推定して公式サンプリングを当て、tier=discovered で
+        # 自動ルーティングからは外す(明示指定=--model/GUI選択でのみ使う)。
+        fam = infer_family(key)
+        return {"key": key, "tag": key, "family": fam, "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
-                "num_gpu": None, "ram_gb": 0, "options": {}, "options_no_think": {},
-                "think": None, "tier": "agent",
-                "strengths": [], "for": "", "use": ""}
+                "num_gpu": None, "ram_gb": 0,
+                "options": default_options(fam), "options_no_think": {},
+                "think": None, "tier": "discovered",
+                "strengths": [], "for": f"{key} (自動検出)",
+                "use": "models.yaml未定義=自動検出。公式サンプリング推定・自動ルーティング対象外(明示指定でのみ使用)"}
     return {
         "key": key,
         "tag": m["tag"],
@@ -116,15 +172,20 @@ def resolve(cfg, key):
 
 
 def model_catalog(cfg, installed=None):
-    """UI用: 設定モデルと、Ollamaからスキャンした実在モデルの一覧。"""
+    """UI用: 設定モデルと、Ollamaからスキャンした実在モデルの一覧。
+
+    models.yaml に未登録でも導入済みならUIから選べるようにする(scanned)。
+    scanned は resolve() のフォールバックで family 推定・tier=discovered が付き、
+    自動ルーティングには入らない(明示選択でのみ使用)。埋め込み等は除外。
+    """
     configured = [resolve(cfg, k) for k in cfg.get("models", {})]
     known_tags = {m["tag"] for m in configured}
-    # models.yaml に未登録でも、Ollama に導入済みならUIから選択できるようにする。
-    # 設定済みモデルは family/options 等の既存メタデータを優先する。
     scanned = []
     for tag in sorted(installed or set()):
         base_tag = tag.removesuffix(":latest")
         if tag in known_tags or base_tag in known_tags:
+            continue
+        if any(mk in tag.lower() for mk in _NON_CHAT_MARKERS):
             continue
         scanned.append({
             **resolve(cfg, tag),
