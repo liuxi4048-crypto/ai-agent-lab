@@ -209,6 +209,137 @@ models:
     for: "Zhipu新世代MoE・エージェント志向(MIT)"
     use: "MoE 29.9B/活性3B(glm4moelite) / SWE-bench Verified 59.2%・τ²-Bench(マルチステップtool)79.5(自己申告) /
       tools・thinking対応・think既定ON / hybrid 80%GPU・37.9tok/s実測 / 系統多様化(Zhipu)"
+  # === 2026-08-28 追加: model-radar からpullした新着(未ベンチ=probation・tok/s未実測)===
+  # placement/ram_gb はサイズからの暫定値。arch/params/capabilities は ollama show 実測。
+  # qwen35系は pro/ornith と同じ公式サンプリング(thinking/instruct 別プロファイル)。
+  distill9b:
+    tag: "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:q4_K_M"
+    family: qwen35
+    tier: probation
+    placement: vram          # 5.8GB 全載り
+    tools: true              # ollama show: tools/thinking
+    mtp: false
+    num_ctx: 16384           # ネイティブ262K
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [coding, tool, reasoning]
+    for: "Qwen3.8蒸留9B。省VRAM常駐"
+    use: "Qwen3.8-9B蒸留(qwen35) / dense9.2B・q4で5.8GB全載り / tools・thinking / 未ベンチ=probation"
+  distill4b:
+    tag: "hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:q4_K_M"
+    family: qwen35
+    tier: probation
+    placement: vram
+    tools: true
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [tool, speed, reasoning]
+    for: "Qwen3.8蒸留4B。軽量・高速"
+    use: "Qwen3.8-4B蒸留(qwen35) / dense4.3B・2.8GB / 一次受け・仕分け向き / 未ベンチ=probation"
+  distill2b:
+    tag: "hf.co/empero-ai/Qwen3.8-2B-Distill-GGUF:q4_K_M"
+    family: qwen35
+    tier: probation
+    placement: vram
+    tools: true
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [speed, tool]
+    for: "Qwen3.8蒸留2B。最軽量"
+    use: "Qwen3.8-2B蒸留(qwen35) / dense1.94B・1.3GB / ドラフト/仕分けの最下請け / 未ベンチ=probation"
+  lfm:
+    tag: "hf.co/LiquidAI/LFM2.5-2.6B-GGUF:q4_K_M"
+    family: lfm2             # 独自arch。effort()未対応=graded think不可
+    tier: probation
+    placement: vram          # 1.7GB 全載り
+    tools: true              # ollama show: tools/thinking
+    mtp: false
+    num_ctx: 16384           # ネイティブ131K
+    options: {temperature: 0.3, min_p: 0.15, repeat_penalty: 1.05}   # LiquidAI推奨(低温)
+    strengths: [tool, speed, chat]
+    for: "Liquid AI 省メモリ(2.6B)。オンデバイス志向"
+    use: "LFM2.5-2.6B(lfm2) / メモリ2.5GB未満クラス / ツール利用・指示追従特化(コード性能は限定) / 未ベンチ=probation"
+  dirk:
+    tag: "hf.co/peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_S"
+    family: qwen35
+    tier: probation
+    placement: hybrid        # 16GB(dense27B)→ 一部RAM
+    ram_gb: 3
+    tools: true              # ollama show: tools/thinking/vision(画像経路はアプリに無い)
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [coding, reasoning, tool]
+    for: "Qwen3.8-27B派生。高品質・要RAM"
+    use: "Dirk-Qwen3.8-27B(qwen35 dense) / q4_K_S 16GB・hybrid / tools・thinking / 未ベンチ=probation"
+  ornith35:
+    tag: "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:latest"
+    family: qwen35
+    tier: probation
+    placement: hybrid        # 22GB MoE(活性3B)→ 一部RAM。既存 ornith(9B)の上位MoE版
+    ram_gb: 8
+    tools: true              # ollama show: tools/thinking/vision
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [coding, reasoning, tool]
+    for: "Ornith-1.5 上位MoE(35B/活性3B)。自己改善系"
+    use: "Ornith-1.5-35B-A3B(qwen35moe) / 総35.5B・活性3B / [[ornith]]の上位版 / 未ベンチ=probation"
+  tiel:
+    tag: "hf.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF:Q4_K_S"
+    family: qwen35
+    tier: probation
+    placement: hybrid        # 21GB MoE(活性3B)
+    ram_gb: 7
+    tools: true              # ollama show: tools/thinking/vision
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [coding, tool, reasoning]
+    for: "コーディング特化MoE(35B/活性3B)"
+    use: "Tiel-Coder-35B-A3B(qwen35moe) / コーディング志向MoE / q4_K_S 21GB・hybrid / 未ベンチ=probation"
+  minimax:
+    tag: "hf.co/unsloth/MiniMax-H3-GGUF:q4_K_M"
+    family: unknown          # ollama show で arch/ctx 取得不可(このOllama版が未対応の可能性)
+    tier: probation
+    placement: hybrid        # 18GB
+    ram_gb: 4
+    tools: false             # ollama show: completion のみ(tools/thinking無し)=チャット専用
+    mtp: false
+    num_ctx: 16384
+    options: {min_p: 0}      # 公式値不明。min_pのみ明示(llama.cpp既定0.1回避)
+    strengths: [chat]
+    for: "MiniMax-H3(20B)。チャット専用・arch要確認"
+    use: "MiniMax-H3 / 20.1B / ollama showでarch未取得=このOllama版で不安定な可能性 / tools非対応=chat専用 / 未ベンチ=probation"
+  bonsai:
+    tag: "hf.co/prism-ml/Ternary-Bonsai-27B-gguf:latest"
+    family: qwen35
+    tier: archive        # タグ無しpullでF16級54GBを取得。heavy と同じく巨大=明示指定のみ。
+                         # 小さい量子化で入れ直すか ollama rm 推奨(要検討)
+    placement: hybrid
+    ram_gb: 40           # 54GB。空きRAM次第でロード不能圏(heavy と同水準)
+    tools: true          # ollama show: tools/thinking/vision
+    mtp: false
+    num_ctx: 16384
+    options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
+    options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    think: "low"
+    strengths: [reasoning]
+    for: "三値量子化27B(実験)。54GB=巨大・明示指定のみ"
+    use: "Ternary-Bonsai-27B(qwen35) / タグ無しpullでF16 54GB取得=archive / 小量子化で入れ直し推奨 / 未ベンチ"
   # --- 2026-08-22 退役・削除(再設計。詳細は docs/DESIGN-claude-code-integration.md) ---
   # deep (deepseek-r1:70b, 42GB): 1.6 tok/s・21分でconst再代入× (2026-08-20実測)。
   #   ram_gb=42はアイドル実効空きRAM(≈38.5GB)でもロード不能圏。批評役はreasonerに完全代替。ollama rm済み
