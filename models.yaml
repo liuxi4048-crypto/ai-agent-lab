@@ -213,7 +213,7 @@ models:
   # placement/ram_gb はサイズからの暫定値。arch/params/capabilities は ollama show 実測。
   # qwen35系は pro/ornith と同じ公式サンプリング(thinking/instruct 別プロファイル)。
   distill9b:
-    tag: "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:q4_K_M"
+    tag: "qwen3.8-distill:9b"       # = hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:q4_K_M(ollama cpで短縮)
     family: qwen35
     tier: probation
     placement: vram          # 5.8GB 全載り
@@ -227,7 +227,7 @@ models:
     for: "Qwen3.8蒸留9B。省VRAM常駐"
     use: "Qwen3.8-9B蒸留(qwen35) / dense9.2B・q4で5.8GB全載り / tools・thinking / 未ベンチ=probation"
   distill4b:
-    tag: "hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:q4_K_M"
+    tag: "qwen3.8-distill:4b"       # = hf.co/empero-ai/Qwen3.8-4B-Distill-GGUF:q4_K_M(別名)
     family: qwen35
     tier: probation
     placement: vram
@@ -241,7 +241,7 @@ models:
     for: "Qwen3.8蒸留4B。軽量・高速"
     use: "Qwen3.8-4B蒸留(qwen35) / dense4.3B・2.8GB / 一次受け・仕分け向き / 未ベンチ=probation"
   distill2b:
-    tag: "hf.co/empero-ai/Qwen3.8-2B-Distill-GGUF:q4_K_M"
+    tag: "qwen3.8-distill:2b"       # = hf.co/empero-ai/Qwen3.8-2B-Distill-GGUF:q4_K_M(別名)
     family: qwen35
     tier: probation
     placement: vram
@@ -255,7 +255,7 @@ models:
     for: "Qwen3.8蒸留2B。最軽量"
     use: "Qwen3.8-2B蒸留(qwen35) / dense1.94B・1.3GB / ドラフト/仕分けの最下請け / 未ベンチ=probation"
   lfm:
-    tag: "hf.co/LiquidAI/LFM2.5-2.6B-GGUF:q4_K_M"
+    tag: "lfm2.5:2.6b"              # = hf.co/LiquidAI/LFM2.5-2.6B-GGUF:q4_K_M(別名)
     family: lfm2             # 独自arch。effort()未対応=graded think不可
     tier: probation
     placement: vram          # 1.7GB 全載り
@@ -267,7 +267,7 @@ models:
     for: "Liquid AI 省メモリ(2.6B)。オンデバイス志向"
     use: "LFM2.5-2.6B(lfm2) / メモリ2.5GB未満クラス / ツール利用・指示追従特化(コード性能は限定) / 未ベンチ=probation"
   dirk:
-    tag: "hf.co/peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_S"
+    tag: "dirk-qwen3.8:27b"         # = hf.co/peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_S(別名)
     family: qwen35
     tier: probation
     placement: hybrid        # 16GB(dense27B)→ 一部RAM
@@ -282,7 +282,7 @@ models:
     for: "Qwen3.8-27B派生。高品質・要RAM"
     use: "Dirk-Qwen3.8-27B(qwen35 dense) / q4_K_S 16GB・hybrid / tools・thinking / 未ベンチ=probation"
   ornith35:
-    tag: "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:latest"
+    tag: "ornith:1.5-35b"           # = hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF(別名)
     family: qwen35
     tier: probation
     placement: hybrid        # 22GB MoE(活性3B)→ 一部RAM。既存 ornith(9B)の上位MoE版
@@ -297,7 +297,7 @@ models:
     for: "Ornith-1.5 上位MoE(35B/活性3B)。自己改善系"
     use: "Ornith-1.5-35B-A3B(qwen35moe) / 総35.5B・活性3B / [[ornith]]の上位版 / 未ベンチ=probation"
   tiel:
-    tag: "hf.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF:Q4_K_S"
+    tag: "tiel-coder:35b-a3b"       # = hf.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF:Q4_K_S(別名)
     family: qwen35
     tier: probation
     placement: hybrid        # 21GB MoE(活性3B)
@@ -312,7 +312,7 @@ models:
     for: "コーディング特化MoE(35B/活性3B)"
     use: "Tiel-Coder-35B-A3B(qwen35moe) / コーディング志向MoE / q4_K_S 21GB・hybrid / 未ベンチ=probation"
   minimax:
-    tag: "hf.co/unsloth/MiniMax-H3-GGUF:q4_K_M"
+    tag: "minimax-h3:20b"           # = hf.co/unsloth/MiniMax-H3-GGUF:q4_K_M(別名)
     family: unknown          # ollama show で arch/ctx 取得不可(このOllama版が未対応の可能性)
     tier: probation
     placement: hybrid        # 18GB
@@ -325,7 +325,7 @@ models:
     for: "MiniMax-H3(20B)。チャット専用・arch要確認"
     use: "MiniMax-H3 / 20.1B / ollama showでarch未取得=このOllama版で不安定な可能性 / tools非対応=chat専用 / 未ベンチ=probation"
   bonsai:
-    tag: "hf.co/prism-ml/Ternary-Bonsai-27B-gguf:latest"
+    tag: "ternary-bonsai:27b"       # = hf.co/prism-ml/Ternary-Bonsai-27B-gguf(別名)
     family: qwen35
     tier: archive        # タグ無しpullでF16級54GBを取得。heavy と同じく巨大=明示指定のみ。
                          # 小さい量子化で入れ直すか ollama rm 推奨(要検討)
