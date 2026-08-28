@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, Copy, Check, Search } from "lucide-react";
+import { ArrowDownToLine, Copy, Check, Search, Cpu } from "lucide-react";
 import Drawer from "./Drawer.jsx";
 import Markdown from "./md.jsx";
-import { AGENT_STATES, KIND_LABEL, ctxFillLevel } from "../derive.js";
+import { AGENT_STATES, KIND_LABEL, ctxFillLevel, modelDisplay } from "../derive.js";
 
 const CTX_METER_CLASS = {
   none: "border-zinc-700 text-zinc-500",
@@ -269,6 +269,18 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
               {meta.label}
             </span>
           )}
+          {(() => {
+            const model = modelDisplay(node);
+            return model.has ? (
+              <span
+                className="flex shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 font-mono text-[11px] text-zinc-300"
+                title={model.roleLabel && model.roleLabel !== model.tag ? `役割: ${model.roleLabel}` : "使用モデル"}
+              >
+                <Cpu size={11} className="text-blue-400" />
+                {model.tag}
+              </span>
+            ) : null;
+          })()}
         </div>
       }
     >

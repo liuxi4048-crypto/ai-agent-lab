@@ -123,6 +123,28 @@ export function isModelLoading(node, now) {
   return now - node.started_at * 1000 >= LOADING_MS;
 }
 
+// モデルキー(内部名)→ 役割が伝わる短い日本語ラベル。バッジの補助表示に使う。
+// 未知キー(自動検出タグ等)はそのままキーを見せる。
+export const MODEL_KEY_LABEL = {
+  worker: "一次受け", coder: "コーダー", smart: "高品質", glimmer: "エージェント特化",
+  reasoner: "推論", pro: "上位", fast: "高速", heavy: "最大", claude: "Claude",
+};
+
+/**
+ * ノードの「使ったモデル」表示。tag(qwen3:30b 等)を主に、key(役割)を副に見せる。
+ * @returns {{ tag: string, key: string, roleLabel: string, has: boolean }}
+ */
+export function modelDisplay(node) {
+  const tag = (node?.model_tag || "").trim();
+  const key = (node?.model_key || "").trim();
+  return {
+    tag: tag || key,
+    key,
+    roleLabel: MODEL_KEY_LABEL[key] || key,
+    has: !!(tag || key),
+  };
+}
+
 // ctx_fill(コンテキスト充填率)の警告レベル。85%超=warn(黄) / 95%超=danger(赤)。
 export function ctxFillLevel(ctxFill) {
   if (ctxFill == null) return "none";

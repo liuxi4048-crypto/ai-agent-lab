@@ -76,6 +76,14 @@ function applyEvent(state, ev) {
       const patch = ev.type === "prompt" ? { prompt: ev.prompt } : { title: ev.title };
       return { ...state, nodes: { ...state.nodes, [ev.id]: { ...node, ...patch } } };
     }
+    case "model": {
+      const node = state.nodes[ev.id];
+      if (!node) return state;
+      return {
+        ...state,
+        nodes: { ...state.nodes, [ev.id]: { ...node, model_key: ev.model_key, model_tag: ev.model_tag } },
+      };
+    }
     case "token_progress": {
       const node = state.nodes[ev.id];
       if (!node) return state;

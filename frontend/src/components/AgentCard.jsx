@@ -1,8 +1,8 @@
 import {
   Zap, Hourglass, Clock, Wrench, CheckCircle2, XCircle, Ban, Square,
-  AlertTriangle, BookOpen, Timer,
+  AlertTriangle, BookOpen, Timer, Cpu,
 } from "lucide-react";
-import { AGENT_STATES, KIND_LABEL, fmtElapsed, lastLine, isModelLoading, ctxFillLevel } from "../derive.js";
+import { AGENT_STATES, KIND_LABEL, fmtElapsed, lastLine, isModelLoading, ctxFillLevel, modelDisplay } from "../derive.js";
 
 const CTX_PILL_CLASS = {
   warn: "border-yellow-500 text-yellow-400",
@@ -29,6 +29,7 @@ export default function AgentCard({
   const isLive = ["active", "tool", "stalled"].includes(agentState.key);
   const loading = agentState.key === "active" && isModelLoading(node, now);
   const ctxLevel = ctxFillLevel(node.ctx_fill);
+  const model = modelDisplay(node);
   const stalledSec = sinceMs != null ? Math.floor(sinceMs / 1000) : null;
 
   const elapsed =
@@ -71,6 +72,15 @@ export default function AgentCard({
 
       {/* 2行目: 経過 + t/s + 依存(待機系のみ) + ctx警告。tok/進捗は LogDrawer ヘッダーへ退避 */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+        {model.has && (
+          <span
+            className="flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-px font-mono text-[10.5px] text-zinc-300"
+            title={`使用モデル: ${model.tag}${model.roleLabel && model.roleLabel !== model.tag ? `(${model.roleLabel})` : ""}`}
+          >
+            <Cpu size={10} className="shrink-0 text-blue-400" />
+            <span className="max-w-36 truncate">{model.tag}</span>
+          </span>
+        )}
         <span className="flex items-center gap-1 tabular-nums">
           <Timer size={11} /> {fmtElapsed(elapsed)}
         </span>

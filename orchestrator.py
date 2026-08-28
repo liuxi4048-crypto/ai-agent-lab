@@ -137,6 +137,9 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     thinking はノードの思考ストリームとして別枠で流す(出力本文を汚さない)。
     """
     bus.set_prompt(node_id, "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages))
+    # このノードで実際に使うモデルをUIへ通知(orchestra/critique/レビュー系は単一モデル・
+    # カスケードなしなのでここで確定する。coderノードは run_agent の start/escalate で設定)。
+    bus.set_model(node_id, key, llm.resolve(cfg, key).get("tag", key))
     bus.set_status(node_id, "thinking")
     out: list[str] = []
     async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
@@ -298,6 +301,7 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
     node_id = bus.create_node(
         "claude", f"🤖 Claudeレビュー ({claude_review.MODEL})",
         "成果物をレビューし、問題を直接修正します(Claude Codeのサブスク枠を使用)", root_id)
+    bus.set_model(node_id, "claude", claude_review.MODEL)
     bus.set_status(node_id, "running")
     toolbox = Toolbox(subdir=f"run_{run.id}", approve=False)   # run_command は渡さない
     # Claude CLI はシェル(run_command)を渡されず直接ファイルを編集するため、
@@ -720,14 +724,19 @@ class CodeOrchestrator:
             bus.emit_log(node_id, str(line))
 
         def on_status(d: dict) -> None:
-            if d.get("type") == "iter":
+            t = d.get("type")
+            if t in ("start", "escalate"):
+                # run_agent が実行開始・カスケード昇格のたびに実モデルを報告する。
+                # これでバッジが「初期選択」ではなく「実際に走ったモデル」を映す。
+                bus.set_model(node_id, d.get("model", ""), d.get("tag", ""))
+                if t == "start":
+                    bus.set_status(node_id, "running")
+            elif t == "iter":
                 bus.set_title(node_id, f"{title_prefix} iter {d['iter']}/{d['max']} [{d['phase']}]")
                 bus.set_progress(root_id, d["iter"], d["max"])
-            elif d.get("type") == "usage":
+            elif t == "usage":
                 # 実測の累計で確定させる(deltaによる概算カウントを置き換える)
                 bus.set_tokens(node_id, d.get("total", d["tokens"]), ctx_fill=d.get("ctx_fill"))
-            elif d.get("type") == "start":
-                bus.set_status(node_id, "running")
             else:
                 _agent_stream(bus, node_id, d)
 
@@ -1023,7 +1032,9 @@ class SwarmCodeOrchestrator:
                           approver=approver if run.approve else None)
 
         def on_status(d: dict) -> None:
-            if d.get("type") == "iter":
+            if d.get("type") in ("start", "escalate"):
+                bus.set_model(node_id, d.get("model", ""), d.get("tag", ""))
+            elif d.get("type") == "iter":
                 bus.set_title(node_id,
                               f"🛠 サブコーダー{i+1}: {sub['title']} iter {d['iter']}/{d['max']} [{d['phase']}]")
             elif d.get("type") == "usage":
@@ -1069,7 +1080,9 @@ class SwarmCodeOrchestrator:
                           approver=approver if run.approve else None)
 
         def on_status(d: dict) -> None:
-            if d.get("type") == "iter":
+            if d.get("type") in ("start", "escalate"):
+                bus.set_model(node_id, d.get("model", ""), d.get("tag", ""))
+            elif d.get("type") == "iter":
                 bus.set_title(node_id, f"🧩 統合ラウンド iter {d['iter']}/{d['max']}")
             elif d.get("type") == "usage":
                 bus.set_tokens(node_id, d.get("total", d["tokens"]), ctx_fill=d.get("ctx_fill"))

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Square, RotateCcw, FileCog, Star, Timer, Coins, Wand2, Loader2, Info,
+  Square, RotateCcw, FileCog, Star, Timer, Coins, Wand2, Loader2, Info, Cpu,
 } from "lucide-react";
 import Popover from "./Popover.jsx";
 import { RUN_STATUS, MODE_LABEL, DELIVERABLE_LABEL, fmtElapsed } from "../derive.js";
@@ -50,6 +50,18 @@ export default function RunHeader({
         <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
         {meta.label}
       </span>
+
+      {/* 使用モデルを常設表示(従来はⓘポップオーバー内のみ)。どのRunがどのモデルで
+          動いた/動いているかを一目で分かるようにする。 */}
+      {modelTag && (
+        <span
+          className="hidden shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 font-mono text-[11px] text-zinc-300 sm:flex"
+          title="使用モデル(Runの主モデル。カスケード昇格時は各エージェントカードのバッジが実モデルを示します)"
+        >
+          <Cpu size={11} className="text-blue-400" />
+          <span className="max-w-32 truncate">{modelTag}</span>
+        </span>
+      )}
 
       <button
         ref={taskBtnRef}

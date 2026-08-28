@@ -25,6 +25,8 @@ class Node:
         self.title = title
         self.detail = detail      # 作業内容の説明
         self.status = "waiting"   # waiting / thinking / generating / running / done / error / cancelled
+        self.model_key = ""       # 実際に使われたモデルキー(coder/worker/smart...)。カスケード昇格で更新される
+        self.model_tag = ""       # 実タグ(qwen3:30b 等)。UIのモデルバッジ表示用
         self.tokens = 0
         self.preview = ""         # 生成中テキストの末尾プレビュー
         self.output = ""          # 完全な出力
@@ -46,6 +48,8 @@ class Node:
             "title": self.title,
             "detail": self.detail,
             "status": self.status,
+            "model_key": self.model_key,
+            "model_tag": self.model_tag,
             "tokens": self.tokens,
             "preview": self.preview,
             "output": self.output,
@@ -114,6 +118,8 @@ class EventBus:
         for nd in snapshot.get("nodes", []):
             node = Node(nd["id"], nd.get("parent_id"), nd["kind"], nd["title"], nd.get("detail", ""))
             node.status = nd.get("status", "done")
+            node.model_key = nd.get("model_key", "")
+            node.model_tag = nd.get("model_tag", "")
             node.tokens = nd.get("tokens", 0)
             node.preview = nd.get("preview", "")
             node.output = nd.get("output", "")
@@ -169,6 +175,21 @@ class EventBus:
     def set_title(self, node_id: str, title: str) -> None:
         self.nodes[node_id].title = title
         self._publish({"type": "title", "id": node_id, "title": title})
+
+    def set_model(self, node_id: str, model_key: str, model_tag: str = "") -> None:
+        """このノードで実際に使うモデルを記録・配信する。
+
+        カスケード(一次受け→本命→上位)は run_agent 内でモデルを交代するため、
+        start/escalate のたびに呼ばれ、UIのバッジが実モデルへ追随する。
+        同値なら再配信しない(escalate 判定が空振りしたときの無駄な再描画を避ける)。
+        """
+        node = self.nodes.get(node_id)
+        if node is None or (node.model_key == model_key and node.model_tag == model_tag):
+            return
+        node.model_key = model_key
+        node.model_tag = model_tag
+        self._publish({"type": "model", "id": node_id,
+                       "model_key": model_key, "model_tag": model_tag})
 
     def token_progress(self, node_id: str, piece: str) -> None:
         node = self.nodes[node_id]
