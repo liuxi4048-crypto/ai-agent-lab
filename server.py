@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 import bench
 import claude_review
+import api_review
 import llm
 import router
 from artifacts import WORKSPACE as ARTIFACT_DIR
@@ -67,7 +68,8 @@ class RunRequest(BaseModel):
     max_iter: int = 18
     deliverable: str = "auto"      # 成果物形式 auto / html / exe / script
     allow_ram: bool = False        # True でRAM併用の大型モデルも使う(既定はVRAMのみ)
-    claude_review: bool = False    # 完了後にClaude(外部API)がレビュー→修正して仕上げる
+    claude_review: bool = False
+    api_review: bool = False      # 完了後に環境変数設定済みの任意APIモデルがレビュー
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -120,6 +122,7 @@ async def health() -> dict:
         # 検証レイヤの死活(黙って無効化されている状態をUIで認知できるように)
         "node_check": shutil.which("node") is not None,
         "claude_review": claude_review.status().get("available", False),
+        "api_review": api_review.status().get("available", False),
     }
 
 
@@ -147,6 +150,7 @@ async def models() -> dict:
                        or m["ram_gb"] <= free_ram)
     catalog["free_ram_gb"] = round(free_ram, 1) if free_ram is not None else None
     catalog["claude"] = claude_review.status()
+    catalog["api_review"] = api_review.status()
     return catalog
 
 
@@ -172,6 +176,8 @@ async def start_run(req: RunRequest) -> dict:
         st = claude_review.status()
         if not st["available"]:
             raise HTTPException(400, f"Claudeレビューを使えません: {st['reason']}")
+    if req.api_review and not api_review.status()["available"]:
+        raise HTTPException(400, f"任意モデルレビューを使えません: {api_review.status()['reason']}")
 
     cfg = llm.load_config()
     installed = set(await llm.list_models())
@@ -234,7 +240,8 @@ async def start_run(req: RunRequest) -> dict:
     run = manager.create(task, mode, model, reviewer,
                          approve=req.approve, max_iter=max_iter, hybrid=hybrid,
                          critique=req.critique, deliverable=deliverable,
-                         claude_review=claude_on)
+                         claude_review=claude_on,
+                         api_review=req.api_review and mode in ("code", "swarm-code"))
 
     def factory():
         if run.mode == "critique":
@@ -251,6 +258,7 @@ async def start_run(req: RunRequest) -> dict:
             "model_tag": info["tag"], "mode": mode, "deliverable": deliverable,
             "reviewer_model": reviewer, "hybrid": hybrid,
             "claude_review": claude_on,
+            "api_review": run.api_review,
             "decided_by": decided_by, "reason": reason}
 
 

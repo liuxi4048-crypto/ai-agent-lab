@@ -5,7 +5,7 @@ import { Play, Loader2, X, Sparkles, ChevronRight, History } from "lucide-react"
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
 
 // 詳細設定の既定値。「既定と異なる件数」の算出と[クリア]の戻し先に使う
-const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, allowRam: false, claudeReview: false };
+const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, allowRam: false, claudeReview: false, apiReview: false };
 
 /**
  * 新しいタスクの Composer(下書きビュー = 右ペイン全面)。
@@ -27,6 +27,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
   const [maxIter, setMaxIter] = useState(DEFAULTS.maxIter);
   const [allowRam, setAllowRam] = useState(DEFAULTS.allowRam);   // 既定はVRAMのみ
   const [claudeReview, setClaudeReview] = useState(DEFAULTS.claudeReview);  // 既定OFF(外部送信のため)
+  const [apiReview, setApiReview] = useState(DEFAULTS.apiReview);
   const [inherited, setInherited] = useState(false);  // 設定変更して再実行から来たか
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -39,6 +40,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
     setMaxIter(src.max_iter ?? src.maxIter ?? DEFAULTS.maxIter);
     setAllowRam(!!(src.allow_ram ?? src.allowRam));
     setClaudeReview(!!(src.claude_review ?? src.claudeReview));
+    setApiReview(!!(src.api_review ?? src.apiReview));
   };
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
       // mode / deliverable は送らない(auto = メインエージェントが決める)
       await onStart({ task: task.trim(), model, critique, approve,
                       max_iter: maxIter, allow_ram: allowRam,
-                      claude_review: claudeReview });
+                      claude_review: claudeReview, api_review: apiReview });
       setTask("");   // 実行を開始したら入力を空に戻す(ビュー切替は App 側)
       setInherited(false);
     } catch (e) {
@@ -77,6 +79,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
   const modelOptions = models?.models ?? [];
   const claude = models?.claude ?? null;
+  const api = models?.api_review ?? null;
 
   // APIキーが無い等で使えなくなったら、選択が残らないようOFFへ戻す
   useEffect(() => {
@@ -100,8 +103,9 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
     approve !== DEFAULTS.approve,
     allowRam !== DEFAULTS.allowRam,
     claudeReview !== DEFAULTS.claudeReview,
+    apiReview !== DEFAULTS.apiReview,
     maxIter !== DEFAULTS.maxIter,
-  ].filter(Boolean).length, [critique, approve, allowRam, claudeReview, maxIter]);
+  ].filter(Boolean).length, [critique, approve, allowRam, claudeReview, apiReview, maxIter]);
 
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto px-4 py-8">
@@ -222,7 +226,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                      className="accent-blue-500" />
               完了後レビュー(critique)
             </label>
-            <label
+          <label
               className="flex cursor-pointer items-center gap-1.5"
               title="ONにするとVRAMに収まらない大型モデル(RAM併用)も使えます。品質は上がりますが低速になります"
             >
@@ -248,6 +252,15 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                 🤖 Claudeが最終レビュー
               </span>
               <span className="text-zinc-600">※サブスク枠を消費</span>
+            </label>
+            <label
+              className={`flex items-center gap-1.5 ${api?.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+              title={api?.available ? `完了後に${api.model}が成果物を読み取りレビューします。APIキーはサーバー側だけで使われます。` : (api?.reason || "任意モデルレビューは利用できません")}
+            >
+              <input type="checkbox" checked={apiReview} disabled={!api?.available}
+                     onChange={(e) => setApiReview(e.target.checked)} className="accent-cyan-500" />
+              <span className={apiReview ? "text-cyan-400" : ""}>🔌 任意モデルで最終レビュー</span>
+              <span className="text-zinc-600">※{api?.model || "未設定"}</span>
             </label>
             <label className="flex items-center gap-1.5">
               最大イテレーション

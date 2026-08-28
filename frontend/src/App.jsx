@@ -354,6 +354,7 @@ export default function App() {
       critique: currentRun.critique, approve: currentRun.approve, max_iter: currentRun.max_iter,
       deliverable: currentRun.deliverable ?? "auto",
       claude_review: !!currentRun.claude_review,
+      api_review: !!currentRun.api_review,
     }).catch(notifyError);   // Ollama未起動・モデル未導入・RAM不足の理由はここに出る
   };
 

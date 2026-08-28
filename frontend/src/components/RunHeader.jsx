@@ -157,6 +157,12 @@ export default function RunHeader({
                   <dd className="font-semibold text-orange-400">🤖 Claude</dd>
                 </div>
               )}
+              {run.api_review && (
+                <div className="flex items-center gap-2">
+                  <dt className="w-20 shrink-0 text-zinc-500">最終レビュー</dt>
+                  <dd className="font-semibold text-cyan-400">🔌 APIモデル</dd>
+                </div>
+              )}
               {reason && (
                 <div className="flex items-start gap-2">
                   <dt className="w-20 shrink-0 text-zinc-500">判定理由</dt>
