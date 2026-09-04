@@ -38,6 +38,16 @@
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
+  impl-plan-review:
+    tag: "qwen3.8:27b"
+    family: qwen35
+    tier: external
+    placement: hybrid
+    ram_gb: 6
+    tools: false
+    num_ctx: 16384
+    think: false
+    options: {temperature: 0.3, top_p: 0.8, top_k: 20, min_p: 0}
   worker:
     tag: "gpt-oss:20b"
     family: gpt-oss
@@ -397,3 +407,9 @@ critique_pairs:
   pro: reasoner
   heavy: reasoner
   reasoner: worker
+
+# Opt-in impl-plan transport; legacy config remains for rollback.
+impl_plan_review:
+  model_key: impl-plan-review
+  timeout_sec: 240
+  max_output_tokens: 2048

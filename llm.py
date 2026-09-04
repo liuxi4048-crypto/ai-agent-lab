@@ -37,6 +37,8 @@ for _s in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+COMPLETION_METADATA_VERSION = 1  # _done_reason includes successful stop
+
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "models.yaml")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
 DEFAULT_NUM_CTX = 16384
@@ -350,10 +352,9 @@ async def _stream_collect(payload, timeout, on_delta=None):
                     if chunk.get("prompt_eval_count"):
                         msg["_prompt_tokens"] = chunk["prompt_eval_count"]
                     reason = chunk.get("done_reason")
-                    if reason and reason != "stop":
-                        # "length" = num_ctx/num_predict による打ち切り。
-                        # 呼び出し側が不完全な生成物と判断できるように残す。
-                        msg["_done_reason"] = reason
+                    # Preserve successful completion too: callers must distinguish
+                    # a complete response from a stream ending without a done chunk.
+                    msg["_done_reason"] = reason or "unknown"
                     msg["_timing"] = _timing_from_done(chunk, t_start, t_first)
                     break
     if tool_calls:
