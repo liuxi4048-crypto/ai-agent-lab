@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 import llm
@@ -96,7 +99,18 @@ _OPEN_THINK_RE = re.compile(r"^\s*<think>.*", re.DOTALL | re.IGNORECASE)
 # (Windowsのコマンドライン長上限32767を避けるため)。`--sandbox read-only` で
 # レビュアーがファイルを書き換えないよう封じる。
 # 環境変数 PANEL_CODEX_CMD で上書き可能(codex のCLI仕様変更に追従するため)。
+#
+# 実行方法の注意(Windows): codex は cmd → node → codex.exe → MCPサーバ群 と孫を生み、孫が
+# 標準出力/標準エラーのパイプ書き込みハンドルを握ったまま残る。subprocess.run のパイプ受けは
+# 全員が閉じるまで EOF を待つため、codex 本体が終わっても戻らず、タイムアウト後も kill が
+# 孫に届かず固まる(取得済みの出力も捨てられる)。そこで stdin/stdout/stderr は一時ファイルに
+# 向けて EOF を待たず、プロセスツリーは Job Object(POSIXは新セッション+killpg)で丸ごと止める。
+# 詳細は run_process_tree。
+# 環境変数: PANEL_CODEX_TIMEOUT=1lensあたりの上限秒(既定900)
+#           PANEL_CODEX_LAST_MESSAGE=0 で `--output-last-message` の自動付与を止める。
+# config.toml の notify もレビュー実行では `-c notify=[]` で止める(without_notify)。
 DEFAULT_CODEX_CMD = "codex exec --skip-git-repo-check --sandbox read-only --color never -"
+CODEX_TIMEOUT = float(os.environ.get("PANEL_CODEX_TIMEOUT", "900"))
 
 
 def strip_think(text):
@@ -222,6 +236,226 @@ async def run_ollama_lens(cfg, model_key, lens_name, content, source, instructio
                 "output": "", "error": f"{type(e).__name__}: {e}"}
 
 
+if os.name == "nt":
+    from ctypes import wintypes
+
+    _JOB_KILL_ON_CLOSE = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    _JOB_BASIC_PROCESS_ID_LIST = 3       # JobObjectBasicProcessIdList
+    _JOB_EXTENDED_LIMIT_INFO = 9         # JobObjectExtendedLimitInformation
+    _SYNCHRONIZE = 0x00100000
+
+    class _JobPidList(ctypes.Structure):
+        # JOBOBJECT_BASIC_PROCESS_ID_LIST。codex は MCP サーバを数十個起こすので枠を広めに取る
+        _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD),
+                    ("NumberOfProcessIdsInList", wintypes.DWORD),
+                    ("ProcessIdList", ctypes.c_size_t * 1024)]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _JobBasicLimit(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _JobExtendedLimit(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _JobBasicLimit),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    # HANDLE は64bitなので argtypes/restype を明示する(省略すると int に切り詰められる)
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    _k32.CreateJobObjectW.restype = wintypes.HANDLE
+    _k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                             wintypes.LPVOID, wintypes.DWORD]
+    _k32.SetInformationJobObject.restype = wintypes.BOOL
+    _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _k32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                                               wintypes.DWORD, wintypes.LPDWORD]
+    _k32.QueryInformationJobObject.restype = wintypes.BOOL
+    _k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _k32.TerminateJobObject.restype = wintypes.BOOL
+    _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _k32.OpenProcess.restype = wintypes.HANDLE
+    _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _k32.WaitForSingleObject.restype = wintypes.DWORD
+    _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _k32.CloseHandle.restype = wintypes.BOOL
+
+    # Popen はスレッドハンドルを閉じてしまい ResumeThread を使えないため、プロセス単位で再開する
+    # (psutil の Process.resume() と同じ方法)
+    _CREATE_SUSPENDED = 0x4
+    _ntdll = ctypes.WinDLL("ntdll")
+    _ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    _ntdll.NtResumeProcess.restype = ctypes.c_long   # NTSTATUS。0 が成功
+
+
+def _job_attach(proc):
+    """Windows: proc を KILL_ON_JOB_CLOSE の Job Object に入れて返す。失敗時は None。
+
+    孫以降は自動で同じ Job に属する。panel.py 自身が落ちてもハンドルが閉じられ、ツリーごと消える。
+    子は一時停止状態で起動しておき、割り当て後に再開する(割り当て前に孫を生まれて Job から漏れないように)。
+    """
+    job = None
+    try:
+        job = _k32.CreateJobObjectW(None, None)
+        if job:
+            info = _JobExtendedLimit()
+            info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+            if (_k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT_INFO,
+                                             ctypes.byref(info), ctypes.sizeof(info))
+                    and _k32.AssignProcessToJobObject(job, int(proc._handle))):
+                return job
+    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+        pass
+    if job:
+        _k32.CloseHandle(job)
+    return None   # 呼び出し側が taskkill にフォールバックする
+
+
+def _terminate_job(job, limit=5.0):
+    """Job 内の全プロセスを止め、実際に消えるまで待つ(最大 limit 秒)。
+
+    TerminateJobObject は非同期で、戻った時点では孫がまだ一時ファイルを握っている(Job の
+    ActiveProcesses は先に0になるので目安にならない)。待たないと後片付けで削除に失敗して
+    %TEMP% に残るため、先にプロセスハンドルを取っておき、その終了を待つ。
+    """
+    pids = _JobPidList()
+    # 枠に入りきらず失敗しても、入った分は使える
+    _k32.QueryInformationJobObject(job, _JOB_BASIC_PROCESS_ID_LIST, ctypes.byref(pids),
+                                   ctypes.sizeof(pids), None)
+    handles = [h for h in (_k32.OpenProcess(_SYNCHRONIZE, False, pid)
+                           for pid in pids.ProcessIdList[:pids.NumberOfProcessIdsInList]) if h]
+    _k32.TerminateJobObject(job, 1)
+    deadline = time.monotonic() + limit
+    for h in handles:
+        _k32.WaitForSingleObject(h, max(0, int((deadline - time.monotonic()) * 1000)))
+        _k32.CloseHandle(h)
+
+
+def _kill_tree(proc, job):
+    """proc 配下のプロセスツリーを止める。正常終了後(MCPサーバの取り残し防止)にも呼ぶ。"""
+    if os.name == "nt":
+        if job:
+            _terminate_job(job)
+            _k32.CloseHandle(job)
+        elif proc.poll() is None:
+            # Job に入れられなかったときの代替。直接の子が生きているうちでないとツリーを辿れないため、
+            # 正常終了後に残った孫は回収できない(固まり自体はファイル受けで起きない)
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def run_process_tree(argv, input_bytes, cwd, timeout, workdir):
+    """argv を起動し、直接の子の終了だけを待つ。戻り値: (returncode, stdout, stderr, timed_out)。
+
+    stdin/stdout/stderr は workdir 内のファイルに向ける。孫が握るのはファイルなのでパイプのような
+    EOF待ちが起きず、タイムアウト時も途中までの出力が残る。終了後(正常でもタイムアウトでも)
+    プロセスツリー全体を kill する。
+    """
+    stdin_path = os.path.join(workdir, "stdin")
+    out_path = os.path.join(workdir, "stdout")
+    err_path = os.path.join(workdir, "stderr")
+    with open(stdin_path, "wb") as f:
+        f.write(input_bytes)
+
+    if os.name == "nt":
+        isolation = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED}
+    else:
+        isolation = {"start_new_session": True}
+    # 親側のハンドルは Popen 直後に閉じる(with を抜ける)。子には複製が渡っている
+    with open(stdin_path, "rb") as fin, open(out_path, "wb") as fout, open(err_path, "wb") as ferr:
+        proc = subprocess.Popen(argv, stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, **isolation)
+    job = None
+    if os.name == "nt":
+        job = _job_attach(proc)
+        if _ntdll.NtResumeProcess(int(proc._handle)) != 0:
+            _kill_tree(proc, job)
+            raise OSError("一時停止で起動した子を再開できない(NtResumeProcess 失敗)")
+
+    timed_out = False
+    try:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        _kill_tree(proc, job)
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        pass
+
+    def read(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    return proc.returncode, read(out_path), read(err_path), timed_out
+
+
+def with_last_message(argv, path):
+    """codex exec の argv に `--output-last-message <path>` を足して返す(足せない/不要なら元のまま)。
+
+    stdout が空・欠けても最終メッセージをファイルから拾えるようにする。足さない場合:
+    PANEL_CODEX_LAST_MESSAGE=0 / `exec` を含まない / 既に -o 系がある。末尾が `-`(stdin指定)なら
+    その手前に挿入する。
+    """
+    if os.environ.get("PANEL_CODEX_LAST_MESSAGE") == "0" or "exec" not in argv:
+        return argv
+    if any(a in ("-o", "--output-last-message") or a.startswith("--output-last-message=")
+           for a in argv):
+        return argv
+    # cmd /c は引用符が3つ以上あると先頭の引用符を剥がして壊れるため、空白入りの経路は付与を諦める
+    if argv[0].lower() == "cmd" and re.search(r"\s", path):
+        return argv
+    return _insert_exec_opts(argv, ["--output-last-message", path])
+
+
+def without_notify(argv):
+    """codex exec の argv に `-c notify=[]` を足して返す(既に notify を指定していれば元のまま)。
+
+    config.toml の notify はターン終了ごとに起動される通知プログラムで、stdio を継承したまま
+    残って今回の固まりの原因になった。ヘッドレスのレビューには不要で、常駐サービスを起動されると
+    lens 終了時の Job 停止に巻き込むことにもなるので、レビュー用の実行では止める。
+    """
+    if "exec" not in argv or any(a.startswith(("notify=", "--config=notify=")) for a in argv):
+        return argv
+    return _insert_exec_opts(argv, ["-c", "notify=[]"])
+
+
+def _insert_exec_opts(argv, extra):
+    """末尾が `-`(stdin指定)ならその手前に、そうでなければ末尾に extra を足す。"""
+    if argv[-1] == "-":
+        return argv[:-1] + extra + ["-"]
+    return argv + extra
+
+
 def resolve_codex_argv(template):
     """codex の実体をPATHから解決する。戻り値: (argv, 表示名)。未検出なら (None, 名前)。
 
@@ -254,18 +488,30 @@ async def run_codex_lens(lens_name, content, source, instruction, cwd):
     prompt = SYSTEM_PROMPT + "\n\n" + build_prompt(
         lens_name, LENSES[lens_name]["focus"], content, source, instruction)
 
+    timeout = CODEX_TIMEOUT   # テストで差し替えられるよう呼び出し時に読む
+
     def _run():
-        return subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", cwd=cwd, timeout=900)
+        with tempfile.TemporaryDirectory(prefix="panel-codex-", ignore_cleanup_errors=True) as workdir:
+            last_path = os.path.join(workdir, "last-message.txt")
+            rc, out, err, timed_out = run_process_tree(
+                with_last_message(without_notify(argv), last_path), prompt.encode("utf-8"),
+                cwd, timeout, workdir)
+            out = out.strip()
+            if not out and os.path.exists(last_path):   # stdout が空なら最終メッセージで補う
+                with open(last_path, encoding="utf-8", errors="replace") as f:
+                    out = f.read().strip()
+            return rc, out, err, timed_out
 
     try:
-        proc = await asyncio.to_thread(_run)
-    except subprocess.TimeoutExpired:
-        return result("", "codex がタイムアウト(900秒)")
+        rc, output, stderr, timed_out = await asyncio.to_thread(_run)
+    except OSError as e:   # 起動失敗(実行権限・cwd不正など)。1lensの失敗で全体を落とさない
+        return result("", f"codex の起動に失敗: {type(e).__name__}: {e}")
 
     # codexは起動バナーをstderrに出すため、実際の失敗理由が出る**末尾**を残す
-    err = None if proc.returncode == 0 else f"codex exit {proc.returncode}: ...{proc.stderr.strip()[-800:]}"
-    return result(proc.stdout.strip(), err)
+    tail = stderr.strip()[-800:]
+    if timed_out:
+        return result(output, f"codex がタイムアウト({timeout:g}秒): ...{tail}")
+    return result(output, None if rc == 0 else f"codex exit {rc}: ...{tail}")
 
 
 async def run_codex_all(lens_names, content, source, instruction, cwd):
