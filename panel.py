@@ -108,7 +108,8 @@ _OPEN_THINK_RE = re.compile(r"^\s*<think>.*", re.DOTALL | re.IGNORECASE)
 # 詳細は run_process_tree。
 # 環境変数: PANEL_CODEX_TIMEOUT=1lensあたりの上限秒(既定900)
 #           PANEL_CODEX_LAST_MESSAGE=0 で `--output-last-message` の自動付与を止める。
-# config.toml の notify もレビュー実行では `-c notify=[]` で止める(without_notify)。
+# config.toml の notify と hooks.json の hook もレビュー実行では `-c notify=[]` /
+# `-c features.hooks=false` で止める(without_notify / without_hooks)。
 DEFAULT_CODEX_CMD = "codex exec --skip-git-repo-check --sandbox read-only --color never -"
 CODEX_TIMEOUT = float(os.environ.get("PANEL_CODEX_TIMEOUT", "900"))
 
@@ -437,6 +438,13 @@ def with_last_message(argv, path):
     return _insert_exec_opts(argv, ["--output-last-message", path])
 
 
+def _config_default(argv, key, value):
+    """codex exec の argv に `-c key=value` を足して返す(exec でない/既に key を指定済みなら元のまま)。"""
+    if "exec" not in argv or any(a.startswith((f"{key}=", f"--config={key}=")) for a in argv):
+        return argv
+    return _insert_exec_opts(argv, ["-c", f"{key}={value}"])
+
+
 def without_notify(argv):
     """codex exec の argv に `-c notify=[]` を足して返す(既に notify を指定していれば元のまま)。
 
@@ -444,9 +452,18 @@ def without_notify(argv):
     残って今回の固まりの原因になった。ヘッドレスのレビューには不要で、常駐サービスを起動されると
     lens 終了時の Job 停止に巻き込むことにもなるので、レビュー用の実行では止める。
     """
-    if "exec" not in argv or any(a.startswith(("notify=", "--config=notify=")) for a in argv):
-        return argv
-    return _insert_exec_opts(argv, ["-c", "notify=[]"])
+    return _config_default(argv, "notify", "[]")
+
+
+def without_hooks(argv):
+    """codex exec の argv に `-c features.hooks=false` を足して返す(既に指定していれば元のまま)。
+
+    ~/.codex/hooks.json には Claude Code から取り込まれた hook(wadachi guard・risky-ops 記録・
+    Stop の品質リマインダ・SessionEnd のセッションノート/cc-ops/wadachi 取り込み)と Orca の通知が
+    並び、lens 1本ごとに powershell を10個前後起動する。読み取り専用のレビューには不要で、
+    レビューの実行が cc-ops/wadachi にセッションとして記録されるノイズにもなるので止める。
+    """
+    return _config_default(argv, "features.hooks", "false")
 
 
 def _insert_exec_opts(argv, extra):
@@ -493,8 +510,9 @@ async def run_codex_lens(lens_name, content, source, instruction, cwd):
     def _run():
         with tempfile.TemporaryDirectory(prefix="panel-codex-", ignore_cleanup_errors=True) as workdir:
             last_path = os.path.join(workdir, "last-message.txt")
+            review_argv = without_hooks(without_notify(argv))
             rc, out, err, timed_out = run_process_tree(
-                with_last_message(without_notify(argv), last_path), prompt.encode("utf-8"),
+                with_last_message(review_argv, last_path), prompt.encode("utf-8"),
                 cwd, timeout, workdir)
             out = out.strip()
             if not out and os.path.exists(last_path):   # stdout が空なら最終メッセージで補う

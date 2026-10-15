@@ -289,3 +289,27 @@ def test_notify_respects_explicit_setting(existing):
 def test_notify_not_added_without_exec():
     argv = ["codex", "login"]
     assert panel.without_notify(argv) == argv
+
+
+# ---------------------------------------------------------------- without_hooks(純粋関数)
+
+def test_hooks_disabled_before_trailing_dash():
+    assert panel.without_hooks(["codex", "exec", "--color", "never", "-"]) == [
+        "codex", "exec", "--color", "never", "-c", "features.hooks=false", "-"]
+
+
+@pytest.mark.parametrize("existing", [["-c", "features.hooks=true"],
+                                      ["--config=features.hooks=true"]])
+def test_hooks_respects_explicit_setting(existing):
+    argv = ["codex", "exec", *existing, "-"]
+    assert panel.without_hooks(argv) == argv
+
+
+def test_hooks_not_added_without_exec():
+    argv = ["codex", "login"]
+    assert panel.without_hooks(argv) == argv
+
+
+def test_review_overrides_stack_before_trailing_dash():
+    argv = panel.without_hooks(panel.without_notify(["codex", "exec", "-"]))
+    assert argv == ["codex", "exec", "-c", "notify=[]", "-c", "features.hooks=false", "-"]
