@@ -488,6 +488,71 @@ def resolve_codex_argv(template):
     return [exe] + tokens[1:], tokens[0]
 
 
+# codex の実行基盤(サンドボックス helper・コマンド実行)が失敗しても、codex 自体は exit 0 のまま
+# 「ファイルを読めなかった」と本文に書いて終わることがある(2026-10-15 に観測。Windows の read-only
+# サンドボックスで `helper_unknown_error: setup refresh had errors`)。終了コードでは拾えないので、
+# codex にだけ最終行で完了可否を申告させ、未完了をlensの失敗として数える。
+# stderr の本文は照合しない: codex が読んだファイルの中身がそのまま流れるため、対象コードに含まれる
+# 識別子(このファイル自身など)で誤って失敗にしてしまう。照合するのは codex 自身のログ行だけ。
+CODEX_STATUS_INSTRUCTION = (
+    "\n\n最後の行に、レビューを完了できたかを次のどちらか1行だけで書く(この行は指摘の形式の例外):\n"
+    "REVIEW_STATUS: complete\n"
+    "REVIEW_STATUS: incomplete\n"
+    "上に示したレビュー対象そのものを確認できなかった場合、または追加の指示で求められた確認を"
+    "(ファイルを読めない・ツールが失敗した等で)終えられなかった場合は incomplete。"
+    "それ以外は complete。示された対象だけで判断できたなら、追加のファイルを読めなかったことは"
+    "それだけでは incomplete にしない。"
+)
+# codex のログ(tracing 形式)のうち、ツール実行の失敗を示す行。例:
+# 2026-10-15T02:48:03.812355Z ERROR codex_core::tools::router: error=exec_command failed: ...
+_CODEX_TOOL_ERROR_LINE = re.compile(
+    r"(?m)^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+ERROR\s+codex_core::tools::router:\s*(.*)$")
+# 行全体が申告であるものだけを数える(引用・コードブロック内の同じ文字列は申告ではない)
+_REVIEW_STATUS_LINE = re.compile(r"[ \t]*REVIEW_STATUS:[ \t]*(complete|incomplete)[ \t]*", re.IGNORECASE)
+# 申告行が無い応答(古いプロンプトや指示無視)のための予備判定。codex の実行基盤が出す固定の識別子
+CODEX_RUNTIME_ERRORS = (
+    "helper_unknown_error",
+    "Failed to create unified exec process",
+    "setup refresh had errors",
+)
+
+
+def codex_tool_failures(stderr):
+    """codex 自身のログ行から、失敗したツール実行の回数と識別子を返す。戻り値: (回数, 識別子のリスト)。"""
+    lines = _CODEX_TOOL_ERROR_LINE.findall(stderr or "")
+    codes = sorted({m for line in lines for m in CODEX_RUNTIME_ERRORS if m in line})
+    return len(lines), codes
+
+
+def codex_review_problem(output):
+    """codex の最終出力がレビューとして成立しているか。戻り値: (失敗理由 or None, 申告行を除いた本文)。
+
+    申告行があればそれに従う(complete なら本文に識別子が出ていても成功)。無いときだけ、
+    実行基盤の識別子が本文に出ていれば失敗とする。どちらも無ければ従来どおり成功。
+    申告行はコードブロック(```)の外で行全体が申告のものだけを数え、最後のものを採る。
+    """
+    lines = output.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    statuses, kept, fenced = [], [], False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced:
+            m = _REVIEW_STATUS_LINE.fullmatch(line)
+            if m:
+                statuses.append(m.group(1).lower())
+                continue
+        kept.append(line)
+    body = "\n".join(kept).strip()
+    if statuses:
+        if statuses[-1] == "incomplete":
+            return "codex がレビュー未完了を申告(REVIEW_STATUS: incomplete)", body
+        return None, body
+    markers = [m for m in CODEX_RUNTIME_ERRORS if m in output]
+    if markers:
+        return f"codex の実行基盤が失敗({', '.join(markers)})。対象を読めずに書いた可能性がある", body
+    return None, body
+
+
 async def run_codex_lens(lens_name, content, source, instruction, cwd):
     started = time.monotonic()
     template = os.environ.get("PANEL_CODEX_CMD", DEFAULT_CODEX_CMD)
@@ -503,7 +568,7 @@ async def run_codex_lens(lens_name, content, source, instruction, cwd):
 
     # プロンプトは標準入力から渡す(codex exec の末尾 `-` がstdin読み取りを指示する)
     prompt = SYSTEM_PROMPT + "\n\n" + build_prompt(
-        lens_name, LENSES[lens_name]["focus"], content, source, instruction)
+        lens_name, LENSES[lens_name]["focus"], content, source, instruction) + CODEX_STATUS_INSTRUCTION
 
     timeout = CODEX_TIMEOUT   # テストで差し替えられるよう呼び出し時に読む
 
@@ -529,7 +594,19 @@ async def run_codex_lens(lens_name, content, source, instruction, cwd):
     tail = stderr.strip()[-800:]
     if timed_out:
         return result(output, f"codex がタイムアウト({timeout:g}秒): ...{tail}")
-    return result(output, None if rc == 0 else f"codex exit {rc}: ...{tail}")
+    if rc != 0:
+        return result(output, f"codex exit {rc}: ...{tail}")
+    problem, body = codex_review_problem(output)
+    if problem:
+        # 失敗時は本文が表示されないため、何を書いたかの冒頭を理由に添える
+        return result(body, f"{problem}。出力冒頭: {body[:300]}")
+    failures, codes = codex_tool_failures(stderr)
+    if failures:
+        # 成功扱いのまま、ファイルを読めずに提示本文だけで書いた可能性を読み手に見せる
+        detail = f"({', '.join(codes)})" if codes else ""
+        body += (f"\n\n> [panel] codex のツール実行が{failures}回失敗{detail}。"
+                 "リポジトリのファイルは読めず、提示した本文だけでレビューした可能性がある。")
+    return result(body, None)
 
 
 async def run_codex_all(lens_names, content, source, instruction, cwd):

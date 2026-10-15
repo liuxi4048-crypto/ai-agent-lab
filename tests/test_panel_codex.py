@@ -54,6 +54,38 @@ elif mode == "lastmsg":
     path = sys.argv[sys.argv.index("--output-last-message") + 1]
     with open(path, "w", encoding="utf-8") as f:
         f.write("FROM-LAST-MESSAGE")
+elif mode == "incomplete":
+    sys.stdin.buffer.read()
+    print("レビュー未完了。ファイルを読めなかった", flush=True)
+    print("REVIEW_STATUS: incomplete", flush=True)
+elif mode == "complete-with-marker":
+    sys.stdin.buffer.read()
+    # レビュー対象のコードが識別子を含む場合(panel.py 自身のレビューなど)
+    print("### helper_unknown_error を握りつぶしている", flush=True)
+    print("- 重大度: medium", flush=True)
+    print("REVIEW_STATUS: complete", flush=True)
+    # codex が読んだファイルの中身はログ行ではないので数えない
+    print('CODEX_RUNTIME_ERRORS = ("helper_unknown_error",)', file=sys.stderr, flush=True)
+elif mode == "complete-with-tool-errors":
+    sys.stdin.buffer.read()
+    print("指摘なし", flush=True)
+    print("REVIEW_STATUS: complete", flush=True)
+    for _ in range(2):
+        print("2026-10-15T02:48:03.812355Z ERROR codex_core::tools::router: error=exec_command failed: "
+              'CreateProcess { message: "Rejected(\\"Failed to create unified exec process: '
+              'helper_unknown_error: setup refresh had errors\\")" }', file=sys.stderr, flush=True)
+elif mode == "runtime-error":
+    sys.stdin.buffer.read()
+    # 2026-10-15 に観測した形: exit 0 のまま、読めなかったことを本文で報告する(申告行なし)
+    print("レビュー未完了。実行環境が `helper_unknown_error: setup refresh had errors` で起動できなかった。", flush=True)
+    print("2026-10-15T02:48:03.812355Z ERROR codex_core::tools::router: error=exec_command failed: "
+          "Failed to create unified exec process: helper_unknown_error: setup refresh had errors",
+          file=sys.stderr, flush=True)
+elif mode == "echo-prompt":
+    with open(os.environ["FAKE_CODEX_PROMPT"], "wb") as f:
+        f.write(sys.stdin.buffer.read())
+    print("指摘なし", flush=True)
+    print("REVIEW_STATUS: complete", flush=True)
 '''
 
 
@@ -313,3 +345,95 @@ def test_hooks_not_added_without_exec():
 def test_review_overrides_stack_before_trailing_dash():
     argv = panel.without_hooks(panel.without_notify(["codex", "exec", "-"]))
     assert argv == ["codex", "exec", "-c", "notify=[]", "-c", "features.hooks=false", "-"]
+
+
+# ---------------------------------------------------------------- レビューの完了申告
+
+def test_incomplete_status_is_a_failure(fake, tmp_path):
+    fake.mode("incomplete")
+    res = run_lens(tmp_path)
+    assert res["error"] and "REVIEW_STATUS: incomplete" in res["error"]
+    assert "ファイルを読めなかった" in res["error"]   # 失敗時も何を書いたかが分かる
+    assert "REVIEW_STATUS" not in res["output"]
+
+
+def test_complete_status_wins_over_identifiers_in_the_review(fake, tmp_path):
+    fake.mode("complete-with-marker")
+    res = run_lens(tmp_path)
+    assert res["error"] is None
+    assert res["output"] == "### helper_unknown_error を握りつぶしている\n- 重大度: medium"   # 注記も付かない
+
+
+def test_tool_failures_in_codex_log_are_noted_on_a_complete_review(fake, tmp_path):
+    fake.mode("complete-with-tool-errors")
+    res = run_lens(tmp_path)
+    assert res["error"] is None   # 本文だけで判断できたと申告しているので成功のまま
+    assert res["output"].startswith("指摘なし\n\n> [panel] codex のツール実行が2回失敗(")
+    assert "helper_unknown_error" in res["output"]
+    assert "提示した本文だけでレビューした可能性がある" in res["output"]
+
+
+def test_runtime_error_reported_without_status_is_a_failure(fake, tmp_path):
+    fake.mode("runtime-error")
+    res = run_lens(tmp_path)
+    assert res["error"] and "実行基盤が失敗" in res["error"]
+    assert "helper_unknown_error" in res["error"]
+    assert "setup refresh had errors" in res["error"]
+
+
+def test_codex_prompt_asks_for_the_status_line(fake, tmp_path, monkeypatch):
+    prompt_file = tmp_path / "prompt.txt"
+    monkeypatch.setenv("FAKE_CODEX_PROMPT", str(prompt_file))
+    fake.mode("echo-prompt")
+    res = run_lens(tmp_path)
+    assert res["error"] is None and res["output"] == "指摘なし"
+    prompt = prompt_file.read_text(encoding="utf-8")
+    assert prompt.rstrip().endswith(panel.CODEX_STATUS_INSTRUCTION.strip())
+    assert "REVIEW_STATUS: complete" in prompt and "REVIEW_STATUS: incomplete" in prompt
+    # 追加ファイルを読めないことだけでは未完了にしない(提示本文で足りるレビューを失敗にしない)
+    assert "それだけでは incomplete にしない" in prompt
+
+
+def test_failed_lens_is_counted_in_the_summary(fake, tmp_path):
+    fake.mode("runtime-error")
+    broken = run_lens(tmp_path)
+    fake.mode("ok")
+    fine = run_lens(tmp_path)
+    md = panel.render_markdown([broken, {**fine, "lens": "security"}], "t.py", 1.0)
+    assert "成功 1 / 失敗 1" in md
+    assert "**失敗**: codex の実行基盤が失敗" in md
+
+
+def test_codex_tool_failures_reads_only_codex_log_lines():
+    log = ("2026-10-15T02:48:03.812355Z  INFO codex_core: starting\n"
+           "2026-10-15T02:48:03.812355Z ERROR codex_core::tools::router: error=exec_command failed: "
+           "helper_unknown_error\n"
+           "    helper_unknown_error in a file the agent printed\n"
+           "ERROR codex_core::tools::router: no timestamp, not a log line\n")
+    assert panel.codex_tool_failures(log) == (1, ["helper_unknown_error"])
+    assert panel.codex_tool_failures("") == (0, [])
+    assert panel.codex_tool_failures(None) == (0, [])
+
+
+@pytest.mark.parametrize("output,failed,body", [
+    ("指摘なし", False, "指摘なし"),                                     # 申告行なし・識別子なし: 従来どおり成功
+    ("指摘なし\nREVIEW_STATUS: complete", False, "指摘なし"),
+    ("指摘なし\n  review_status: Complete  ", False, "指摘なし"),       # 大小・前後空白は許す
+    ("途中まで\nREVIEW_STATUS: incomplete", True, "途中まで"),
+    ("REVIEW_STATUS: complete\n追記\nREVIEW_STATUS: incomplete", True, "追記"),  # 最後の申告が有効
+    ("Failed to create unified exec process", True, "Failed to create unified exec process"),
+    ("本文中の REVIEW_STATUS: complete という文字列", False, "本文中の REVIEW_STATUS: complete という文字列"),  # 行でなければ申告ではない
+    ("途中まで\r\nREVIEW_STATUS: incomplete\r\n", True, "途中まで"),             # CRLF でも読む
+    ("REVIEW_STATUS: incomplete\n追記", True, "追記"),                           # 申告の後に文が続いても読む
+    # コードブロック内の同じ行は引用であって申告ではない
+    ("```\nREVIEW_STATUS: incomplete\n```\n指摘なし\nREVIEW_STATUS: complete", False,
+     "```\nREVIEW_STATUS: incomplete\n```\n指摘なし"),
+    ("```\nREVIEW_STATUS: complete\n```\nhelper_unknown_error で読めなかった", True,
+     "```\nREVIEW_STATUS: complete\n```\nhelper_unknown_error で読めなかった"),
+    ("> REVIEW_STATUS: complete\n指摘なし", False, "> REVIEW_STATUS: complete\n指摘なし"),  # 引用行も申告ではない
+])
+def test_codex_review_problem(output, failed, body):
+    problem, text = panel.codex_review_problem(output)
+    assert (problem is not None) is failed
+    assert text == body
+
