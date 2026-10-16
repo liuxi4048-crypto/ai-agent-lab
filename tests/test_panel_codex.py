@@ -437,3 +437,23 @@ def test_codex_review_problem(output, failed, body):
     assert (problem is not None) is failed
     assert text == body
 
+
+
+# ---------------------------------------------------------------- with_unelevated_sandbox(純粋関数)
+
+@pytest.mark.skipif(not WINDOWS, reason="windows.sandbox は Windows のみ付与する")
+def test_unelevated_sandbox_inserted_before_trailing_dash():
+    assert panel.with_unelevated_sandbox(["codex", "exec", "--sandbox", "read-only", "-"]) == [
+        "codex", "exec", "--sandbox", "read-only", "-c", "windows.sandbox=unelevated", "-"]
+
+
+@pytest.mark.parametrize("existing", [["-c", "windows.sandbox=elevated"],
+                                      ["--config=windows.sandbox=elevated"]])
+def test_unelevated_sandbox_respects_explicit_setting(existing):
+    argv = ["codex", "exec", *existing, "-"]
+    assert panel.with_unelevated_sandbox(argv) == argv
+
+
+def test_unelevated_sandbox_not_added_without_exec():
+    argv = ["codex", "login"]
+    assert panel.with_unelevated_sandbox(argv) == argv

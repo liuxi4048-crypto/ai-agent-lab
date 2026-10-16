@@ -110,6 +110,7 @@ _OPEN_THINK_RE = re.compile(r"^\s*<think>.*", re.DOTALL | re.IGNORECASE)
 #           PANEL_CODEX_LAST_MESSAGE=0 で `--output-last-message` の自動付与を止める。
 # config.toml の notify と hooks.json の hook もレビュー実行では `-c notify=[]` /
 # `-c features.hooks=false` で止める(without_notify / without_hooks)。
+# Windows では elevated サンドボックスの不具合を避けるため unelevated で動かす(with_unelevated_sandbox)。
 DEFAULT_CODEX_CMD = "codex exec --skip-git-repo-check --sandbox read-only --color never -"
 CODEX_TIMEOUT = float(os.environ.get("PANEL_CODEX_TIMEOUT", "900"))
 
@@ -466,6 +467,22 @@ def without_hooks(argv):
     return _config_default(argv, "features.hooks", "false")
 
 
+def with_unelevated_sandbox(argv):
+    """Windows の codex exec に `-c windows.sandbox=unelevated` を足して返す(既に指定していれば元のまま)。
+
+    config.toml の `[windows] sandbox = "elevated"` では、コマンド実行前の setup refresh が
+    デスクトップ版の runtime(cua_node の node_repl.exe)の ACL 検証で、実行中ファイルの共有違反
+    (os error 32)を致命扱いにして失敗し、レビュアーのシェルが全て `helper_unknown_error: setup
+    refresh had errors` で拒否される(codex 0.162.0 時点の既知不具合。デスクトップ版の起動中に起きる)。
+    unelevated でも --sandbox read-only の書き込み拒否とネットワーク遮断は効く(2026-10-16 確認)が、
+    読み取りは利用者本人の権限になる。elevated に戻すには PANEL_CODEX_CMD に
+    `-c windows.sandbox=elevated` を書く。
+    """
+    if os.name != "nt":
+        return argv
+    return _config_default(argv, "windows.sandbox", "unelevated")
+
+
 def _insert_exec_opts(argv, extra):
     """末尾が `-`(stdin指定)ならその手前に、そうでなければ末尾に extra を足す。"""
     if argv[-1] == "-":
@@ -575,7 +592,7 @@ async def run_codex_lens(lens_name, content, source, instruction, cwd):
     def _run():
         with tempfile.TemporaryDirectory(prefix="panel-codex-", ignore_cleanup_errors=True) as workdir:
             last_path = os.path.join(workdir, "last-message.txt")
-            review_argv = without_hooks(without_notify(argv))
+            review_argv = with_unelevated_sandbox(without_hooks(without_notify(argv)))
             rc, out, err, timed_out = run_process_tree(
                 with_last_message(review_argv, last_path), prompt.encode("utf-8"),
                 cwd, timeout, workdir)
