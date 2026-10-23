@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code 内部動作ラボ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <button id="nav-toggle" class="icon-btn" aria-label="メニュー">☰</button>
+  <div class="brand">Claude Code 内部動作ラボ <span id="ver" class="muted"></span></div>
+  <div class="search">
+    <input id="search" type="search" placeholder="ノード・ファイル・根拠・ツールを検索" autocomplete="off" aria-label="検索">
+    <div id="search-results" class="search-results" hidden></div>
+  </div>
+  <div class="seg" role="group" aria-label="表示モード">
+    <button id="mode-measured" class="on">実測データ</button>
+    <button id="mode-concept">概念モデル</button>
+  </div>
+  <button id="theme" class="icon-btn" title="テーマ切替">◐</button>
+</header>
+<div class="layout">
+  <nav id="nav" class="nav">
+    <button data-view="arch" class="on"><b>A</b>全体アーキテクチャ</button>
+    <button data-view="play"><b>B</b>処理の再生</button>
+    <button data-view="files"><b>C</b>ファイル読込ツリー</button>
+    <button data-view="context"><b>D</b>コンテキスト</button>
+    <button data-view="tools"><b>E</b>ツール呼び出し</button>
+    <button data-view="subagents"><b>F</b>Subagent</button>
+    <button data-view="errors"><b>G</b>エラー・復旧</button>
+    <button data-view="evidence"><b>H</b>根拠・検証</button>
+    <button data-view="glossary"><b>I</b>用語集</button>
+    <div class="legend">
+      <div class="legend-title">確実性の分類</div>
+      <div><span class="cls cls-A">A</span>公式仕様</div>
+      <div><span class="cls cls-B">B</span>実測(ログ・ファイル)</div>
+      <div><span class="cls cls-C">C</span>ソースコード</div>
+      <div><span class="cls cls-D">D</span>証拠からの推定</div>
+      <div><span class="cls cls-E">E</span>未確認・観測不能</div>
+    </div>
+    <div id="session-meta" class="session-meta"></div>
+  </nav>
+  <main id="main" class="main">
+    <section id="view-arch" class="view on">
+      <div class="view-head"><h1>全体アーキテクチャ</h1><p class="muted">ノードをクリックすると役割・入出力・関連ファイル・根拠を表示。実測モードでは各ノードの実測件数をバッジ表示。</p></div>
+      <div id="arch-graph" class="graph"></div>
+    </section>
+    <section id="view-play" class="view">
+      <div class="view-head"><h1>プロンプト処理の再生</h1><p id="play-sub" class="muted"></p></div>
+      <div id="play-graph" class="graph graph-short"></div>
+      <div class="player">
+        <div class="player-controls">
+          <button id="p-first" title="先頭へ">⏮</button>
+          <button id="p-prev" title="ステップ戻し">◀</button>
+          <button id="p-play" class="primary" title="再生/一時停止">▶ 再生</button>
+          <button id="p-next" title="ステップ送り">▶|</button>
+          <label>速度 <select id="p-speed">
+            <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option>
+            <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+          <label class="chk"><input type="checkbox" id="p-onlyexp"> 実験区間のみ</label>
+          <span id="p-pos" class="muted mono"></span>
+        </div>
+        <input id="p-scrub" type="range" min="0" max="0" value="0" aria-label="タイムライン">
+        <div id="p-ticks" class="ticks"></div>
+        <div id="p-lanes" class="lanes"></div>
+        <div id="p-now" class="now-card"></div>
+      </div>
+    </section>
+    <section id="view-files" class="view">
+      <div class="view-head"><h1>ファイル読込ツリー</h1><p class="muted">存在(environment.json)と読込の証拠(trace.json)を分けて表示。履歴をクリックすると処理の再生へ移動。</p></div>
+      <div class="files-filter"><label class="chk"><input type="checkbox" id="f-loaded"> 読込の証拠があるものだけ</label></div>
+      <div id="file-tree" class="tree"></div>
+    </section>
+    <section id="view-context" class="view">
+      <div class="view-head"><h1>コンテキスト可視化</h1><p class="muted">モデルに毎回どれだけの情報を送り、そのうちどれだけをキャッシュで安く済ませたか。</p></div>
+      <div class="ctx-controls"><label>対象 <select id="c-agent"></select></label></div>
+      <div id="ctx-stats" class="stats"></div>
+      <details class="howto" open>
+        <summary>このグラフの読み方</summary>
+        <ul>
+          <li><b>棒1本 = モデルへの問い合わせ(API 呼び出し)1回</b>。左から時間順。下の目盛りはセッション開始からの経過時間。</li>
+          <li><b>棒の高さ = その回にモデルへ送った量(入力トークン)</b>。Claude Code は毎回それまでの会話全体を送り直すため、作業が進むほど右肩上がりになる。</li>
+          <li><b>色 = 送った量の内訳</b>。<i class="sw" style="background:var(--B)"></i>緑: 前回と同じ部分をキャッシュから再利用(安い)。<i class="sw" style="background:var(--warn)"></i>黄: 今回新しく増えた部分をキャッシュへ書き込み。<i class="sw" style="background:var(--accent)"></i>青: キャッシュを使わず処理(ほぼ0)。</li>
+          <li><b>下段の紫 = モデルが書いた量(出力トークン、思考を含む)</b>。入力とは桁が違うので別の目盛りで表示。</li>
+          <li>①は最初の1回(何もしなくても送られる<b>固定費</b>)、⚠は黄色が急に大きい回(キャッシュの作り直しの疑い)。</li>
+        </ul>
+      </details>
+      <div id="ctx-chart" class="chart"></div>
+      <div id="ctx-tip" class="chart-tip" hidden></div>
+      <h2>最初の呼び出しで何が送られたか</h2>
+      <div id="ctx-comp" class="comp"></div>
+      <h2>トークン改善の候補</h2>
+      <div id="ctx-token" class="comp"></div>
+    </section>
+    <section id="view-tools" class="view">
+      <div class="view-head"><h1>ツール呼び出しグラフ</h1><p class="muted">横軸はセッション開始からの経過時間。同じ API 応答で要求された呼び出し(並列バッチ)は帯でまとめる。</p></div>
+      <div class="tool-controls">
+        <label>実験 <select id="t-exp"><option value="">すべて</option></select></label>
+        <label>時間軸 <select id="t-scale"><option value="1">全体</option><option value="3">3×</option><option value="8">8×</option><option value="20">20×</option></select></label>
+        <label class="chk"><input type="checkbox" id="t-sub" checked> Subagent を含める</label>
+        <span class="legend-inline"><i class="sw ok"></i>成功 <i class="sw err"></i>エラー <i class="sw deny"></i>権限拒否 <i class="sw run"></i>未完了</span>
+      </div>
+      <div id="tool-gantt" class="gantt"></div>
+    </section>
+    <section id="view-subagents" class="view">
+      <div class="view-head"><h1>Subagent 可視化</h1><p class="muted">メインと各 Subagent の実行期間・ツール・文脈の違い(すべてこのセッションの実測)。</p></div>
+      <div id="sub-lanes" class="lanes big"></div>
+      <div id="sub-table" class="table-wrap"></div>
+    </section>
+    <section id="view-errors" class="view">
+      <div class="view-head"><h1>エラー・復旧フロー</h1><p class="muted">種類を選ぶと状態遷移を表示。B は隔離環境で実測、A は公式仕様のみ、E は未確認。</p></div>
+      <div id="err-chips" class="chips"></div>
+      <div id="err-graph" class="graph graph-short"></div>
+    </section>
+    <section id="view-evidence" class="view">
+      <div class="view-head"><h1>根拠・検証ビュー</h1><p id="ev-summary" class="muted"></p></div>
+      <div class="ev-controls">
+        <div id="ev-cls" class="chips"></div>
+        <label>トピック <select id="ev-topic"><option value="">すべて</option></select></label>
+        <input id="ev-q" type="search" placeholder="本文を絞り込み" aria-label="根拠を絞り込み">
+      </div>
+      <div id="ev-table" class="table-wrap"></div>
+      <h2>公式ドキュメントで確認できなかった点</h2>
+      <ul id="ev-unconf" class="unconf"></ul>
+    </section>
+    <section id="view-glossary" class="view">
+      <div class="view-head"><h1>用語集</h1><p class="muted">画面に出てくる専門用語の解説。ほかの画面でも、点線の下線が付いた語にマウスを乗せるかタップすると説明が出ます。</p></div>
+      <div class="ev-controls">
+        <div id="gl-cats" class="chips"></div>
+        <input id="gl-q" type="search" placeholder="用語を絞り込み" aria-label="用語を絞り込み">
+      </div>
+      <div id="gl-list" class="gl-list"></div>
+    </section>
+  </main>
+  <aside id="inspector" class="inspector">
+    <div class="insp-head"><h2 id="insp-title">詳細インスペクター</h2><button id="insp-close" class="icon-btn" aria-label="閉じる">×</button></div>
+    <div id="insp-body" class="insp-body"><p class="muted">ノード・ステップ・ファイル・ツール呼び出しを選ぶと、ここに詳細と根拠が出ます。</p></div>
+  </aside>
+  <div id="term-pop" class="term-pop" role="tooltip" hidden></div>
+</div>
+<script src="data.js" charset="utf-8"></script>
+<script src="model.js" charset="utf-8"></script>
+<script src="graph.js" charset="utf-8"></script>
+<script src="app.js" charset="utf-8"></script>
+</body>
+</html>

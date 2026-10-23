@@ -11,6 +11,7 @@ import ChatPanel from "./components/ChatPanel.jsx";
 import ApprovalBar from "./components/ApprovalBar.jsx";
 import BenchView from "./components/BenchView.jsx";
 import BenchPanel from "./components/BenchPanel.jsx";
+import InsightView from "./components/insight/InsightView.jsx";
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf, segmentByPhase, PHASE_META } from "./derive.js";
 import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun, startBench } from "./api.js";
@@ -37,6 +38,7 @@ export default function App() {
   const currentId = view.kind === "run" ? view.id : null;
   const drafting = view.kind === "draft";
   const benching = view.kind === "bench";
+  const insighting = view.kind === "insight";   // 実行記録の可視化と分析(InsightView)
   const [prefill, setPrefill] = useState(null);
   const [benchPrefill, setBenchPrefill] = useState(null);   // [設定変更して再実行] からのベンチ設定
   const [drawerNodeId, setDrawerNodeId] = useState(null);
@@ -274,6 +276,10 @@ export default function App() {
   }, []);
 
   // ベンチ設定ビューへ。下書きと同じく、戻り先(直前のRun)を from に持つ
+  const handleOpenInsight = useCallback(() => {
+    setView((v) => (v.kind === "insight" ? v : { kind: "insight", from: v.kind === "run" ? v.id : null }));
+    setSidebarOpen(false);
+  }, []);
   const handleOpenBench = useCallback((pre = null) => {
     setBenchPrefill(pre);
     setView((v) => (v.kind === "bench" ? v : { kind: "bench", from: v.kind === "run" ? v.id : null }));
@@ -460,6 +466,8 @@ export default function App() {
           onNew={() => handleNewTask()}
           onBench={() => handleOpenBench()}
           benching={benching}
+          onInsight={handleOpenInsight}
+          insighting={insighting}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -478,6 +486,8 @@ export default function App() {
               suggestions={suggestions}
             />
           </div>
+
+          {insighting && <InsightView models={models} />}
 
           {benching && (
             <BenchView
@@ -602,7 +612,7 @@ export default function App() {
             </>
           )}
 
-          {!drafting && !benching && !currentRun && (
+          {!drafting && !benching && !insighting && !currentRun && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-600">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">左の一覧からタスクを選ぶか、新しいタスクを開始してください</p>

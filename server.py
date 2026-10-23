@@ -51,6 +51,10 @@ app.mount("/workspace", StaticFiles(directory=ARTIFACT_DIR), name="workspace")
 app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
 if (STATIC_REACT / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=STATIC_REACT / "assets"), name="assets")
+# インサイト: Claude Code セッションのダッシュボード(insight/claude.py が runs/ 配下に書き出す)
+INSIGHT_CC = Path(__file__).parent / "runs" / "insight-cache" / "cc"
+INSIGHT_CC.mkdir(parents=True, exist_ok=True)
+app.mount("/insight-cc", StaticFiles(directory=INSIGHT_CC), name="insight-cc")
 
 MODES = ("orchestra", "critique", "code", "swarm-code")
 DELIVERABLES = ("auto", "html", "exe", "script")
@@ -417,6 +421,76 @@ async def get_run(run_id: str) -> dict:
         record["snapshot"] = normalize_snapshot(record["snapshot"],
                                                 record.get("status", "done"))
     return record
+
+
+# ---- インサイト(実行記録の可視化と分析エージェント) ----
+class ExplainRequest(BaseModel):
+    source: str              # "run" = ai-agent-lab の Run / "claude" = Claude Code のセッション
+    id: str
+    model: str = "worker"
+
+
+@app.get("/insight/glossary")
+def insight_glossary():
+    base = json.loads((Path(__file__).parent / "insight" / "cclab" / "data" / "glossary.json").read_text(encoding="utf-8"))
+    local = json.loads((Path(__file__).parent / "insight" / "glossary_local.json").read_text(encoding="utf-8"))
+    return {"categories": local["categories"] + base["categories"], "terms": local["terms"] + base["terms"]}
+
+
+@app.get("/insight/runs")
+def insight_runs():
+    from insight import agentlab
+    return {"runs": agentlab.list_runs()}
+
+
+@app.get("/insight/run/{run_id}")
+def insight_run(run_id: str):
+    from insight import agentlab
+    try:
+        return agentlab.load_run(run_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError:
+        raise HTTPException(404, "Run が見つかりません")
+
+
+@app.get("/insight/claude/sessions")
+def insight_claude_sessions():
+    from insight import claude
+    return {"available": claude.available(), "sessions": claude.list_sessions()}
+
+
+@app.post("/insight/claude/{sid}/build")
+async def insight_claude_build(sid: str):
+    from insight import claude
+    try:
+        # 数 MB の JSONL を読むので、イベントループを止めないよう別スレッドで作る
+        return await asyncio.to_thread(claude.build, sid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError:
+        raise HTTPException(404, "セッションが見つかりません")
+
+
+@app.post("/insight/explain")
+async def insight_explain(req: ExplainRequest):
+    from insight import agentlab, analyst, claude
+    try:
+        if req.source == "run":
+            facts = agentlab.facts_for_analyst(agentlab.load_run(req.id))
+        elif req.source == "claude":
+            facts = await asyncio.to_thread(claude.facts_for_analyst, req.id)
+        else:
+            raise HTTPException(400, "source は run か claude")
+        return await analyst.explain(facts, req.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError:
+        raise HTTPException(404, "記録が見つかりません")
+    except KeyError as e:
+        raise HTTPException(400, f"models.yaml に無いモデルです: {e}")
+    except llm.OllamaError as e:
+        raise HTTPException(503, f"ローカルLLMに接続できません: {e}")
 
 
 @app.get("/events/{run_id}")

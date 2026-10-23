@@ -1,0 +1,250 @@
+{
+ "_note": "参照調査(2026-10-23)の所見。別のセッションでは数値が異なる。個人の環境に依存する記述は一般化した。",
+ "facts": [
+  {
+   "id": "B-ENV-1",
+   "cls": "B",
+   "topic": "env",
+   "claim": "参照調査の実行環境は Claude Code 2.1.308(entrypoint=claude-desktop)。Desktop アプリは同梱の Claude Code で動き、PATH 上の claude コマンドと版が異なっていた。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json session.version / environment.json claude_code"
+  },
+  {
+   "id": "B-ENV-2",
+   "cls": "B",
+   "topic": "settings",
+   "claim": "参照調査の環境では、有効な設定ソースは managed(deny/ask 規則と PreToolUse フック)と user の2つだった。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / environment.json settings / instruction_files"
+  },
+  {
+   "id": "B-ENV-3",
+   "cls": "B",
+   "topic": "hooks",
+   "claim": "PreToolUse フックは managed と user の2系統が登録されており、1回のツール呼び出しでそれぞれ記録が残った。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / environment.json settings.*.hooks"
+  },
+  {
+   "id": "B-ENV-4",
+   "cls": "B",
+   "topic": "mcp",
+   "claim": "認証待ちの MCP サーバーは needsAuth として記録され、ツール一覧に載らなかった。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / environment.json / trace attachment deferred_tools_delta"
+  },
+  {
+   "id": "B-CTX-1",
+   "cls": "B",
+   "topic": "context",
+   "claim": "最初の API 呼び出しの入力は 86,505 トークン(cache_read 47,527 + cache_write 38,976 + 非キャッシュ 2)。ユーザーの一文を送る前から約8.6万トークンが積まれている。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json api_calls[0]"
+  },
+  {
+   "id": "B-CTX-2",
+   "cls": "B",
+   "topic": "context",
+   "claim": "リクエストの system は3ブロック(122 / 2,740 / 26,292 字)、tools は53個・JSON 約13.3万字。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json events kind=request_shape"
+  },
+  {
+   "id": "B-CTX-3",
+   "cls": "B",
+   "topic": "context",
+   "claim": "会話先頭への添付(attachment)として、skill_listing(66 スキル・24,810 字)、agent_listing(23 種・12,320 字)、mcp_instructions(3,886 字)、ユーザー CLAUDE.md(4,688 字)、environment・language・date・session_context などが記録される。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json events kind=attachment"
+  },
+  {
+   "id": "B-CTX-4",
+   "cls": "B",
+   "topic": "context",
+   "claim": "ToolSearch で遅延ツールを読み込むと、次のリクエストの tools 数が 53→55→56 と増えた。ツール定義は会話途中で追加される。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json request_shape の tools 数の推移"
+  },
+  {
+   "id": "B-CTX-5",
+   "cls": "B",
+   "topic": "cache",
+   "claim": "API リクエストの cacheControl は system[1](ttl 1h・scope global)、system[2](1h)、直近メッセージ(1h)の3か所に付く。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json events kind=api_request detail.cacheControl"
+  },
+  {
+   "id": "B-CTX-6",
+   "cls": "B",
+   "topic": "cache",
+   "claim": "並列に起動した同種サブエージェント(claude-code-guide ×2)は、1体目が 55,290 トークンを書き込み、2体目の最初の呼び出しは 49,303 トークンをキャッシュから読んだ。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json subagents[*].api_calls[0]"
+  },
+  {
+   "id": "B-CTX-7",
+   "cls": "B",
+   "topic": "context",
+   "claim": "API パラメータ: max_tokens 128,000、thinking adaptive、context_management.edits=clear_thinking、effort 指定、betas 18件。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json events kind=api_request"
+  },
+  {
+   "id": "B-INS-1",
+   "cls": "B",
+   "topic": "memory",
+   "claim": "起動時に読み込まれた指示ファイルは ~/.claude/CLAUDE.md(User スコープ)の1件のみ(instructions 添付)。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json attachment instructions.files"
+  },
+  {
+   "id": "B-INS-2",
+   "cls": "B",
+   "topic": "memory",
+   "claim": "cwd 配下 testbed/calc/sub のファイルを Read しても、testbed/CLAUDE.md と calc/sub/CLAUDE.md の内容(マーカー文字列)はツール結果にも添付にも現れなかった。公式 M-03(遅延読込)とこの環境では一致しない。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json checks / 実験 C"
+  },
+  {
+   "id": "B-TOOL-1",
+   "cls": "B",
+   "topic": "tools",
+   "claim": "Read の失敗(存在しないファイル)は is_error=true の tool_result として返り、本文に cwd の注記が付く。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 H1 tool_result"
+  },
+  {
+   "id": "B-TOOL-2",
+   "cls": "B",
+   "topic": "permissions",
+   "claim": "managed の deny(Read(//**/.env))に一致した Read は permissionDecision=reject(source=config, ruleSource=policySettings)。<tool_use_error> として返り、所要 2ms。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 H2"
+  },
+  {
+   "id": "B-TOOL-3",
+   "cls": "B",
+   "topic": "hooks",
+   "claim": "deny で拒否された Read には PreToolUse フックの記録が無かった。規則による拒否はフック実行より前に確定している(この環境で観測)。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 H2 の tool.hooks が空"
+  },
+  {
+   "id": "B-TOOL-4",
+   "cls": "B",
+   "topic": "hooks",
+   "claim": "失敗したツール(Read 失敗・Bash exit 2)では PostToolUse フックの記録が1件少ない。成功時は PreToolUse と PostToolUse の2件。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json tools[*].hooks"
+  },
+  {
+   "id": "B-TOOL-5",
+   "cls": "B",
+   "topic": "tools",
+   "claim": "Bash の非0終了(exit 2)は is_error=true で、本文は「Exit code 2」+ stdout/stderr。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 H3"
+  },
+  {
+   "id": "B-TOOL-6",
+   "cls": "B",
+   "topic": "tools",
+   "claim": "timeout 2000ms の Bash は停止されず、バックグラウンドへ移ってタスク ID と出力ファイルが返った。完了時に task-notification が届いた。公式 T9 と一致。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 H4"
+  },
+  {
+   "id": "B-TOOL-7",
+   "cls": "B",
+   "topic": "tools",
+   "claim": "Bash の cd はセッションの作業ディレクトリを変え、Environment update として次のターンに通知された。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 本セッションの環境更新通知(testbed へ cd した直後)"
+  },
+  {
+   "id": "B-TOOL-8",
+   "cls": "B",
+   "topic": "tools",
+   "claim": "1応答で複数の tool_use を出すと同じ message.id に並び、結果は個別の tool_result で返る(本セッションで最大4件)。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json tools[*].batch_size"
+  },
+  {
+   "id": "B-SKL-1",
+   "cls": "B",
+   "topic": "skills",
+   "claim": "Skill ツール呼び出しの tool_result は「Launching skill」の短文で、SKILL.md 本文は直後の isMeta=true の user メッセージ(sourceToolUseID で Skill 呼び出しに紐づく)として会話に挿入された。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 F"
+  },
+  {
+   "id": "B-SUB-1",
+   "cls": "B",
+   "topic": "subagents",
+   "claim": "サブエージェントの記録は <session>/subagents/agent-<id>.jsonl と .meta.json(agentType, spawnDepth=1, requestShape=background)。全レコードが isSidechain=true。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json subagents[*].meta"
+  },
+  {
+   "id": "B-SUB-2",
+   "cls": "B",
+   "topic": "subagents",
+   "claim": "サブエージェントにもユーザー CLAUDE.md が添付される。一方で system プロンプトは別物(worker 1,813 字、claude-code-guide 110,394 字)。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json subagents[*] attachment instructions / prompt_snapshot"
+  },
+  {
+   "id": "B-SUB-3",
+   "cls": "B",
+   "topic": "subagents",
+   "claim": "ツールセットはエージェント定義で変わる: claude-code-guide は6個(Glob/Grep/Read/WebFetch/WebSearch/advisor)、worker は44個(Agent を除外)。worker にはスキル一覧が添付されるが claude-code-guide には無い。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json subagents[*] request_shape"
+  },
+  {
+   "id": "B-SUB-4",
+   "cls": "B",
+   "topic": "subagents",
+   "claim": "サブエージェントのモデルは claude-haiku-5-5(親は claude-opus-5-5)。worker は frontmatter で haiku、claude-code-guide は組み込み定義。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json subagents[*].models"
+  },
+  {
+   "id": "B-SUB-5",
+   "cls": "B",
+   "topic": "subagents",
+   "claim": "親が受け取ったのは最終テキストと usage(subagent_tokens, tool_uses, duration_ms)だけ。子の29回のツール呼び出しは親の文脈に入っていない。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / task-notification の usage / subagents[0].tools の件数"
+  },
+  {
+   "id": "B-CMP-1",
+   "cls": "B",
+   "topic": "compaction",
+   "claim": "過去のセッション12件に system/compact_boundary レコードがある。例: trigger=auto, preTokens 997,034 → postTokens 233,592、所要 116 秒(v2.1.219)。直後に isCompactSummary=true の user メッセージが続く。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / 実験 J(~/.claude/projects 全体の統計のみ取得)"
+  },
+  {
+   "id": "C-1",
+   "cls": "E",
+   "topic": "source",
+   "claim": "Claude Code 本体のソースコードは今回読んでいない(配布物は難読化済みバンドル)。分類 C(ソースで確認)の事実は 0 件。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop)"
+  },
+  {
+   "id": "D-1",
+   "cls": "D",
+   "topic": "loop",
+   "claim": "stop_reason=tool_use の応答ごとに「ツール実行→ tool_result 追加→ 再リクエスト」が繰り返され、tool_use を含まない応答(end_turn)で1ターンが終わる。公式 L4 と実測の stop_reason 列から推定。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / L4 + trace.json api_calls.stop_reason"
+  },
+  {
+   "id": "D-2",
+   "cls": "D",
+   "topic": "permissions",
+   "claim": "判定順は「規則(deny/ask/allow)→ PreToolUse フック → 実行 → PostToolUse/PostToolUseFailure」と推定。deny 時にフック記録が無いこと(B-TOOL-3)と公式 H-08 から。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / B-TOOL-3 + H-08"
+  },
+  {
+   "id": "D-3",
+   "cls": "D",
+   "topic": "memory",
+   "claim": "入れ子 CLAUDE.md が読まれなかった理由は未特定。候補: Desktop/SDK 経由の起動で settingSources が限定されている、ターン途中の作業ディレクトリ変更の影響。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / B-INS-2"
+  },
+  {
+   "id": "E-1",
+   "cls": "E",
+   "topic": "model",
+   "claim": "モデル内部の推論過程・ツール選択の理由は観測できない。thinking は redacted/要約で、所要時間(thinkingDurationMs)とトークン数だけが記録される。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop) / trace.json api_calls.thinkingMs"
+  },
+  {
+   "id": "E-2",
+   "cls": "E",
+   "topic": "server",
+   "claim": "サーバー側で付加される処理(安全系の分類・ルーティング等)は観測できない。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop)"
+  },
+  {
+   "id": "E-3",
+   "cls": "E",
+   "topic": "error",
+   "claim": "ユーザーの Esc 中断・API 障害・MCP 接続失敗・サブエージェント失敗は本番環境で起こしておらず未実測(公式仕様で説明)。",
+   "evidence": "参照調査 2026-10-23(Claude Code 2.1.308・Windows・Desktop)"
+  }
+ ]
+}

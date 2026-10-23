@@ -193,6 +193,22 @@ LLM自体の速度と成果物の質を2軸で測る**。結果は通常のRun�
   9.7 tok/s の glimmer が 21.5 tok/s の pro より先に完走)。ルーティング順位は従来どおり完走実績で決める。
   LLM採点は judge の癖を含むので、同じ judge・同じ課題セットの Run 同士で比べる
 
+## インサイト(実行記録の可視化と分析エージェント, 2026-10-23追加)
+
+サイドバーの顕微鏡アイコンで開く。実行の中で何が起きたかを、記録から再現して見る画面。
+
+- **ai-agent-lab の実行**: `runs/*.json` を解析し、エージェントの流れ図(矢印にマウスを乗せると「親が子に何を渡したか」)、
+  時間軸の再生(0.25〜8倍速・1つずつ送る/戻す。棒の重なり=同時実行)、トークンと生成速度、
+  エージェント内で起きたこと(ツール呼び出しと成否・履歴圧縮・反復の上限。記録に時刻が無いので順序のみ)、改善の候補を出す。
+- **Claude Code のセッション**: `~/.claude/projects` の記録を [cc-session-lab](insight/cclab/VERSION) で可視化し、画面に埋め込む。
+  生成物は `runs/insight-cache/`(git 管理外)に置く。
+- **分析エージェント**: 記録から数えた事実(件数・時間・トークン・改善候補)だけをローカルLLMに渡し、
+  解説と改善案を書かせる(既定 worker。API 課金なし)。生成文は推定(D)として実測と分けて表示する。記録の本文は渡さない。
+- **用語集**: ローカルLLM・ai-agent-lab の用語と Claude Code の用語。本文の点線の語にマウスを乗せると説明が出る。
+- API: `GET /insight/runs` `GET /insight/run/{id}` `GET /insight/claude/sessions` `POST /insight/claude/{sid}/build`
+  `POST /insight/explain {source: run|claude, id, model}` `GET /insight/glossary`
+- 取り込んだ cc-session-lab の更新は `python -I insight/sync_cclab.py`(取り込み元は環境変数 `CCLAB_SRC`)。
+
 ## 起動
 
 **ワンボタン**: デスクトップの「🧪 AI Agent Lab」ショートカットをダブルクリック。

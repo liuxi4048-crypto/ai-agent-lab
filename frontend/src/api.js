@@ -55,3 +55,16 @@ export const startBench = (payload) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }).then(jsonOrThrow);
+
+// ---- インサイト(実行記録の可視化と分析エージェント) ----
+export const fetchGlossary = () => fetch("/insight/glossary").then(jsonOrThrow);
+export const fetchInsightRuns = () => fetch("/insight/runs", { cache: "no-store" }).then(jsonOrThrow);
+export const fetchInsightRun = (id) => fetch(`/insight/run/${id}`).then(jsonOrThrow);
+export const fetchClaudeSessions = () => fetch("/insight/claude/sessions", { cache: "no-store" }).then(jsonOrThrow);
+export const buildClaudeSession = (sid) => fetch(`/insight/claude/${sid}/build`, { method: "POST" }).then(jsonOrThrow);
+export const explainInsight = (source, id, model) =>
+  fetch("/insight/explain", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source, id, model }),
+  }).then(jsonOrThrow);

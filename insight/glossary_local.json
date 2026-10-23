@@ -1,0 +1,25 @@
+{
+ "_note": "ai-agent-lab(ローカル LLM エージェント)向けの用語。cc-session-lab の用語集に追加して使う。",
+ "categories": ["ローカルLLM", "ai-agent-lab の仕組み"],
+ "terms": [
+  {"id":"ollama","term":"Ollama","aliases":["ollama serve"],"cat":"ローカルLLM","short":"手元の PC で LLM を動かすためのソフト。","detail":"ai-agent-lab はすべてのモデル呼び出しを Ollama 経由で行います。API 課金はかかりませんが、速度と同時実行数は PC の GPU・メモリで決まります。","related":["vram","num-ctx"],"facts":[]},
+  {"id":"tps","term":"tok/s","aliases":["トークン毎秒","生成速度"],"cat":"ローカルLLM","short":"1秒あたりに生成できるトークン数。","detail":"数字が大きいほど速く答えます。この画面ではエージェントのトークン数を所要時間で割った概算を出しています(読み込み時間を含むため実際より低めに出ます)。","related":["ttft","model-load"],"facts":[]},
+  {"id":"ttft","term":"TTFT","aliases":["最初のトークンまでの時間"],"cat":"ローカルLLM","short":"依頼してから最初の1文字が出るまでの時間。","detail":"モデルの読み込みが済んでいれば短く、読み込みが必要なら数十秒かかることがあります。","related":["model-load"],"facts":[]},
+  {"id":"model-load","term":"モデルの読み込み","aliases":["ロード","コールドロード"],"cat":"ローカルLLM","short":"モデルを GPU やメモリに載せる準備時間。","detail":"使っていないモデルは一定時間で外されるため、次に使うときに読み込み直しになります。モデルを頻繁に切り替えると、この待ち時間が積み重なります。","related":["vram"],"facts":[]},
+  {"id":"vram","term":"VRAM / hybrid","aliases":["placement","VRAM全載り","スピル"],"cat":"ローカルLLM","short":"モデルが GPU のメモリに全部載るか(vram)、一部が通常メモリにはみ出すか(hybrid)。","detail":"vram に全部載るモデルは速く、複数のエージェントで同時に使えます。hybrid は遅く、同時には1つしか動かせないため、並列のはずの作業が順番待ちになります。","related":["parallel-agents"],"facts":[]},
+  {"id":"num-ctx","term":"num_ctx","aliases":["コンテキスト長","文脈の上限"],"cat":"ローカルLLM","short":"モデルが一度に扱える文脈の上限(トークン)。","detail":"models.yaml でモデルごとに設定します。上限に近づくと ai-agent-lab は古い履歴を要約して減らします(履歴圧縮)。上げるとメモリを多く使います。","related":["history-compaction","context"],"facts":[]},
+  {"id":"history-compaction","term":"履歴圧縮","aliases":["[履歴圧縮]"],"cat":"ai-agent-lab の仕組み","short":"文脈が上限に近づいたとき、古いやり取りを要約して減らす処理。","detail":"ログに「実測 使用量/上限 tokens」が残ります。頻繁に起きるなら、ツール出力が大きすぎるか num_ctx が小さすぎます。","related":["num-ctx","compaction"],"facts":[]},
+  {"id":"mode-orchestra","term":"orchestra","aliases":["並列分解","オーケストラ"],"cat":"ai-agent-lab の仕組み","short":"計画役がタスクを分け、子エージェントが並列に解き、集約役がまとめる進め方。","detail":"planner → subagent(複数)→ aggregator → answer の順に流れます。子が同時に動けるかはモデルの載り方(vram / hybrid)で決まります。","related":["planner","subagent-local","aggregator"],"facts":[]},
+  {"id":"mode-code","term":"code","aliases":["コーディングエージェント","coder"],"cat":"ai-agent-lab の仕組み","short":"1体のエージェントがファイル操作・コマンド実行のツールを使って作る進め方。","detail":"反復(iter)ごとに計画(PLAN)・作成(BUILD)を進め、finish で終わります。反復の上限(max_iter)に達すると安全のため止まり、報告を書きます。","related":["max-iter","agent-tools"],"facts":[]},
+  {"id":"mode-swarm","term":"swarm-code","aliases":["並列コーダー"],"cat":"ai-agent-lab の仕組み","short":"複数のコーダーが部品を並列に作り、merger がまとめる進め方。","detail":"部品の分け方が良いほど速くなります。モデルが hybrid だと並列になりません。","related":["mode-code","vram"],"facts":[]},
+  {"id":"mode-critique","term":"critique","aliases":["批評ループ","author","reviewer","round"],"cat":"ai-agent-lab の仕組み","short":"作成役(author)の案を、別系統のモデル(reviewer)が批評し、直すのを繰り返す進め方。","detail":"1往復を round と呼びます。違う系統のモデルを組み合わせることで、同じ思い込みを避けます。","related":[],"facts":[]},
+  {"id":"planner","term":"planner(計画役)","aliases":["planner"],"cat":"ai-agent-lab の仕組み","short":"タスクを小さな作業に分けるエージェント。","detail":"分け方の質が、その後の並列作業の効率と結果を左右します。","related":["mode-orchestra"],"facts":[]},
+  {"id":"subagent-local","term":"subagent(子エージェント)","aliases":["subagent"],"cat":"ai-agent-lab の仕組み","short":"分けられた作業の1つを、自分の文脈だけで解くエージェント。","detail":"Claude Code のサブエージェントと同じく、親の会話全体は見ません。結果は集約役に渡ります。","related":["aggregator","subagent"],"facts":[]},
+  {"id":"aggregator","term":"aggregator(集約役)","aliases":["aggregator","merger"],"cat":"ai-agent-lab の仕組み","short":"子エージェントの結果を1つの答えにまとめるエージェント。","detail":"merger は swarm-code で部品のコードを1つにまとめる役です。","related":["mode-orchestra"],"facts":[]},
+  {"id":"max-iter","term":"max_iter","aliases":["MAX_ITER","反復の上限"],"cat":"ai-agent-lab の仕組み","short":"コーディングエージェントが試行できる回数の上限。","detail":"上限に達すると作業途中でも止まり、残課題を報告します。何度も達するなら、目標を分けるか計画を明確にします。","related":["mode-code"],"facts":[]},
+  {"id":"agent-tools","term":"エージェントのツール","aliases":["write_file","read_file","edit_file","run_command","search_files","list_dir","finish"],"cat":"ai-agent-lab の仕組み","short":"エージェントが使える操作(ファイルの読み書き・編集・コマンド実行・検索・完了)。","detail":"edit_file は置換元の文字列が完全一致しないと失敗します。run_command は承認が必要な場合があり、時間切れで自動却下されることがあります。","related":["mode-code"],"facts":[]},
+  {"id":"cascade","term":"カスケード","aliases":["エスカレーション","cascade"],"cat":"ai-agent-lab の仕組み","short":"まず速く安いモデルで試し、難しければ上位のモデルに切り替える仕組み。","detail":"簡単なタスクは軽いモデルで終わるので、読み込み待ちや時間を節約できます。","related":["model-load"],"facts":[]},
+  {"id":"parallel-agents","term":"同時実行数","aliases":["max_parallel","並列度"],"cat":"ai-agent-lab の仕組み","short":"同じ時刻に動いていたエージェントの最大数。","detail":"記録の開始・終了時刻から数えています。子エージェントが多いのに同時実行が1なら、順番待ちが起きています。","related":["vram"],"facts":[]},
+  {"id":"order-only","term":"順序のみ(時刻なし)","aliases":["時刻なし"],"cat":"ai-agent-lab の仕組み","short":"エージェント内部の出来事は記録に時刻が無いため、起きた順番だけを示す。","detail":"エージェントの開始・終了の時刻は記録にありますが、その中のツール呼び出し1つ1つの時刻はありません。この画面では推定で時刻を作らず、順番だけを表示します。","related":[],"facts":[]}
+ ]
+}
