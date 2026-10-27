@@ -4,7 +4,8 @@
 #   拡張思考の有効化・構造化出力の強制は未対応。num_ctx / min_p は送信しない。
 # base_url: openai の接続先(/v1 を含む)。モデル設定、環境変数 OPENAI_COMPAT_BASE、既定値 http://localhost:8080/v1 の順に優先。
 # server_name: openai の接続先サーバーの表示名(任意。例: llama-server / Strata)。
-#   UIのモデル選択は接続先サーバーごとにグループ表示する。付けると名前で表示される。
+#   UIのモデル選択は接続先サーバーごとにグループ表示する。付けるとその名前で表示され、
+#   省略時はポート(8080=llama-server / 9000=Strata)から推定する。URLが主表示にはならない。
 # 16GB VRAM (RX 9070 XT / ROCm gfx1201) + 64GB RAM 前提のモデルマトリクス。
 #
 # 【共有契約】このファイルは ai-agent-lab 専用ではない。vault-search

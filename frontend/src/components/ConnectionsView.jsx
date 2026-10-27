@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { modelStatusNote } from "../derive.js";
+import { modelStatusNote, serverDisplayName, shortBaseUrl } from "../derive.js";
 
 // 接続状態パネル: バックエンド/サーバーごとに「今つながっているか・
 // 何が使えるか」を1画面で確認する。設定の変更はここでは行わない
@@ -12,7 +12,7 @@ const CONN_TITLE = {
 };
 
 function connTitle(c) {
-  if (c.kind === "openai") return c.name || c.base_url;
+  if (c.kind === "openai") return serverDisplayName(c.name, c.base_url);
   return CONN_TITLE[c.kind] ?? c.kind;
 }
 
@@ -83,7 +83,7 @@ export default function ConnectionsView({ models, onRefresh }) {
                       {chip.text}
                     </span>
                   </div>
-                  <p className="mt-1 break-all font-mono text-xs text-slate-500">{c.base_url}</p>
+                  <p className="mt-1 font-mono text-xs text-slate-500">接続先 {shortBaseUrl(c.base_url)}</p>
 
                   {c.kind !== "anthropic" && (
                     <div className="mt-3">

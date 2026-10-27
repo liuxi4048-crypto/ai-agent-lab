@@ -3,6 +3,7 @@ import {
   FlaskConical, Zap, Square, AlertTriangle, WifiOff, Menu, Plus, Gauge, ChevronDown,
 } from "lucide-react";
 import SystemStatusPopover from "./SystemStatusPopover.jsx";
+import { serverDisplayName, shortBaseUrl } from "../derive.js";
 
 /**
  * トップヘッダー。常設は「ロゴ / ステータスピル」だけに絞り、
@@ -58,8 +59,8 @@ export default function Header({
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {connections.map((c, i) => {
           const ok = c.kind === "anthropic" ? c.key_set : c.reachable;
-          const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : (c.server_name || c.name || c.base_url)} ${ok ? "接続OK" : "未接続"}`;
-          return <span key={`${c.kind}:${c.base_url}:${i}`} title={c.base_url} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-200"><span className={`h-2 w-2 rounded-full ${ok ? "bg-green-400" : "bg-red-400"}`} />{label}</span>;
+          const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : serverDisplayName(c.server_name || c.name, c.base_url)} ${ok ? "接続OK" : "未接続"}`;
+          return <span key={`${c.kind}:${c.base_url}:${i}`} title={`接続先 ${shortBaseUrl(c.base_url)}`} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-200"><span className={`h-2 w-2 rounded-full ${ok ? "bg-green-400" : "bg-red-400"}`} />{label}</span>;
         })}
       </div>
       {/* 要対応バッジ群(条件を満たすときだけ現れる) */}

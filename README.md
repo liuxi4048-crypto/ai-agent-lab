@@ -441,9 +441,14 @@ Ollama を使用します。例えば `models:` 配下に次を追加します�
     tag: "served-model"
     backend: openai
     base_url: "http://localhost:8080/v1"
+    server_name: "llama-server"
     tools: true
     options: {temperature: 0.7, top_p: 0.95, min_p: 0}
 ```
+
+`server_name` はUIでの表示名です。Strata なら `server_name: "Strata"` のように
+付けてください。省略しても、既定ポート（8080=llama-server、9000=Strata）からは
+名前を推定して表示します。URLそのものが画面の主表示になることはありません。
 
 `tag` はサーバー側で公開するモデル名と一致させてください。
 接続先はモデルごとの `base_url`、環境変数 `OPENAI_COMPAT_BASE`、既定値
@@ -488,8 +493,10 @@ system メッセージ、ツール呼び出しと結果、テキストの逐次�
 切り替えは「モデルを選ぶこと」自体が切り替えです。タスク作成画面とベンチ画面の
 モデル選択はバックエンドごとにグループ化されています（Ollama（このPC）／
 Claude API（クラウド・従量課金））。OpenAI互換はさらに**接続先サーバーごと**に
-分かれます（見出しは接続先URL。models.yaml に `server_name: Strata` のように書くと
-その名前で表示されます）。llama-server と Strata を両方登録しても混ざりません。
+分かれます（見出しはサーバー名。models.yaml に `server_name: Strata` のように書くと
+その名前で表示され、省略時はポートから推定します。接続先は短い
+`localhost:ポート` 表記で添え、完全なURLは接続状態画面の詳細でのみ表示します）。
+llama-server と Strata を両方登録しても混ざりません。
 選択中のモデルの横には、接続先と状態（接続OK／サーバー未接続など）が表示されます。
 全体の接続状態は、サイドバーの「接続状態」パネルでまとめて確認できます
 （接続先ごとに、到達可否・サーバーが公開しているモデル・登録モデルの使用可否を表示。

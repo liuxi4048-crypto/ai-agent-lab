@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { groupByBackend } from "../derive.js";
+import { groupByBackend, shortBaseUrl } from "../derive.js";
 
 /**
  * モデル選択(カード式)。まず接続先サーバーのカード(Ollama / llama-server /
@@ -24,9 +24,13 @@ export default function ModelPicker({ models, value, onChange, extraOptions = []
 
   const groupNote = (g) => {
     const sts = g.models.map((m) => m.backend_status).filter(Boolean);
-    if (sts.length && sts.every((s) => s === "server_unreachable")) return "未接続";
-    if (sts.some((s) => s === "no_api_key")) return "APIキー未設定";
-    return `${g.models.length} モデル`;
+    let note;
+    if (sts.length && sts.every((s) => s === "server_unreachable")) note = "未接続";
+    else if (sts.some((s) => s === "no_api_key")) note = "APIキー未設定";
+    else note = `${g.models.length} モデル`;
+    // 接続先は http:// を付けず localhost:ポート の短い形で添える
+    const short = g.backend === "openai" ? shortBaseUrl(g.base_url) : "";
+    return short ? `${short} ・ ${note}` : note;
   };
 
   const chipCls = (selected) =>
@@ -64,6 +68,7 @@ export default function ModelPicker({ models, value, onChange, extraOptions = []
             <button
               key={g.key}
               type="button"
+              title={g.base_url ? `接続先 ${shortBaseUrl(g.base_url)}` : undefined}
               onClick={() => setActiveKey(g.key)}
               aria-pressed={isActive}
               className={`min-w-40 rounded-xl border px-3 py-2 text-left transition-colors ${

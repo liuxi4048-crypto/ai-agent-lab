@@ -234,12 +234,48 @@ export function backendMeta(m) {
   return BACKEND_META[m?.backend] ?? BACKEND_META.ollama;
 }
 
+// 接続先URLの短い表記。http:// や末尾の /v1 は出さず「localhost:9000」の形にする。
+// 完全なURLはツールチップや接続状態画面の詳細行でのみ見せる。
+export function shortBaseUrl(baseUrl) {
+  const raw = (baseUrl || "").trim();
+  if (!raw) return "";
+  try {
+    return new URL(raw).host;
+  } catch {
+    return raw.replace(/^https?:\/\//, "").replace(/\/v1\/?$/, "").replace(/\/$/, "");
+  }
+}
+
+// ポートから推定できる、このプロジェクトで既定のサーバー名。
+// 8080 は llm.py の既定接続先(llama-server)、9000 は Strata の接続例として
+// テスト・モックアップで使ってきたポート。あくまで表示名の推定で、
+// models.yaml の server_name があればそちらが常に優先する。
+const KNOWN_SERVER_BY_PORT = { "8080": "llama-server", "9000": "Strata" };
+
+/**
+ * 接続先サーバーの表示名。http://… のURLを主表示にしないための共通ルール:
+ * server_name > ポートからの推定名 > shortBaseUrl(localhost:ポート)。
+ */
+export function serverDisplayName(name, baseUrl) {
+  if (name) return name;
+  let port = "";
+  try {
+    port = new URL(baseUrl || "").port;
+  } catch {
+    port = (shortBaseUrl(baseUrl).split(":")[1] || "").split("/")[0];
+  }
+  if (KNOWN_SERVER_BY_PORT[port]) return KNOWN_SERVER_BY_PORT[port];
+  const short = shortBaseUrl(baseUrl);
+  return short ? `${short} のサーバー` : "接続先サーバー";
+}
+
 /**
  * モデル一覧をグループ化する(Ollama → OpenAI互換 → Claude API の順)。
  * OpenAI互換は「プロトコル」ではなく「接続先サーバー」ごとに分ける:
  * llama-server と Strata が同じ枠に入ると見分けが付かないため、base_url 単位で
- * グループを作り、見出しに server_name(models.yaml の任意指定)があれば名前を、
- * なければ接続先URLを出す。返り値: [{key, backend, label, models}]
+ * グループを作る。見出しは serverDisplayName の名前だけにし、URLは
+ * base_url フィールド(ツールチップ・副表示用)に分けて返す。
+ * 返り値: [{key, backend, label, base_url, models}]
  */
 export function groupByBackend(models) {
   const groups = [];
@@ -257,7 +293,8 @@ export function groupByBackend(models) {
     groups.push({
       key: `openai:${base}`,
       backend: "openai",
-      label: name ? `${name} ・ ${base}` : `${base}`,
+      label: serverDisplayName(name, base),
+      base_url: base,
       models: ms,
     });
   }
@@ -281,20 +318,21 @@ export function modelStatusNote(m) {
 /** 選択中モデルの状態行: {dot: Tailwind色クラス, text: 説明文} */
 export function modelStatusLine(m) {
   if (!m) return null;
-  const meta = backendMeta(m);
   if (m.backend === "anthropic") {
     return m.backend_status === "no_api_key"
       ? { dot: "bg-red-400", text: "Claude API（従量課金）・APIキー未設定のため使えません" }
       : { dot: "bg-green-400", text: "Claude API（従量課金）・キー設定済み" };
   }
   if (m.backend === "openai") {
-    const base = m.base_url || "";
-    const who = m.server_name || meta.short;
+    const who = serverDisplayName(m.server_name, m.base_url);
+    const short = shortBaseUrl(m.base_url);
+    // 名前が付いている・推定できている・名前自体に接続先を含む場合は添えない
+    const place = (m.server_name || KNOWN_SERVER_BY_PORT[short.split(":")[1]] || who.includes(short)) ? "" : `（${short}）`;
     if (m.backend_status === "server_unreachable")
-      return { dot: "bg-red-400", text: `${who} ・ ${base} ・ サーバー未接続（起動すると使えます）` };
+      return { dot: "bg-red-400", text: `${who}${place} ・ サーバー未接続（起動すると使えます）` };
     if (m.backend_status === "model_missing")
-      return { dot: "bg-red-400", text: `${who} ・ ${base} ・ このモデルはサーバーにありません` };
-    return { dot: "bg-green-400", text: `${who} ・ ${base} ・ 接続OK` };
+      return { dot: "bg-red-400", text: `${who}${place} ・ このモデルはサーバーにありません` };
+    return { dot: "bg-green-400", text: `${who}${place} ・ 接続OK` };
   }
   return m.installed
     ? { dot: "bg-green-400", text: "Ollama ・ このPCに導入済み" }
