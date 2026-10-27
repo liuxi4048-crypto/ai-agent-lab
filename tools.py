@@ -21,8 +21,11 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+
+_RG = shutil.which("rg")   # ripgrep があれば search_files の高速経路に使う
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.join(BASE, "projects")
@@ -441,6 +444,12 @@ class Toolbox:
         except (TypeError, ValueError):
             cap = 50
 
+        if _RG:
+            fast = self._search_files_rg(root, pattern, glob, cap)
+            if fast is not None:
+                return fast
+            # rg が失敗(正規表現の dialect 差など)したら従来経路へ
+
         hits, truncated = [], False
         if os.path.isfile(root):
             targets = [root]
@@ -467,6 +476,45 @@ class Toolbox:
             if truncated:
                 break
 
+        if not hits:
+            return f"(一致なし: /{pattern}/)"
+        out = "\n".join(hits)
+        if truncated:
+            out += f"\n…(上限{cap}件で打ち切り。パターンを絞ること)"
+        return out
+
+    def _search_files_rg(self, root, pattern, glob, cap):
+        """ripgrep による高速検索。使えない/失敗時は None を返し、呼び出し側が
+        従来の Python 実装へ落とす。意味論は従来実装と揃える:
+        .gitignore を尊重しない(--no-ignore)、隠しファイルも対象(--hidden)、
+        SEARCH_SKIP_DIRS は除外、行は200字で切る。
+        """
+        args = [_RG, "--no-heading", "--line-number", "--no-ignore", "--hidden",
+                "--no-messages", "-e", pattern]
+        for d in sorted(SEARCH_SKIP_DIRS):
+            args += ["-g", f"!{d}"]
+        if glob:
+            args += ["-g", glob]
+        args.append(root)
+        try:
+            proc = subprocess.run(args, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode not in (0, 1):   # 2=エラー(表現の差など)→ 従来経路へ
+            return None
+        text = proc.stdout.decode("utf-8", errors="replace")
+        raw_lines = text.splitlines()
+        truncated = len(raw_lines) > cap
+        hits = []
+        for line in raw_lines:
+            m = re.match(r"^(.*?):(\d+):(.*)$", line)   # Windows の C: 始まりでも壊れない
+            if not m:
+                continue
+            path, num, content = m.group(1), m.group(2), m.group(3)
+            rel = os.path.relpath(path, self.root).replace("\\", "/")
+            hits.append(f"{rel}:{num}: {content[:200]}")
+            if len(hits) >= cap:
+                break
         if not hits:
             return f"(一致なし: /{pattern}/)"
         out = "\n".join(hits)
@@ -742,7 +790,10 @@ class Toolbox:
                     return (f"[不正ツール] 未知のツール名: {name}(利用可: list_dir, read_file, "
                             "search_files, write_file, edit_file, run_command, "
                             "search_vault, finish)")
-                result = fn(**args)
+                # 同期ツールをイベントループ上で直接実行すると、大きな走査
+                # (search_files の全走査や rg の同期待ち等)の間、並行する他 Run の
+                # SSE・承認応答まで止まる。スレッドへ逃がす(2026-10-27監査)。
+                result = await asyncio.to_thread(fn, **args)
         except TypeError as e:
             return f"[引数エラー] {name}: {e}"
         except ValueError as e:

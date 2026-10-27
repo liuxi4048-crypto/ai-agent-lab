@@ -51,6 +51,7 @@ export default function App() {
   const [notices, setNotices] = useState([]);
   const [plans, setPlans] = useState({});   // run_id -> 起動時の自動判定結果(mode/deliverable/model)
   const [now, setNow] = useState(Date.now());
+  const anyLiveRef = useRef(false);   // 1秒 tick の要否(実行中 Run の有無)
   const [showDisconnected, setShowDisconnected] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);  // lg未満のオフキャンバス開閉
   const [aborting, setAborting] = useState(false);        // 中断要求を出して収まるまで
@@ -59,9 +60,18 @@ export default function App() {
   const [optimisticRuns, setOptimisticRuns] = useState([]);
 
   const { state, speeds } = useRunEvents(currentId);
+  const [runsLoaded, setRunsLoaded] = useState(false);   // 初回取得前は「0件」と誤表示しない
+
+  useEffect(() => {
+    anyLiveRef.current = state.running
+      || runs.some((r) => r.status === "running" || r.status === "queued");
+  }, [runs, state.running]);
 
   // ---- ポーリング(一覧3s / リソース5s) & 1秒tick(経過時間表示用) ----
-  const refreshRuns = useCallback(() => fetchRuns().then((d) => setRuns(d.runs)).catch(() => {}), []);
+  const refreshRuns = useCallback(() => fetchRuns()
+    .then((d) => setRuns(d.runs))
+    .catch(() => {})
+    .finally(() => setRunsLoaded(true)), []);
   const refreshModels = useCallback(() => fetchModels().then(setModels).catch(() => {}), []);
   useEffect(() => {
     // 初回だけ: Runが1件も無い(=初めて開いた)ときは下書きから始める
@@ -70,7 +80,8 @@ export default function App() {
         setRuns(d.runs);
         if (!d.runs.length) setView((v) => (v.kind === "empty" ? { kind: "draft", from: null } : v));
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setRunsLoaded(true));
     refreshModels();
     const t1 = setInterval(refreshRuns, 3000);
     const poll = () => {
@@ -79,7 +90,11 @@ export default function App() {
     };
     poll();
     const t2 = setInterval(poll, 5000);
-    const t3 = setInterval(() => setNow(Date.now()), 1000);
+    // 経過時間表示用の1秒 tick は、実行中の Run がある間だけ回す
+    // (アイドル時も毎秒ツリー全体が再描画されていた。2026-10-27監査)
+    const t3 = setInterval(() => {
+      if (anyLiveRef.current && !document.hidden) setNow(Date.now());
+    }, 1000);
     return () => [t1, t2, t3].forEach(clearInterval);
   }, [refreshRuns]);
 
@@ -152,6 +167,19 @@ export default function App() {
     : null;
 
   const answerNode = [...agentNodes].reverse().find((n) => n.kind === "answer" && n.output);
+
+  // TaskInput へ渡す runs は同一性を保つ(毎レンダー作り直すと memo が効かない)
+  const taskInputRuns = useMemo(
+    () => runsView.map((r) => ({ ...r, plan: plans[r.id] ?? r.plan })),
+    [runsView, plans],
+  );
+  // 回答ノードを除いた表示用セグメント(従来は描画のたびに再計算していた)
+  const visibleSegments = useMemo(
+    () => segments
+      .map((seg) => ({ ...seg, nodes: seg.nodes.filter((node) => node.id !== answerNode?.id) }))
+      .filter((seg) => seg.nodes.length),
+    [segments, answerNode],
+  );
 
   // 全Run合計の承認待ち数(ヘッダーの点滅バッジ用)と、最初に見つかった対象Run
   const pendingApprovalsTotal = useMemo(
@@ -497,7 +525,7 @@ export default function App() {
               visible={drafting}
               onCancel={view.from || runsView.length ? handleCancelDraft : null}
               suggestions={suggestions}
-              runs={runsView.map(r => ({ ...r, plan: plans[r.id] ?? r.plan }))}
+              runs={taskInputRuns}
               onSelectRun={selectRun}
             />
           </div>
@@ -564,20 +592,31 @@ export default function App() {
               )}
               <div className="p-4">
                 <PhaseStepper nodes={agentNodes} />
-                {answerNode && <section className="mb-5 rounded-xl border border-slate-700 bg-slate-900 p-4"><h2 className="mb-3 text-lg font-bold">最終回答</h2><Markdown text={answerNode.output} /></section>}
+                {answerNode && (
+                  <section className="mb-5 rounded-xl border border-slate-700 bg-slate-900 p-4">
+                    <h2 className="mb-3 text-lg font-bold">最終回答</h2>
+                    {/* 生成中は Markdown を毎回再パースせず素テキストで出す
+                        (LogDrawer 等と同じ方式。完了時に整形表示へ切り替わる) */}
+                    {answerNode.status === "done" ? (
+                      <Markdown text={answerNode.output} />
+                    ) : (
+                      <pre className="whitespace-pre-wrap text-[13px] leading-relaxed">{answerNode.output}</pre>
+                    )}
+                  </section>
+                )}
                 {agentNodes.length === 0 ? (
                   <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-slate-600">
                     <Inbox size={36} strokeWidth={1.2} />
                     <p className="text-sm">エージェントを起動しています…</p>
                   </div>
                 ) : (
-                  segments.map(seg => ({ ...seg, nodes: seg.nodes.filter(node => node.id !== answerNode?.id) })).filter(seg => seg.nodes.length).map((seg, i) => {
+                  visibleSegments.map((seg, i) => {
                     const pm = PHASE_META[seg.phase];
                     const doneCount = seg.nodes.filter((n) => n.status === "done").length;
                     return (
                       <section key={`${seg.phase}-${i}`} className="mb-5 last:mb-0">
                         {/* 見出しは sticky: 長いセグメントをスクロール中も「今どの工程か」を保つ */}
-                        <div className="sticky top-0 z-10 -mx-1 mb-2 flex items-center gap-2 bg-slate-950/95 px-1 py-1 backdrop-blur">
+                        <div className="sticky top-0 z-10 -mx-1 mb-2 flex items-center gap-2 bg-slate-950 px-1 py-1">
                           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-800 text-[10px] font-bold tabular-nums text-slate-400">
                             {i + 1}
                           </span>
@@ -634,7 +673,8 @@ export default function App() {
           {!drafting && !benching && !insighting && !currentRun && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-600">
               <Inbox size={36} strokeWidth={1.2} />
-              <p className="text-sm">左の一覧からタスクを選ぶか、新しいタスクを開始してください</p>
+              <p className="text-sm">{runsLoaded ? "左の一覧からタスクを選ぶか、新しいタスクを開始してください" : "読み込み中…"}</p>
+              {runsLoaded && (
               <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
                 {SAMPLE_TASKS.map((s) => (
                   <button
@@ -646,6 +686,7 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              )}
             </div>
           )}
         </div>

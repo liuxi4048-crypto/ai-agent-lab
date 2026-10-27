@@ -177,9 +177,9 @@ models:
     tools: true              # Capabilities: tools/thinking/vision すべて対応(vision projector 573M・画像経路はアプリに無い)
     mtp: false               # 焼き込みdraftなし。公式ドラフタは別途Modelfile DRAFTで付与可(未適用)
     num_ctx: 16384           # ネイティブ262K
+    think: "low"             # 既定ONの長考を抑える(他モデルと統一。2026-10-27監査)
     # Google公式推奨。min_pはllama.cpp既定0.1に上書きされないよう明示
     options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}
-    # think既定ON(<think>)。smokeでcontentは正常返却。速度優先ならthink:falseを呼び出し側で
     strengths: [tool, reasoning, chat]
     for: "Google新世代・マルチモーダル。VRAM全載りで高速"
     use: "MoE 25.2B/活性≈4B(gemma4) / tools・thinking・vision対応 / 94%GPU・59.5tok/s実測(2026-08-23) /
@@ -222,6 +222,7 @@ models:
     tools: true              # Capabilities: tools/thinking(visionなし)
     mtp: false
     num_ctx: 16384           # ネイティブ203K
+    think: "low"             # 既定ONの長考を抑える(他モデルと統一。2026-10-27監査)
     options: {temperature: 1.0, top_p: 0.95, min_p: 0.01, repeat_penalty: 1.0}   # Zhipu焼き込み既定
     strengths: [tool, coding, reasoning]
     for: "Zhipu新世代MoE・エージェント志向(MIT)"
@@ -265,7 +266,7 @@ models:
     placement: vram
     tools: true
     mtp: false
-    num_ctx: 16384
+    num_ctx: 8192            # ドラフト/仕分けの短文用途のみ。16K分のKV確保は無駄(2026-10-27監査)
     options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
     options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
     think: "low"
@@ -279,7 +280,7 @@ models:
     placement: vram          # 1.7GB 全載り
     tools: true              # ollama show: tools/thinking
     mtp: false
-    num_ctx: 16384           # ネイティブ131K
+    num_ctx: 8192            # ネイティブ131K。短文チャット/仕分け用途のため抑制(2026-10-27監査)
     options: {temperature: 0.3, min_p: 0.15, repeat_penalty: 1.05}   # LiquidAI推奨(低温)
     strengths: [tool, speed, chat]
     for: "Liquid AI 省メモリ(2.6B)。オンデバイス志向"
@@ -352,6 +353,7 @@ models:
     tools: true          # ollama show: tools/thinking/vision
     mtp: false
     num_ctx: 16384
+    keep_alive: "10m"        # 54GB級。heavy と同じくRAM占有を抑えるため短め(既定30m。2026-10-27監査)
     options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
     options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
     think: "low"
@@ -388,7 +390,7 @@ models:
                          # ai-agent-lab の自動ルーティングからは除外。このキーを消すと両ツールが即死する
     placement: vram
     tools: false             # gemma3はtools非対応=chat専用
-    num_ctx: 16384
+    num_ctx: 8192            # vault系の短文抽出・軽量チャット専用。16K分のKV確保は無駄(2026-10-27監査)
     options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}  # Google公式推奨
     strengths: [chat, speed]
     for: "軽量チャット・多言語(コード生成は不可)"

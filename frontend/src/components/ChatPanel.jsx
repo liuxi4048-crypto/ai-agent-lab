@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, Send, Loader2, User, Bot, Sparkles } from "lucide-react";
 import { continueRun } from "../api.js";
 import Markdown from "./md.jsx";
@@ -31,7 +31,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
   const textareaRef = useRef(null);
   const prevThreadLenRef = useRef(0);
 
-  const thread = buildThread(nodes, order);
+  const thread = useMemo(() => buildThread(nodes, order), [nodes, order]);
 
   // サーバー側にノードが増えたら楽観バブルをクリアする
   useEffect(() => {

@@ -7,6 +7,8 @@ import { STALL_MS_GENERATING, STALL_MS_THINKING } from "./derive.js";
 // think(推論)テキストのクライアント側保持上限(文字)。バックエンド(events.py THINK_CAP)と
 // 同じ考え方で無制限成長を防ぐ。
 const THINK_CAP = 20_000;
+// ログ行のクライアント側保持上限(行)。サーバ側(events.py LOG_CAP)と揃える
+const LOG_CAP = 2_000;
 
 export const initialRunState = {
   connected: false,
@@ -119,9 +121,13 @@ function applyEvent(state, ev) {
     case "log_line": {
       const node = state.nodes[ev.id];
       if (!node) return state;
+      // サーバ側の上限(2000行)と揃える。従来は無制限に溜まり、1行ごとに
+      // 配列全コピーが走っていた(2026-10-27監査)
+      const log = [...(node.log || []), ev.line];
+      if (log.length > LOG_CAP) log.splice(0, log.length - LOG_CAP);
       return {
         ...state,
-        nodes: { ...state.nodes, [ev.id]: { ...node, log: [...(node.log || []), ev.line] } },
+        nodes: { ...state.nodes, [ev.id]: { ...node, log } },
       };
     }
     case "progress": {

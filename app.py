@@ -50,11 +50,23 @@ def _free_port(preferred: int = 8765) -> int:
         return s.getsockname()[1]
 
 
+# Ollama の最適化 env(start.ps1 の既定値と同一。2026-10-27監査で共通化)。
+# 起動済みの Ollama には効かない点も start.ps1 と同じで、そちらは警告を出す。
+_OLLAMA_ENV_DEFAULTS = {
+    "OLLAMA_FLASH_ATTENTION": "1",
+    "OLLAMA_KV_CACHE_TYPE": "q8_0",
+    "OLLAMA_NUM_PARALLEL": "2",
+    "OLLAMA_MAX_LOADED_MODELS": "1",
+}
+
+
 def ensure_ollama() -> None:
     if _port_open(11434):
         return
     if not OLLAMA_EXE.exists():
         return  # UI側の「未接続」表示に任せる
+    for k, v in _OLLAMA_ENV_DEFAULTS.items():
+        os.environ.setdefault(k, v)   # ユーザー設定(setx 等)は上書きしない
     subprocess.Popen(
         [str(OLLAMA_EXE), "serve"],
         creationflags=subprocess.CREATE_NO_WINDOW,

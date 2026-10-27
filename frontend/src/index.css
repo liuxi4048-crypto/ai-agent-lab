@@ -1,11 +1,17 @@
 @import "tailwindcss";
 
-/* Stalled(応答停止警告)カードの枠線点滅 */
+/* Stalled(応答停止警告)カードの枠線点滅。
+   box-shadow/border-color のアニメーションは毎フレーム paint が発生するため、
+   枠線は静的にし、点滅は opacity(コンポジタ処理可能)で表す */
 @keyframes stall-blink {
-  0%, 100% { border-color: rgb(249 115 22); box-shadow: 0 0 0 1px rgb(249 115 22 / 0.55); }
-  50%      { border-color: rgb(249 115 22 / 0.25); box-shadow: none; }
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
 }
-.stall-blink { animation: stall-blink 1s ease-in-out infinite; }
+.stall-blink {
+  border-color: rgb(249 115 22);
+  box-shadow: 0 0 0 1px rgb(249 115 22 / 0.55);
+  animation: stall-blink 1s ease-in-out infinite;
+}
 
 @keyframes soft-pulse { 50% { opacity: 0.45; } }
 .soft-pulse { animation: soft-pulse 1.3s ease-in-out infinite; }

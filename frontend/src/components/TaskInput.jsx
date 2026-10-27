@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Play, Loader2, X, Sparkles, ChevronRight, History } from "lucide-react";
 import { modelStatusLine, modelStatusNote, RUN_STATUS, fmtElapsed } from "../derive.js";
 import ModelPicker from "./ModelPicker.jsx";
@@ -20,7 +20,7 @@ const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, a
  * onCancel: 下書きをやめて直前のRunへ戻る(戻り先が無ければ App が null を渡す)
  * suggestions: 空欄時に出す開始チップ [{emoji?, text}](直近タスク+サンプル)
  */
-export default function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = [], runs = [], onSelectRun }) {
+function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = [], runs = [], onSelectRun }) {
   const [task, setTask] = useState("");
   const taskRef = useRef(null);
   const [model, setModel] = useState(DEFAULTS.model);
@@ -344,3 +344,6 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
     </div>
   );
 }
+
+// App の再描画(ポーリング/ tick)に巻き込まれないようメモ化(2026-10-27監査)
+export default memo(TaskInput);

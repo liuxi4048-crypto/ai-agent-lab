@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search, Sparkles, Trash2, X, Gauge, Microscope, Plug } from "lucide-react";
 import { RUN_STATUS, fmtAgo } from "../derive.js";
 
@@ -11,7 +11,7 @@ import { RUN_STATUS, fmtAgo } from "../derive.js";
  * 2行構成(モード/成果物・モデルタグは RunHeader の実行条件ポップオーバーへ退避)。
  * lg未満ではオフキャンバス(ハンバーガーで開閉)、lg以上は常設カラム。
  */
-export default function Sidebar({
+function Sidebar({
   runs, currentId, drafting, onSelect, onDelete, onNew, onBench, benching, onInsight, insighting, onConnections, connecting, open, onClose,
 }) {
   const [query, setQuery] = useState("");
@@ -238,3 +238,6 @@ export default function Sidebar({
     </>
   );
 }
+
+// App の再描画(ポーリング/ tick)に巻き込まれないようメモ化(2026-10-27監査)
+export default memo(Sidebar);

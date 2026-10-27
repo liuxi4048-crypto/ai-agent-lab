@@ -34,6 +34,30 @@ def _valid_id(run_id: str) -> bool:
     return bool(_RUN_ID_RE.fullmatch(str(run_id or "")))
 
 
+def _run_signature(run: "Run") -> tuple:
+    """チェックポイントの要否判定に使う軽い署名(全長は len() のみで数える)。
+
+    承認待ちや長いツール実行の間は状態が変わらないのに、従来は10秒ごとに
+    スナップショット全量の encode + 書き込みを繰り返していた。署名が前回と
+    同じなら書き込みを省く。生成中は preview/think/tokens が動くので署名も
+    変わり、従来どおり保存される。
+    """
+    bus = run.bus
+    total = 0
+    statuses = []
+    for n in bus.nodes.values():
+        total += (len(n.log) + len(n.preview or "") + len(n.think or "")
+                  + len(n.output or "") + len(n.prompt or "") + n.tokens)
+        statuses.append((n.status, n.progress, n.ctx_fill))
+    hist = 0
+    for m in run.history:
+        if isinstance(m, dict):
+            hist += len(m.get("content") or "")
+    return (run.status(), len(bus.order), total, tuple(statuses),
+            len(run.history), hist, len(run.pending_approvals),
+            bool(run.error), run.finished_at is not None)
+
+
 def normalize_snapshot(snapshot: dict, run_status: str) -> dict:
     """保存済み(終了/中断)Runのsnapshotを事実と一致させる。
 
@@ -193,16 +217,41 @@ class RunManager:
 
     def start(self, run: Run, factory) -> None:
         """factory() -> coroutine(オーケストレーター本体)をゲート付きで起動する。"""
+        bg: set = set()   # 先読みタスクの参照保持(完了で自動破棄)
+
+        def _start_prewarm() -> None:
+            # スロット取得後、本体の初期化と並行してモデルを先読みする
+            # (大型モデルのロード17〜65秒を初回呼び出しの裏で進める)。
+            # bench はロード時間そのものを測るため対象外。失敗は本体が再試行する。
+            if run.mode == "bench":
+                return
+
+            async def _pw() -> None:
+                try:
+                    import llm as _llm
+                    await _llm.prewarm(_llm.load_config(), run.model)
+                except Exception:
+                    pass
+
+            t = asyncio.create_task(_pw())
+            bg.add(t)
+            t.add_done_callback(bg.discard)
 
         async def _checkpoint() -> None:
             # プロセス死(ウィンドウクローズ・taskkill・電源断)でも直近状態が残るように。
             # スナップショット構築はイベントループ上(bus/historyの並行変更と競合しない)、
             # json.dumps+書き込みだけをスレッドへ逃がす。1回の失敗でループを止めない。
+            # 状態が変わっていない間(承認待ち・長いツール実行)は書き込みを省く。
+            last_sig = None
             while True:
                 await asyncio.sleep(CHECKPOINT_SEC)
                 try:
+                    sig = _run_signature(run)
+                    if sig == last_sig:
+                        continue
                     data = self._encode(run, final=False)
                     await asyncio.to_thread(self._write_record, run, data, False)
+                    last_sig = sig
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -216,10 +265,12 @@ class RunManager:
                     async with self.hybrid_lock:
                         async with self.slots:
                             run.queued = False
+                            _start_prewarm()
                             await factory()
                 else:
                     async with self.slots:
                         run.queued = False
+                        _start_prewarm()
                         await factory()
             except asyncio.CancelledError:
                 run.error = run.error or "ユーザーによって中断されました"
@@ -290,7 +341,10 @@ class RunManager:
                 rec["model_tag"] = rec["model"]
         return rec
 
-    def list_runs(self) -> list[dict]:
+    def list_runs(self, limit: int = 300) -> list[dict]:
+        """Run 一覧(新しい順)。履歴が無制限に育つと /runs の3秒ポーリングが
+        転送・パース・描画すべてを比例悪化させるため、返却は直近 limit 件に
+        限る(ライブ実行中の Run は古くても必ず含める。2026-10-27監査)。"""
         items = []
         queued = sorted((r for r in self.live.values() if r.status() == "queued"),
                         key=lambda r: r.created_at)
@@ -313,6 +367,12 @@ class RunManager:
                 if summary and summary.get("id") and summary["id"] not in seen:
                     items.append(summary)
         items.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+        if len(items) > limit:
+            live_ids = set(self.live)
+            live_items = [i for i in items if i.get("id") in live_ids]
+            rest = [i for i in items if i.get("id") not in live_ids]
+            items = live_items + rest[:max(0, limit - len(live_items))]
+            items.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
         return items
 
     # {path: (mtime, summary)} — /runs は3秒ポーリングされるため、全ファイルの
@@ -351,12 +411,33 @@ class RunManager:
     def get_live(self, run_id: str) -> Run | None:
         return self.live.get(run_id)
 
+    @staticmethod
+    def _head_finished(path: Path) -> bool | None:
+        """記録ファイルの先頭だけ読み、finished_at の有無を判定する。
+
+        レコードは summary(先頭)→snapshot→history の順で書かれ、finished_at
+        は summary 内にある。終了済みファイルは先頭16KBで確定できるため、
+        起動時に全ファイルを全量パースせずに済む(2026-10-27監査)。
+        戻り値: True=終了済み / False=未終了が確定 / None=先頭では不明。
+        """
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                head = f.read(16384)
+        except OSError:
+            return None
+        m = re.search(r'"finished_at":\s*(null|[\d.]+)', head)
+        if not m:
+            return None
+        return m.group(1) != "null"
+
     def recover_interrupted(self) -> int:
         """起動時: 前回プロセス死で終了記録のないRunを interrupted として確定する。"""
         n = 0
         if not RUNS_DIR.is_dir():
             return 0
         for path in RUNS_DIR.glob("*.json"):
+            if self._head_finished(path) is True:
+                continue   # 終了済みは先頭読みで確定。全量パースしない
             data = self._load_file(path)
             if not data or data.get("finished_at") is not None:
                 continue

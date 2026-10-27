@@ -360,9 +360,11 @@ class Orchestrator:
             for attempt in range(2):
                 try:
                     # スキーマ強制+低温度: 分解JSONのパース失敗と判定ブレを抑える
+                    # think は medium(2026-10-27監査: 分解は浅い構造化タスクで、
+                    # 分類系 triage の low と最大級 high の不整合を中間に寄せた)
                     raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.model,
                                             json_schema=PLAN_SCHEMA, temperature=0.1,
-                                            think=llm.effort(llm.resolve(self.cfg, self.model), "high"))
+                                            think=llm.effort(llm.resolve(self.cfg, self.model), "medium"))
                     subtasks, creates_code = _parse_plan(raw)
                     titles = " / ".join(s["title"] for s in subtasks)
                     kind = "コード作成タスク" if creates_code else "通常タスク"
@@ -540,6 +542,9 @@ class CritiqueOrchestrator:
             user = task
         else:
             title, detail = "✍️ 作成者: 批評を反映して改稿", f"モデル: {self.author_model}"
+            # 下書き+批評を入力予算に収める(2026-10-27監査: 従来は無制限再送で、
+            # 長い下書きでは num_ctx 超過時に Ollama が無言で切り捨てていた)
+            prev_draft, critique_text = _fit_parts([prev_draft, critique_text])
             user = (f"元のタスク: {task}\n\n"
                     f"あなたの前回の回答:\n{prev_draft}\n\n"
                     f"レビュアーからの批評:\n{critique_text}\n\n"
@@ -556,6 +561,7 @@ class CritiqueOrchestrator:
         bus = self.bus
         node_id = bus.create_node("reviewer", "🔍 レビュアー: 批評中…",
                                   f"モデル: {self.reviewer_model}", round_id)
+        draft = _fit_parts([draft])[0]   # _write_draft と同じ入力予算に収める
         messages = [
             {"role": "system", "content": REVIEWER_SYSTEM},
             {"role": "user", "content": f"元のタスク: {task}\n\n作成者の回答:\n{draft}"},
@@ -1001,7 +1007,7 @@ class SwarmCodeOrchestrator:
                 try:
                     raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.worker,
                                             json_schema=SWARM_PLAN_SCHEMA, temperature=0.1,
-                                            think=llm.effort(llm.resolve(self.cfg, self.worker), "high"))
+                                            think=llm.effort(llm.resolve(self.cfg, self.worker), "medium"))
                     subtasks, contract = _parse_swarm_plan(raw)
                     bus.complete(planner_id,
                                  f"{len(subtasks)}個に分解: " + " / ".join(s["title"] for s in subtasks)

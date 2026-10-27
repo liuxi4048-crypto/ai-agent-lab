@@ -190,7 +190,8 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
     for (const entry of node.log) {
       for (const line of String(entry).split("\n")) {
         if (!line.trim()) continue;
-        out.push({ id: id++, line, ...classifyLine(line) });
+        // 検索用に小文字化もここで済ませる(キー入力ごとに全行を再変換しない)
+        out.push({ id: id++, line, lower: line.toLowerCase(), ...classifyLine(line) });
       }
     }
     return out;
@@ -217,7 +218,7 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
   const searched = useMemo(() => {
     if (!trimmedQuery) return kindFiltered;
     const lower = trimmedQuery.toLowerCase();
-    return kindFiltered.filter(({ line }) => line.toLowerCase().includes(lower));
+    return kindFiltered.filter(({ lower: lineLower }) => lineLower.includes(lower));
   }, [kindFiltered, trimmedQuery]);
 
   const canWindow = classifiedLines.length > LINE_WINDOW;
@@ -240,7 +241,13 @@ export default function LogDrawer({ open, onClose, node, agentState }) {
   const lastLineId = visible.length ? visible[visible.length - 1].id : -1;
   useEffect(() => {
     if (!open || !follow || !scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    // scrollHeight の読み→scrollTop 書きを同期で行うと強制リフローになるため
+    // フレーム境界へ寄せる(120msバッチごとに発生していた)
+    const el = scrollRef.current;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [open, follow, outputLen, lastLineId]);
 
   const onScroll = () => {

@@ -52,6 +52,29 @@ Set-Content -Path $LogPath -Value ("=== {0} 起動 ===" -f (Get-Date -Format 'yy
 # --- 1. Ollama -------------------------------------------------------------
 if (Test-Port 11434) {
     Write-Log '[skip] Ollama は起動済み'
+    # 起動済み Ollama の env は後から変えられない。推奨値がユーザー環境変数
+    # (setx 等の恒常設定)にも無い項目は「最適化が効いていない」可能性が高い
+    # ため、無言で通さず警告する(2026-10-27監査: env既定値は冷間起動時だけ
+    # 適用される作りだった)。
+    $recommended = [ordered]@{
+        'OLLAMA_KV_CACHE_TYPE'     = 'q8_0'
+        'OLLAMA_NUM_PARALLEL'      = '2'
+        'OLLAMA_MAX_LOADED_MODELS' = '1'
+    }
+    $missing = @()
+    foreach ($kv in $recommended.GetEnumerator()) {
+        $cur = [Environment]::GetEnvironmentVariable($kv.Key, 'User')
+        if ($cur -ne $kv.Value) { $missing += $kv.Key }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Log ('[env] warn 起動済み Ollama には最適化 env が未適用の可能性があります: ' + ($missing -join ', '))
+        Write-Log '[env] warn 恒常適用するには PowerShell で次を実行し、Ollama を再起動してください:'
+        foreach ($kv in $recommended.GetEnumerator()) {
+            Write-Log ('[env] warn   setx {0} "{1}"' -f $kv.Key, $kv.Value)
+        }
+    } else {
+        Write-Log '[env] 推奨 env はユーザー環境変数に設定済み(起動済み Ollama へも適用済みの見込み)'
+    }
 } else {
     $ollama = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
     if (-not (Test-Path $ollama)) {
@@ -66,6 +89,20 @@ if (Test-Port 11434) {
             if ($entry.Key -like 'OLLAMA_*') {
                 Set-Item -Path ("Env:" + $entry.Key) -Value $entry.Value
                 Write-Log ("[env] {0}={1}" -f $entry.Key, $entry.Value)
+            }
+        }
+        # README推奨の最適化が未設定なら、この起動で立てる Ollama に限って既定値を補う
+        # (ユーザーが setx 等で設定した値は上書きしない。止めたい項目は setx で明示する)
+        $ollamaDefaults = [ordered]@{
+            'OLLAMA_FLASH_ATTENTION'   = '1'     # q8_0 KV の前提 + プロンプト処理の高速化
+            'OLLAMA_KV_CACHE_TYPE'     = 'q8_0'  # KVキャッシュのメモリ半減 → 溢れ・載せ替え減
+            'OLLAMA_NUM_PARALLEL'      = '2'     # swarm の同一モデル2並列(設計の前提)
+            'OLLAMA_MAX_LOADED_MODELS' = '1'     # VRAM 16GB では常駐1本(スラッシング防止)
+        }
+        foreach ($kv in $ollamaDefaults.GetEnumerator()) {
+            if (-not (Test-Path ("Env:" + $kv.Key))) {
+                Set-Item -Path ("Env:" + $kv.Key) -Value $kv.Value
+                Write-Log ("[env] default {0}={1}" -f $kv.Key, $kv.Value)
             }
         }
         Write-Log "[run] Ollama を起動: $ollama serve"

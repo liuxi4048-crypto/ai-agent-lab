@@ -301,15 +301,37 @@ deliverable(成果物の形式):
 必ず {"mode": "...", "deliverable": "...", "reason": "20字以内の理由"} のJSONだけを出力してください。"""
 
 
+def heuristic_confident(task: str) -> bool:
+    """正規表現だけで確信を持てるケースか(triage の二段構えの1段目)。
+
+    保守的に「明確なものだけ」を True にする。曖昧なケース(特に code と
+    swarm-code の境界)では False を返し、従来どおり LLM 判定に回す。
+    """
+    if _POLISH_RE.search(task):
+        return True                     # 推敲系は pick_mode の無条件ルール
+    if _EXE_RE.search(task):
+        return True                     # exe の明示指定
+    if _THINK_RE.search(task) and not _BUILD_VERB_RE.search(task):
+        return True                     # 制作動詞のない質問・調査は orchestra
+    if (_BUILD_VERB_RE.search(task) and not _BIG_RE.search(task)
+            and (_HTML_RE.search(task) or _SCRIPT_RE.search(task))):
+        return True                     # 制作動詞+成果物の種類が明確な code
+    return False
+
+
 async def triage(cfg, task: str, model_key: str) -> dict:
     """メインエージェントに mode と deliverable を決めさせる。
 
     1回の短いLLM呼び出し(スキーマ強制・低温度・30秒/リトライ2回・出力上限付き)。
     失敗・不正出力ならヒューリスティックへフォールバックする。
+    明確なケースは heuristic_confident で即決し、LLM 呼び出し自体を省く
+    (2026-10-27監査: 全 auto Run の開始前に LLM 判定が必ず直列で入っていた)。
     返り値: {"mode","deliverable","reason","by"} (by = "agent" | "heuristic")
     """
     fallback = {"mode": pick_mode(task), "deliverable": pick_deliverable(task),
                 "reason": "キーワードから判定", "by": "heuristic"}
+    if heuristic_confident(task):
+        return fallback
     try:
         # num_predict は thinking も消費する。gpt-oss系は既定 reasoning(medium)が
         # 分類前に数百トークン使うため、effort を low に落とし予算も余裕を持たせる

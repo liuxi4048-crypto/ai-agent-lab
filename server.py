@@ -35,6 +35,17 @@ from tools import WORKSPACE as PROJECTS_DIR
 
 app = FastAPI(title="AI Agent Lab")
 
+
+@app.on_event("startup")
+async def _startup_prewarm():
+    # サーバ起動直後に default モデルを先読みし、その日の初回タスクの
+    # ロード待ち(17〜65秒)をなくす。無効化は環境変数 AAL_NO_PREWARM=1。
+    import os
+    if os.environ.get("AAL_NO_PREWARM"):
+        return
+    asyncio.create_task(llm.prewarm_default())
+
+
 # 起動時: 前回プロセス死で実行中のまま残ったRun記録を interrupted として確定
 try:
     _n = manager.recover_interrupted()
@@ -47,10 +58,25 @@ STATIC = Path(__file__).parent / "static"
 STATIC_REACT = Path(__file__).parent / "static-react"  # 新UI(frontend/ のビルド成果物)
 ARTIFACT_DIR.mkdir(exist_ok=True)
 Path(PROJECTS_DIR).mkdir(exist_ok=True)
+
+# JS/CSS を gzip 圧縮して配信する(無圧縮313KB→約95KB。2026-10-27監査)
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+class _ImmutableStatic(StaticFiles):
+    """ハッシュ付きファイル名の資産用: 再検証なしで長期キャッシュさせる。"""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
 app.mount("/workspace", StaticFiles(directory=ARTIFACT_DIR), name="workspace")
 app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
 if (STATIC_REACT / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=STATIC_REACT / "assets"), name="assets")
+    app.mount("/assets", _ImmutableStatic(directory=STATIC_REACT / "assets"), name="assets")
 # インサイト: Claude Code セッションのダッシュボード(insight/claude.py が runs/ 配下に書き出す)
 INSIGHT_CC = Path(__file__).parent / "runs" / "insight-cache" / "cc"
 INSIGHT_CC.mkdir(parents=True, exist_ok=True)

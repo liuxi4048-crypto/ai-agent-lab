@@ -40,17 +40,48 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def list_runs(limit: int = 80) -> list[dict]:
-    rows = []
-    for f in sorted(RUNS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+# ファイルの (mtime, size) を鍵にしたメモ化。インサイト画面は開くたびに
+# 最大80件の Run 記録(snapshot 全体)を全量パースしていた(2026-10-27監査)。
+_file_cache: dict = {}
+
+
+def _cached(path: Path, kind: str, build):
+    # kind は用途(row=一覧の1行 / trace=詳細)。同じファイルでも返す形が違う
+    # ため、鍵を混ぜると形の違う結果が返ってしまう。
+    cache_key = f"{kind}:{path}"
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return build()
+    hit = _file_cache.get(cache_key)
+    if hit and hit[0] == key:
+        return hit[1]
+    value = build()
+    _file_cache[cache_key] = (key, value)
+    return value
+
+
+def _run_row(f: Path) -> dict | None:
+    def build():
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            continue
+            return None
         nodes = (d.get("snapshot") or {}).get("nodes") or []
-        rows.append({"id": d.get("id", f.stem), "task": _clip(d.get("task") or "", 80), "mode": d.get("mode"),
-                     "status": d.get("status"), "created_at": d.get("created_at"), "tokens": d.get("tokens"),
-                     "nodes": len(nodes)})
+        return {"id": d.get("id", f.stem), "task": _clip(d.get("task") or "", 80),
+                "mode": d.get("mode"), "status": d.get("status"),
+                "created_at": d.get("created_at"), "tokens": d.get("tokens"),
+                "nodes": len(nodes)}
+    return _cached(f, "row", build)
+
+
+def list_runs(limit: int = 80) -> list[dict]:
+    rows = []
+    for f in sorted(RUNS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        row = _run_row(f)
+        if row:
+            rows.append(row)
     return rows
 
 
@@ -113,6 +144,14 @@ def _tokens_by_model(nodes: list[dict]) -> dict:
 def load_run(run_id: str) -> dict:
     if not ID_RE.match(run_id):
         raise ValueError("不正な Run ID")
+    # 全ノードのログ正規表現パースは大きな Run では無視できないため、
+    # ファイルが変わらない間は結果を再利用する(表示と「説明」で二重に
+    # 走っていた。2026-10-27監査)
+    return _cached(RUNS_DIR / f"{run_id}.json", "trace",
+                   lambda: _load_run_uncached(run_id))
+
+
+def _load_run_uncached(run_id: str) -> dict:
     d = json.loads((RUNS_DIR / f"{run_id}.json").read_text(encoding="utf-8"))
     t0 = d.get("created_at") or 0
     raw_nodes = (d.get("snapshot") or {}).get("nodes") or []

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   FlaskConical, Zap, Square, AlertTriangle, WifiOff, Menu, Plus, Gauge, ChevronDown,
 } from "lucide-react";
@@ -13,7 +13,7 @@ import { serverDisplayName, shortBaseUrl } from "../derive.js";
  * runningCount/queueCount は runs 由来(全Run)。選択中RunのSSEから作る active とは
  * 集計元が違うことに注意(draft中でも実行中件数が正しく出るのはこのため)。
  */
-export default function Header({
+function Header({
   gpu, health, active, queueCount, runningCount, onStopAll, stoppable,
   connections = [], pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false, onNewTask,
 }) {
@@ -31,7 +31,7 @@ export default function Header({
   const oom = total ? used / total > 0.9 : false;
 
   return (
-    <header className="z-30 flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900 px-3">
+    <header className="z-30 flex min-h-14 shrink-0 flex-nowrap items-center gap-2 overflow-hidden border-b border-slate-800 bg-slate-900 px-3">
       <button
         onClick={onToggleSidebar}
         className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 lg:hidden"
@@ -56,7 +56,7 @@ export default function Header({
         <Plus size={16} />
       </button>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden">
         {connections.map((c, i) => {
           const ok = c.kind === "anthropic" ? c.key_set : c.reachable;
           const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : serverDisplayName(c.server_name || c.name, c.base_url)} ${ok ? "接続OK" : "未接続"}`;
@@ -152,3 +152,6 @@ export default function Header({
     </header>
   );
 }
+
+// App の再描画(ポーリング/ tick)に巻き込まれないようメモ化(2026-10-27監査)
+export default memo(Header);

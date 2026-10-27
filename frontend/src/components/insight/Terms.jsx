@@ -53,21 +53,27 @@ export function Term({ id, children }) {
   );
 }
 
-/** 文字列中の既知の用語(その文字列の中での初出のみ)を <Term> で包む。初出の判定は描画ごとにやり直す */
+/** 文字列中の既知の用語(その文字列の中での初出のみ)を <Term> で包む。
+ * 走査結果は text と用語集が変わらない間は再利用する(再描画のたびに
+ * 全文を正規表現で走査していた。2026-10-27 UI監査) */
 export function TermText({ text }) {
   const { re, keyToId } = useGlossary();
+  const out = useMemo(() => {
+    if (!re || !text) return null;
+    const used = new Set();
+    const parts = [];
+    let last = 0;
+    for (const m of String(text).matchAll(re)) {
+      const id = keyToId.get(m[0]);
+      if (used.has(id)) continue;
+      used.add(id);
+      parts.push(text.slice(last, m.index), <Term key={m.index} id={id}>{m[0]}</Term>);
+      last = m.index + m[0].length;
+    }
+    parts.push(String(text).slice(last));
+    return parts;
+  }, [text, re, keyToId]);
   if (!re || !text) return text ?? null;
-  const used = new Set();
-  const out = [];
-  let last = 0;
-  for (const m of String(text).matchAll(re)) {
-    const id = keyToId.get(m[0]);
-    if (used.has(id)) continue;
-    used.add(id);
-    out.push(text.slice(last, m.index), <Term key={m.index} id={id}>{m[0]}</Term>);
-    last = m.index + m[0].length;
-  }
-  out.push(String(text).slice(last));
   return <>{out}</>;
 }
 

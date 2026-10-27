@@ -193,6 +193,33 @@ LLM自体の速度と成果物の質を2軸で測る**。結果は通常のRun�
   9.7 tok/s の glimmer が 21.5 tok/s の pro より先に完走)。ルーティング順位は従来どおり完走実績で決める。
   LLM採点は judge の癖を含むので、同じ judge・同じ課題セットの Run 同士で比べる
 
+## 自動チューニング(tune.py)
+
+モデルの実行時オプションを実測で決める CLI:
+
+```
+python tune.py --model coder            # 計測して提案を表示
+python tune.py --model coder --apply    # 採用候補を models.yaml へ反映
+```
+
+- `num_batch`(プロンプト処理のバッチ幅。既定 / 1024 / 2048 / 4096)に加え、
+  hybrid(RAM併用)モデルでは `num_thread`(CPU計算のスレッド数)と
+  `num_gpu`(GPUへ載せる層数。全層の25/50/75%)も測る。`--ctx` 指定時は
+  `num_ctx` も測るが、文脈長とのトレードオフのため自動反映せず提案のみ
+- 固定課題(長文の読込+短文の生成)で課題ごとに計測し、合計所要時間が
+  既定より **5%以上短い** 最速候補だけを採用候補にする(誤差範囲は採らない)
+- 結果は `tune_results/` に JSON で保存。既定では models.yaml は書き換えず
+  断片を表示するだけ。`--apply` のときだけ、コメントを保ったまま options へ
+  挿入し、再読込で検証してから書き込む(バックアップ `models.yaml.bak-*` 付き)
+- 大きすぎる候補で失敗しても計測は続く。対象は Ollama バックエンドのモデル
+
+サーバ起動時は default モデルを自動で先読みする(初回タスクのロード待ち回避)。
+無効化は環境変数 `AAL_NO_PREWARM=1`。
+
+エージェントのコード検索(search_files)は、ripgrep(`rg`)が入っていれば
+それを使い、無ければ従来の Python 実装に自動で落ちる(意味論は同一)。
+入れたい場合は `winget install BurntSushi.ripgrep.MSVC`。
+
 ## インサイト(実行記録の可視化と分析エージェント, 2026-10-23追加)
 
 サイドバーの顕微鏡アイコンで開く。実行の中で何が起きたかを、記録から再現して見る画面。
@@ -292,6 +319,10 @@ setx OLLAMA_NUM_PARALLEL 2          # 並列デコードスロット
 setx OLLAMA_MAX_LOADED_MODELS 1     # 16GBでは常駐1本(スラッシング防止)
 setx OLLAMA_FLASH_ATTENTION 1       # q8_0 KV の前提
 ```
+
+この4つは `start.ps1` 経由の起動でも、未設定なら同じ値が既定として補われる
+(ユーザーが設定した値は上書きしない。launcher.log に `[env] default ...` と記録される)。
+setx は Ollama を単体で起動する場合や、既定と違う値に固定したい場合に使う。
 
 ### GPUバックエンド(RX 9070 XT / gfx1201)
 
@@ -399,6 +430,7 @@ claude_review.py  【任意】Claude Code CLI(サブスク認証)を呼ぶ最終
 hooks/            claude_review が CLI に噛ませる PreToolUse フック(ルート外書き込み拒否)
 panel.py          観点別並列レビューCLI(local-reviewer / codex-reviewer の実体)
 bench.py          ローカルLLM性能ベンチ(固定課題→速度/品質の2軸計測。mode=bench の Run)
+tune.py           自動チューニング(num_batch候補を実測し、5%以上速い候補だけを提案)
 bench_suite.yaml  ベンチの課題集(プロンプト・決定論チェック・採点観点)
 server.py         FastAPI(/run /run/{id} /events SSE /approvals /models /claude /health /bench)
 static/index.html 旧ダッシュボード(/legacy で残置)

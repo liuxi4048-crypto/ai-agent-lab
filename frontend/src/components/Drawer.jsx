@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 /**
@@ -7,6 +7,12 @@ import { X } from "lucide-react";
  */
 export default function Drawer({ open, onClose, title, children, wide = false }) {
   const panelRef = useRef(null);
+  // 一度も開いていない間は children を描画しない(閉じたドロワーの中身の
+  // 再描画コストを常時払っていた。開いた後は状態保持のためマウント維持)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    if (open) setMounted(true);
+  }, [open ]);
 
   // Escキーで閉じる(IME変換中のEscは変換キャンセルなので無視する)
   useEffect(() => {
@@ -51,7 +57,7 @@ export default function Drawer({ open, onClose, title, children, wide = false })
             <X size={16} />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{mounted ? children : null}</div>
       </aside>
     </>
   );

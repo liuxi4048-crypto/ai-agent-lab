@@ -84,9 +84,61 @@ def _gate(info):
     return lock
 
 
+# HTTP接続の使い回し: 呼び出しごとに AsyncClient を作ると、接続確立(HTTPSでは
+# TLSハンドシェイク込み)を毎回払う。エージェントループは1Runで数十回呼ぶため、
+# バックエンド単位でクライアントを保持し keep-alive で接続を再利用する。
+# ループごとに保持する理由は _hybrid_locks と同じ(クライアントは生成した
+# ループに束縛される)。閉じたループのエントリは WeakKeyDictionary が回収する。
+_clients: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _shared_client(kind, timeout):
+    loop = asyncio.get_running_loop()
+    per_loop = _clients.get(loop)
+    if per_loop is None:
+        per_loop = _clients[loop] = {}
+    client = per_loop.get(kind)
+    if client is None or client.is_closed:
+        client = per_loop[kind] = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8,
+                                keepalive_expiry=300.0))
+    return client
+
+
+@contextlib.asynccontextmanager
+async def _client_ctx(kind, timeout):
+    """共有クライアントを貸すだけのコンテキスト(終了時に閉じない)。
+
+    各リクエスト側で timeout を明示するため、共有クライアントの既定値が
+    呼び出しごとに違う timeout を上書きすることはない。
+    """
+    yield _shared_client(kind, timeout)
+
+
+# load_config のキャッシュ: サーバのポーリング系エンドポイントがリクエスト毎に
+# 呼ぶため、YAML のパース(数ms)を毎回払わない。ファイルの mtime+サイズが
+# 変われば読み直すので、models.yaml の編集は再起動なしで反映される。
+# 返すのはディープコピー(呼び出し側が書き換えてもキャッシュは汚れない)。
+import copy as _copy
+
+_config_cache: dict = {}
+
+
 def load_config(path=CONFIG_PATH):
+    try:
+        st = os.stat(path)
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = None
+    hit = _config_cache.get(path)
+    if sig is not None and hit is not None and hit[0] == sig:
+        return _copy.deepcopy(hit[1])
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    if sig is not None:
+        _config_cache[path] = (sig, cfg)
+    return _copy.deepcopy(cfg)
 
 
 # 自動検出モデル(models.yaml未定義の導入済みタグ)に当てる、ファミリ別の公式推奨サンプリング。
@@ -250,7 +302,7 @@ def strip_meta(msg):
 
 
 def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream,
-             json_schema=None, think=None, num_predict=None):
+             json_schema=None, think=None, num_predict=None, options_override=None):
     tk = think if think is not None else info.get("think")
     # thinking を切る場合、サンプリングも non-thinking 用の公式推奨へ入れ替える
     # (Qwen3.8: thinking=temp1.0/top_p0.95 ⇄ instruct=temp0.7/top_p0.8/presence1.5)
@@ -261,6 +313,11 @@ def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream,
     options["num_ctx"] = num_ctx or info["num_ctx"]
     if num_predict:
         options["num_predict"] = num_predict
+    if options_override:
+        # チューニング用の上書き(num_batch 等の実行時オプション)。models.yaml を
+        # 書き換えずに候補値を試すために使う(tune.py)。Ollama の options として
+        # そのまま送られるため、指定は Ollama バックエンド前提。
+        options.update(options_override)
     payload = {
         "model": info["tag"],
         "messages": messages,
@@ -348,9 +405,9 @@ async def _openai_events(info, payload, timeout):
     started, first = time.monotonic(), None
     reason = None
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with _client_ctx(f"openai:{base}", timeout) as client:
             async with client.stream("POST", f"{base}/chat/completions",
-                                     json=_openai_payload(payload)) as resp:
+                                     json=_openai_payload(payload), timeout=timeout) as resp:
                 if resp.status_code != 200:
                     body = (await resp.aread()).decode("utf-8", errors="replace")
                     error = OllamaFatal if 400 <= resp.status_code < 500 else OllamaError
@@ -492,9 +549,9 @@ async def _anthropic_events(info, payload, timeout):
     blocks, fragments, usage = {}, {}, {}
     started, first, reason, complete = time.monotonic(), None, None, False
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with _client_ctx("anthropic", timeout) as client:
             async with client.stream("POST", f"{ANTHROPIC_BASE}/messages", headers=headers,
-                                     json=_anthropic_payload(payload)) as resp:
+                                     json=_anthropic_payload(payload), timeout=timeout) as resp:
                 if resp.status_code != 200:
                     # 応答本文に認証情報が含まれていても例外・ログへ出さない。
                     error = OllamaFatal if 400 <= resp.status_code < 500 else OllamaError
@@ -652,8 +709,9 @@ async def _stream_collect(payload, timeout, on_delta=None):
             on_delta(kind, piece)
         except Exception:
             pass   # 表示用の通知が失敗しても生成本体は続行する
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
+    async with _client_ctx("ollama", timeout) as client:
+        async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload,
+                                 timeout=timeout) as resp:
             if resp.status_code != 200:
                 body = (await resp.aread()).decode("utf-8", errors="replace")
                 raise _classify_http(resp.status_code, body)
@@ -695,17 +753,18 @@ async def _stream_collect(payload, timeout, on_delta=None):
 async def chat(cfg, key, messages, tools=None, temperature=None,
                num_ctx=None, json_mode=False, json_schema=None,
                think=None, num_predict=None, timeout=None, retries=RETRIES,
-               on_delta=None):
+               on_delta=None, options_override=None):
     """1回のLLM呼び出し(内部はストリーミング受信)。message dict を返す。
 
     temperature=None のときは models.yaml の options(公式推奨値)が使われる。
     json_schema に dict を渡すと Ollama の structured outputs で構造を強制する。
     on_delta(kind, piece) を渡すと生成の進行が逐次通知される(ツールループのUI表示用)。
+    options_override は実行時オプションの上書き(tune.py の候補スイープ用)。
     返り値には "_usage" 等のメタキーが付く。履歴に足す前に strip_meta() を呼ぶこと。
     """
     info = resolve(cfg, key)
     payload = _payload(info, messages, tools, temperature, num_ctx, json_mode,
-                       True, json_schema, think, num_predict)
+                       True, json_schema, think, num_predict, options_override)
     t = httpx.Timeout(timeout or IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
     last_err = None
     async with _gate(info):
@@ -758,8 +817,9 @@ async def chat_stream(cfg, key, messages, temperature=None,
         return
     async with _gate(info):
         try:
-            async with httpx.AsyncClient(timeout=t) as client:
-                async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
+            async with _client_ctx("ollama", t) as client:
+                async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload,
+                                         timeout=t) as resp:
                     if resp.status_code != 200:
                         body = (await resp.aread()).decode("utf-8", errors="replace")
                         raise _classify_http(resp.status_code, body)
@@ -806,10 +866,10 @@ async def probe_openai_models(base_url, timeout=2.5):
     base = (base_url or "").rstrip("/")
     if not base:
         return None
+    t = httpx.Timeout(timeout, connect=min(timeout, 2.0))
     try:
-        async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout, connect=min(timeout, 2.0))) as client:
-            resp = await client.get(f"{base}/models")
+        async with _client_ctx(f"probe:{base}", t) as client:
+            resp = await client.get(f"{base}/models", timeout=t)
         if resp.status_code != 200:
             return None
         data = resp.json().get("data") or []
@@ -923,11 +983,29 @@ def unusable_reason(info, status):
             f"`ollama pull {tag}` で導入してください")
 
 
+async def prewarm_default(wait_sec=60.0):
+    """サーバ起動時用: Ollama の応答を待ってから default モデルを先読みする。
+
+    Ollama が制限時間内に応答しなければ何もしない(False)。呼び出し側は
+    バックグラウンドタスクとして起動し、サーバ起動自体はブロックしないこと。
+    """
+    deadline = time.monotonic() + wait_sec
+    while not await is_alive():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(2)
+    cfg = load_config()
+    key = cfg.get("default") or ""
+    if not key:
+        return False
+    return await prewarm(cfg, key)
+
+
 async def list_models():
     """インストール済みOllamaモデル名の一覧。"""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+        async with _client_ctx("ollama", httpx.Timeout(5.0)) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
             resp.raise_for_status()
             return [m["name"] for m in resp.json().get("models", [])]
     except httpx.HTTPError:
@@ -936,10 +1014,34 @@ async def list_models():
 
 async def is_alive():
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+        async with _client_ctx("ollama", httpx.Timeout(5.0)) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
             return resp.status_code == 200
     except httpx.HTTPError:
+        return False
+
+
+async def prewarm(cfg, key, timeout=600.0):
+    """モデルの先読み(Ollamaのみ)。本体の初回呼び出しと並行して呼ぶためのもの。
+
+    大型モデルのロードは17〜65秒かかり、従来は最初の chat が同期的に払っていた。
+    /api/generate へ空リクエストを投げると Ollama がモデルをロードするので、
+    オーケストレーターの初期化と並行してロードを進められる。
+    失敗しても例外は出さない(本体の呼び出しが通常どおり再試行する)。OpenAI互換/
+    Anthropic はサーバー側で常駐するか外部APIなので対象外。
+    """
+    info = resolve(cfg, key)
+    if info.get("backend") != "ollama":
+        return False
+    t = httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)
+    try:
+        async with _client_ctx("ollama", t) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={"model": info["tag"], "keep_alive": info["keep_alive"]},
+                timeout=t)
+            return resp.status_code == 200
+    except Exception:
         return False
 
 
@@ -976,8 +1078,8 @@ def free_ram_gb():
 async def gpu_status():
     """Ollama /api/ps からロード中モデルのVRAM使用量を集計する(GET /gpu 用)。"""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/ps")
+        async with _client_ctx("ollama", httpx.Timeout(3.0)) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/ps", timeout=3.0)
             resp.raise_for_status()
             models = resp.json().get("models", [])
     except (httpx.HTTPError, ValueError):
