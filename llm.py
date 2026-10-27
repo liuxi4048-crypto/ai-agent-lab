@@ -785,6 +785,90 @@ def chat_sync(cfg, key, messages, **kwargs):
     return asyncio.run(chat(cfg, key, messages, **kwargs))
 
 
+async def probe_openai_models(base_url, timeout=2.5):
+    """OpenAI互換サーバーの /models を叩き、公開モデルIDの集合を返す。
+
+    サーバーに届かない・応答が不正な場合は None(到達不可として扱う)。
+    """
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return None
+    try:
+        async with httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout, connect=min(timeout, 2.0))) as client:
+            resp = await client.get(f"{base}/models")
+        if resp.status_code != 200:
+            return None
+        data = resp.json().get("data") or []
+        return {m["id"] for m in data if isinstance(m, dict) and m.get("id")}
+    except Exception:
+        return None
+
+
+def anthropic_ready():
+    """Claude API が使える状態か(キーの有無のみ。実呼び出しはしない)。"""
+    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+
+async def model_usable(cfg, key, ollama_installed, _probes=None):
+    """モデルが今すぐ使えるかを (usable, status) で返す。
+
+    status: ok / not_installed(Ollama未導入) / server_unreachable /
+            model_missing(サーバーに tag が無い) / no_api_key
+    _probes は base_url → probe_openai_models の結果(None可)のキャッシュ。
+    """
+    info = resolve(cfg, key)
+    backend = info.get("backend", "ollama")
+    if backend == "openai":
+        base = info["base_url"]
+        ids = _probes[base] if _probes is not None and base in _probes \
+            else await probe_openai_models(base)
+        if ids is None:
+            return False, "server_unreachable"
+        if ids and info["tag"] not in ids:
+            return False, "model_missing"
+        return True, "ok"
+    if backend == "anthropic":
+        return (True, "ok") if anthropic_ready() else (False, "no_api_key")
+    tag = info["tag"]
+    found = tag in ollama_installed or f"{tag}:latest" in ollama_installed
+    return (True, "ok") if found else (False, "not_installed")
+
+
+async def annotate_models(cfg, models, ollama_installed):
+    """カタログ用: 各モデル dict に installed(使えるか) と backend_status を付ける。
+
+    OpenAI互換のプローブは base_url 単位で1回だけ行う。
+    """
+    bases = sorted({m["base_url"] for m in models
+                    if m.get("backend") == "openai" and m.get("base_url")})
+    probes = {}
+    if bases:
+        results = await asyncio.gather(
+            *(probe_openai_models(b) for b in bases))
+        probes = dict(zip(bases, results))
+    for m in models:
+        usable, status = await model_usable(cfg, m["key"], ollama_installed, probes)
+        m["installed"] = usable
+        m["backend_status"] = status
+    return models
+
+
+def unusable_reason(info, status):
+    """model_usable の status から、利用者向けの理由文を組む。"""
+    tag, base = info["tag"], info.get("base_url", "")
+    if status == "server_unreachable":
+        return (f"モデル '{tag}' の接続先 ({base}) に接続できません。"
+                "llama-server / Strata が起動しているか確認してください")
+    if status == "model_missing":
+        return (f"接続先 ({base}) にモデル '{tag}' がありません。"
+                "サーバー側のモデル名と models.yaml の tag の一致を確認してください")
+    if status == "no_api_key":
+        return ("Claude API のキー (環境変数 ANTHROPIC_API_KEY) が設定されていません")
+    return (f"モデル '{tag}' はOllamaに存在しません。"
+            f"`ollama pull {tag}` で導入してください")
+
+
 async def list_models():
     """インストール済みOllamaモデル名の一覧。"""
     try:

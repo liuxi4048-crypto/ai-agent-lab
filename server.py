@@ -147,11 +147,14 @@ async def models() -> dict:
 
     free_ram = llm.free_ram_gb()
     for m in catalog["models"]:
-        m["installed"] = _found(m["tag"])
         # RAM併用が必要なモデルは、空きRAMが足りるかも返す(UIで注意表示に使う)
         m["needs_ram"] = m["placement"] == "hybrid"
         m["ram_ok"] = (free_ram is None or not m.get("ram_gb")
                        or m["ram_gb"] <= free_ram)
+    # 使えるか(installed)はバックエンドごとに判定する(Ollama=導入済み、
+    # OpenAI互換=サーバー応答とモデル有無、Anthropic=キー有無)。
+    # backend_status に理由も付け、UIが状態表示に使う。
+    await llm.annotate_models(cfg, catalog["models"], installed)
     catalog["free_ram_gb"] = round(free_ram, 1) if free_ram is not None else None
     catalog["claude"] = claude_review.status()
     catalog["api_review"] = api_review.status()
@@ -218,11 +221,12 @@ async def start_run(req: RunRequest) -> dict:
              else router.pick_model(cfg, task, mode, installed=installed,
                                     allow_ram=req.allow_ram, free_ram_gb=free_ram))
 
-    # 明示指定モデルの存在検証(typo等は実行途中に落ちるより先に弾く)
-    if req.model and req.model != "auto" and not _installed(cfg, model, installed):
-        raise HTTPException(
-            400, f"モデル '{llm.resolve(cfg, model)['tag']}' はOllamaに存在しません。"
-                 f"`ollama pull {llm.resolve(cfg, model)['tag']}` で導入してください")
+    # 明示指定モデルの利用可否を検証(typo等は実行途中に落ちるより先に弾く)。
+    # 判定と理由文はバックエンドごと(llm.model_usable / unusable_reason)。
+    if req.model and req.model != "auto":
+        usable, status = await llm.model_usable(cfg, model, installed)
+        if not usable:
+            raise HTTPException(400, llm.unusable_reason(llm.resolve(cfg, model), status))
 
     # 明示指定のモデルがRAMを食い過ぎる場合は、黙って遅くならないよう先に弾く
     chosen = llm.resolve(cfg, model)
@@ -288,8 +292,6 @@ async def start_bench(req: BenchRequest) -> dict:
 
     並列スロット・hybrid直列化・永続化・SSE・UIの履歴は通常Runと共通。
     """
-    if not await llm.is_alive():
-        raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
     cfg = llm.load_config()
     if req.model not in cfg.get("models", {}):
         raise HTTPException(400, f"未知のモデルキー: {req.model}")
@@ -297,8 +299,12 @@ async def start_bench(req: BenchRequest) -> dict:
         raise HTTPException(400, "repeats は 1〜5")
     installed = set(await llm.list_models())
     info = llm.resolve(cfg, req.model)
-    if not _installed(cfg, req.model, installed):
-        raise HTTPException(400, f"モデル {info['tag']} は未導入です(ollama pull {info['tag']})")
+    # Ollama の死活は Ollama バックエンドのモデルをベンチするときだけ要求する
+    if info.get("backend", "ollama") == "ollama" and not await llm.is_alive():
+        raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
+    usable, status = await llm.model_usable(cfg, req.model, installed)
+    if not usable:
+        raise HTTPException(400, llm.unusable_reason(info, status))
     if (ram_msg := _ram_error(info, llm.free_ram_gb())):
         raise HTTPException(400, ram_msg)
     try:

@@ -220,3 +220,57 @@ export function lastLine(node) {
   const lines = preview.split("\n").filter((l) => l.trim());
   return lines[lines.length - 1] || "";
 }
+
+// --- バックエンド表示(モデル選択のグループ化と状態表示) -------------------
+// バックエンドはモデル単位(models.yaml の backend)。UIでは規格名ではなく
+// 「どのサーバーで動くか」が分かる見出しにし、状態は色だけでなく言葉でも出す。
+export const BACKEND_META = {
+  ollama: { label: "Ollama（このPC）", short: "Ollama" },
+  openai: { label: "OpenAI互換サーバー（llama-server / Strata）", short: "OpenAI互換サーバー" },
+  anthropic: { label: "Claude API（クラウド・従量課金）", short: "Claude API" },
+};
+
+export function backendMeta(m) {
+  return BACKEND_META[m?.backend] ?? BACKEND_META.ollama;
+}
+
+/** モデル一覧をバックエンド順(Ollama → OpenAI互換 → Claude API)にグループ化する */
+export function groupByBackend(models) {
+  const order = ["ollama", "openai", "anthropic"];
+  return order
+    .map((b) => ({ backend: b, meta: BACKEND_META[b], models: models.filter((m) => (m.backend ?? "ollama") === b) }))
+    .filter((g) => g.models.length > 0);
+}
+
+/** 選択肢の末尾に付ける状態注記(使えない理由)。使える場合は "" */
+export function modelStatusNote(m) {
+  switch (m.backend_status) {
+    case "server_unreachable": return " ※サーバー未接続";
+    case "model_missing": return " ※サーバーにモデルなし";
+    case "no_api_key": return " ※APIキー未設定";
+    case "not_installed": return " ※未導入";
+    default: return "";
+  }
+}
+
+/** 選択中モデルの状態行: {dot: Tailwind色クラス, text: 説明文} */
+export function modelStatusLine(m) {
+  if (!m) return null;
+  const meta = backendMeta(m);
+  if (m.backend === "anthropic") {
+    return m.backend_status === "no_api_key"
+      ? { dot: "bg-red-400", text: "Claude API（従量課金）・APIキー未設定のため使えません" }
+      : { dot: "bg-green-400", text: "Claude API（従量課金）・キー設定済み" };
+  }
+  if (m.backend === "openai") {
+    const base = m.base_url || "";
+    if (m.backend_status === "server_unreachable")
+      return { dot: "bg-red-400", text: `${meta.short} ・ ${base} ・ サーバー未接続（起動すると使えます）` };
+    if (m.backend_status === "model_missing")
+      return { dot: "bg-red-400", text: `${meta.short} ・ ${base} ・ このモデルはサーバーにありません` };
+    return { dot: "bg-green-400", text: `${meta.short} ・ ${base} ・ 接続OK` };
+  }
+  return m.installed
+    ? { dot: "bg-green-400", text: "Ollama ・ このPCに導入済み" }
+    : { dot: "bg-red-400", text: "Ollama ・ 未導入（ollama pull が必要）" };
+}

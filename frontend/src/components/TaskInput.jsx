@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Loader2, X, Sparkles, ChevronRight, History } from "lucide-react";
+import { groupByBackend, modelStatusLine, modelStatusNote } from "../derive.js";
 
 // 進め方(mode)と成果物形式(deliverable)はメインエージェントが自動で決めるため、
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
@@ -90,6 +91,10 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
   // (router.pick_model の自動選択と同じ基準。coder=qwen3:30b が該当)
   const isLightHybrid = (m) => m.needs_ram && (m.ram_gb ?? 0) <= 8;
 
+  // 選択中モデルの接続先・状態(バックエンドが一目で分かるよう選択欄の横に出す)
+  const chosen = modelOptions.find((m) => m.key === model) ?? null;
+  const statusLine = model !== "auto" ? modelStatusLine(chosen) : null;
+
   // RAM併用をOFFに戻したとき、選択中の大型モデルが残らないよう auto へ落とす
   useEffect(() => {
     const cur = modelOptions.find((m) => m.key === model);
@@ -164,24 +169,39 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
             className="max-w-72 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
           >
             <option value="auto">auto (タスクに合わせて自動選択)</option>
-            {modelOptions.map((m) => {
-              // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
-              // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)
-              const light = isLightHybrid(m);
-              const blocked = !m.installed
-                || (m.needs_ram && !m.ram_ok)
-                || (m.needs_ram && !light && !allowRam);
-              const note = !m.installed ? " ※未導入"
-                : m.needs_ram && !m.ram_ok ? " ※RAM不足"
-                : m.needs_ram && !light && !allowRam ? " ※RAM併用をONに"
-                : m.needs_ram && !light ? " ※低速" : "";
-              return (
-                <option key={m.key} value={m.key} disabled={blocked}>
-                  {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{note}
-                </option>
-              );
-            })}
+            {groupByBackend(modelOptions).map((g) => (
+              <optgroup key={g.backend} label={g.meta.label}>
+                {g.models.map((m) => {
+                  // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
+                  // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)
+                  // RAM条件は Ollama の配置概念なので、他バックエンドには適用しない
+                  const isOllama = (m.backend ?? "ollama") === "ollama";
+                  const light = isLightHybrid(m);
+                  const blocked = !m.installed
+                    || (isOllama && m.needs_ram && !m.ram_ok)
+                    || (isOllama && m.needs_ram && !light && !allowRam);
+                  const note = modelStatusNote(m)
+                    || (!isOllama ? ""
+                      : m.needs_ram && !m.ram_ok ? " ※RAM不足"
+                      : m.needs_ram && !light && !allowRam ? " ※RAM併用をONに"
+                      : m.needs_ram && !light ? " ※低速" : "");
+                  return (
+                    <option key={m.key} value={m.key} disabled={blocked}>
+                      {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{note}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            ))}
           </select>
+
+          {/* 選択中モデルの接続先と状態(どのエンジンで動くかを常時見せる) */}
+          {statusLine && (
+            <span className="flex items-center gap-1.5 text-[11px] text-zinc-400" title="選択中のモデルの接続先と状態">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${statusLine.dot}`} />
+              {statusLine.text}
+            </span>
+          )}
 
           {/* 安全・コストに響く設定は折りたたみ中でも常時チップで見せる */}
           {!approve && (

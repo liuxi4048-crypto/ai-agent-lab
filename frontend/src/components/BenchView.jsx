@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Gauge, Play, Loader2, X, ChevronRight, Info, ArrowUpDown } from "lucide-react";
 import { fetchBenchSuite } from "../api.js";
-import { fmtAgo, fmtNum as fmt, fmtMs } from "../derive.js";
+import { fmtAgo, fmtNum as fmt, fmtMs, groupByBackend, modelStatusNote } from "../derive.js";
 
 // 選定状態(models.yaml の tier)の短い説明。保留/退役モデルの再ベンチがこの画面の用途の1つ
 const TIER_LABEL = {
@@ -144,18 +144,22 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                 onChange={(e) => setModel(e.target.value)}
                 className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
               >
-                {modelOptions.map((m) => {
-                  const tier = TIER_LABEL[m.tier];
-                  const note = m.scanned ? ""
-                    : !m.installed ? " ※未導入"
-                    : m.needs_ram && !m.ram_ok ? " ※RAM不足"
-                    : m.needs_ram ? " ※RAM併用" : "";
-                  return (
-                    <option key={m.key} value={m.key} disabled={!usable(m)}>
-                      {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{tier ? ` [${tier}]` : ""}{note}
-                    </option>
-                  );
-                })}
+                {groupByBackend(modelOptions).map((g) => (
+                  <optgroup key={g.backend} label={g.meta.label}>
+                    {g.models.map((m) => {
+                      const tier = TIER_LABEL[m.tier];
+                      const note = m.scanned ? ""
+                        : modelStatusNote(m)
+                        || (m.needs_ram && !m.ram_ok ? " ※RAM不足"
+                          : m.needs_ram ? " ※RAM併用" : "");
+                      return (
+                        <option key={m.key} value={m.key} disabled={!usable(m)}>
+                          {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{tier ? ` [${tier}]` : ""}{note}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                ))}
               </select>
             </label>
             <label className="flex items-center gap-2 text-xs text-zinc-400" title="LLM採点に使うモデル。auto=対象と異なるファミリーを自動で選ぶ(自己評価の甘さを避ける)">
@@ -167,8 +171,12 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
               >
                 <option value="auto">auto(異ファミリー)</option>
                 <option value="none">なし(自動チェックのみ)</option>
-                {modelOptions.filter(usable).map((m) => (
-                  <option key={m.key} value={m.key}>{m.tag}</option>
+                {groupByBackend(modelOptions.filter(usable)).map((g) => (
+                  <optgroup key={g.backend} label={g.meta.label}>
+                    {g.models.map((m) => (
+                      <option key={m.key} value={m.key}>{m.tag}</option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
