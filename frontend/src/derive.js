@@ -234,7 +234,7 @@ export function backendMeta(m) {
   return BACKEND_META[m?.backend] ?? BACKEND_META.ollama;
 }
 
-// 接続先URLの短い表記。http:// や末尾の /v1 は出さず「localhost:9000」の形にする。
+// 接続先URLの短い表記。http:// や末尾の /v1 は出さず「127.0.0.1:8080」の形にする。
 // 完全なURLはツールチップや接続状態画面の詳細行でのみ見せる。
 export function shortBaseUrl(baseUrl) {
   const raw = (baseUrl || "").trim();
@@ -246,11 +246,12 @@ export function shortBaseUrl(baseUrl) {
   }
 }
 
-// ポートから推定できる、このプロジェクトで既定のサーバー名。
-// 8080 は llm.py の既定接続先(llama-server)、9000 は Strata の接続例として
-// テスト・モックアップで使ってきたポート。あくまで表示名の推定で、
-// models.yaml の server_name があればそちらが常に優先する。
-const KNOWN_SERVER_BY_PORT = { "8080": "llama-server", "9000": "Strata" };
+// ポートから推定できるサーバー名。Strata の公式デフォルトは 8080
+// (Strata/docs/AI_SETUP.md: API は http://127.0.0.1:8080)。
+// llama-server も既定は 8080 だが、Strata と併用する場合は衝突を避けて
+// 8081 に置くのが実態(ユーザーの実機も 8080=Strata / 8081=llama-server)。
+// あくまで表示名の推定で、models.yaml の server_name があれば常に優先する。
+const KNOWN_SERVER_BY_PORT = { "8080": "Strata", "8081": "llama-server" };
 
 /**
  * 接続先サーバーの表示名。http://… のURLを主表示にしないための共通ルール:
