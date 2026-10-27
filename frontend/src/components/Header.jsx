@@ -14,7 +14,7 @@ import SystemStatusPopover from "./SystemStatusPopover.jsx";
  */
 export default function Header({
   gpu, health, active, queueCount, runningCount, onStopAll, stoppable,
-  pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false, onNewTask,
+  connections = [], pendingApprovals = 0, onJumpToPending, onToggleSidebar, sidebarOpen = false, onNewTask,
 }) {
   const [armed, setArmed] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -30,10 +30,10 @@ export default function Header({
   const oom = total ? used / total > 0.9 : false;
 
   return (
-    <header className="z-30 flex h-11 shrink-0 items-center gap-x-3 border-b border-zinc-800 bg-zinc-900 px-3">
+    <header className="z-30 flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900 px-3">
       <button
         onClick={onToggleSidebar}
-        className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 lg:hidden"
+        className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100 lg:hidden"
         title={sidebarOpen ? "タスク一覧を閉じる" : "タスク一覧を開く"}
         aria-expanded={!!sidebarOpen}
         aria-label="タスク一覧の開閉"
@@ -42,19 +42,26 @@ export default function Header({
       </button>
       <div className="flex items-center gap-2">
         <FlaskConical size={18} className="text-blue-400" />
-        <h1 className="text-sm font-semibold tracking-wide text-zinc-100">ai-agent-lab</h1>
+        <h1 className="text-sm font-semibold tracking-wide text-slate-100">ai-agent-lab</h1>
       </div>
 
       {/* 狭幅: サイドバーを開かずに新規タスクへ */}
       <button
         onClick={onNewTask}
-        className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-blue-400 lg:hidden"
+        className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-blue-400 lg:hidden"
         title="新しいタスク(N)"
         aria-label="新しいタスク"
       >
         <Plus size={16} />
       </button>
 
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {connections.map((c, i) => {
+          const ok = c.kind === "anthropic" ? c.key_set : c.reachable;
+          const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : (c.server_name || c.name || "OpenAI互換")} ${ok ? "接続OK" : "未接続"}`;
+          return <span key={`${c.kind}:${c.base_url}:${i}`} title={c.base_url} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-200"><span className={`h-2 w-2 rounded-full ${ok ? "bg-green-400" : "bg-red-400"}`} />{label}</span>;
+        })}
+      </div>
       {/* 要対応バッジ群(条件を満たすときだけ現れる) */}
       {oom && (
         <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-xs font-bold text-red-400">
@@ -86,7 +93,7 @@ export default function Header({
           className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
             statusOpen
               ? "border-blue-500 text-blue-400"
-              : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+              : "border-slate-700 text-slate-300 hover:border-slate-500"
           }`}
           title="システム状態(VRAM・推論・キュー)"
         >
@@ -97,12 +104,12 @@ export default function Header({
               <span className="hidden sm:inline">実行中</span>
             </>
           ) : (
-            <Gauge size={13} className="text-zinc-500" />
+            <Gauge size={13} className="text-slate-500" />
           )}
           {queueCount > 0 && (
             <span className="tabular-nums text-yellow-400">⏳{queueCount}</span>
           )}
-          <ChevronDown size={11} className="text-zinc-500" />
+          <ChevronDown size={11} className="text-slate-500" />
         </button>
         <SystemStatusPopover
           open={statusOpen}
@@ -115,6 +122,11 @@ export default function Header({
         />
       </div>
 
+      {gpu && <div className="flex items-center gap-2 text-xs text-slate-300" title="VRAM使用量">
+        <span>VRAM {(used / 1024 ** 3).toFixed(1)} / {(total / 1024 ** 3).toFixed(1)} GB</span>
+        <span className="h-2 w-20 overflow-hidden rounded-full bg-slate-700"><span className="block h-full rounded-full bg-blue-500" style={{ width: `${total ? Math.min(100, used / total * 100) : 0}%` }} /></span>
+        <span>{total ? Math.round(used / total * 100) : 0}%</span>
+      </div>}
       {/* 全停止: 止められるものがあるときだけ現れる(2段階クリック) */}
       {stoppable && (
         <button

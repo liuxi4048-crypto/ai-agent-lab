@@ -43,7 +43,7 @@ export default function Sidebar({
 
   const row = (r) => {
     const meta = RUN_STATUS[r.status] ?? RUN_STATUS.cancelled;
-    const selected = !drafting && !benching && !insighting && r.id === currentId;
+    const selected = !drafting && !benching && !insighting && !connecting && r.id === currentId;
     const finished = !["running", "queued"].includes(r.status);
     return (
       <li key={r.id}>
@@ -69,12 +69,12 @@ export default function Sidebar({
           className={`group relative cursor-pointer border-l-2 px-3 py-2 transition-colors ${
             selected
               ? "border-blue-500 bg-blue-500/10"
-              : "border-transparent hover:border-zinc-600 hover:bg-zinc-800/60"
+              : "border-transparent hover:border-slate-600 hover:bg-slate-800/60"
           }`}
         >
           <div className="flex items-start gap-2">
             <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${meta.dot}`} title={meta.label} />
-            <p className={`min-w-0 flex-1 line-clamp-2 text-[13.5px] leading-snug ${selected ? "text-zinc-100" : "text-zinc-300"}`}>
+            <p className={`min-w-0 flex-1 line-clamp-2 text-[13.5px] leading-snug ${selected ? "text-slate-100" : "text-slate-300"}`}>
               {r.task}
             </p>
             {r.pending_approvals > 0 && (
@@ -83,7 +83,7 @@ export default function Sidebar({
               </span>
             )}
           </div>
-          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] text-zinc-500">
+          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] text-slate-500">
             <span className={meta.text}>{meta.label}</span>
             <span className="ml-auto shrink-0 tabular-nums">{fmtAgo(r.created_at)}</span>
             {finished && (
@@ -92,7 +92,7 @@ export default function Sidebar({
                 className={`shrink-0 rounded px-1 transition-colors ${
                   armedId === r.id
                     ? "bg-red-600 font-semibold text-white"
-                    : "text-zinc-400 opacity-0 hover:text-red-400 focus-visible:opacity-100 group-hover:opacity-100"
+                    : "text-slate-400 opacity-0 hover:text-red-400 focus-visible:opacity-100 group-hover:opacity-100"
                 }`}
                 title={armedId === r.id ? "3秒以内にもう一度クリックで削除" : "Run記録を削除"}
               >
@@ -108,9 +108,9 @@ export default function Sidebar({
   const group = (label, items) =>
     items.length > 0 && (
       <>
-        <li className="sticky top-0 z-10 flex items-center gap-2 bg-zinc-900 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <li className="sticky top-0 z-10 flex items-center gap-2 bg-slate-900 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
           {label}
-          <span className="tabular-nums text-zinc-400">{items.length}</span>
+          <span className="tabular-nums text-slate-400">{items.length}</span>
         </li>
         {items.map(row)}
       </>
@@ -129,11 +129,11 @@ export default function Sidebar({
           ずらしても Tab は入ってしまい、狭幅では見えないサイドバー内の要素(Run行40件+
           削除ボタン)を90回以上通過しないと本文へ到達できなくなる */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 transform flex-col border-r border-zinc-800 bg-zinc-900 transition-transform duration-200 lg:static lg:inset-auto lg:z-auto lg:visible lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 transform flex-col border-r border-slate-800 bg-slate-900 transition-transform duration-200 lg:static lg:inset-auto lg:z-auto lg:visible lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full max-lg:invisible"
         }`}
       >
-        <div className="flex items-center gap-2 p-3">
+        <div className="flex flex-col items-stretch gap-2 p-3">
           <button
             onClick={() => {
               onNew();
@@ -149,49 +149,49 @@ export default function Sidebar({
               onBench();
               onClose?.();
             }}
-            className={`rounded-lg border px-2.5 py-2 text-[13px] transition-colors ${
+            className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-[13px] transition-colors ${
               benching
                 ? "border-blue-500 bg-blue-500/10 text-blue-300"
-                : "border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+                : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100"
             }`}
             title="ローカルLLM性能ベンチ(固定課題で速度と質を測る)"
             aria-label="性能ベンチ"
           >
-            <Gauge size={15} />
+            <Gauge size={15} /> 性能ベンチ
           </button>
           <button
             onClick={() => {
               onInsight?.();
               onClose?.();
             }}
-            className={`rounded-lg border px-2.5 py-2 text-[13px] transition-colors ${
+            className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-[13px] transition-colors ${
               insighting
                 ? "border-blue-500 bg-blue-500/10 text-blue-300"
-                : "border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+                : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100"
             }`}
             title="インサイト(実行記録の可視化とローカルLLMによる解説)"
             aria-label="インサイト"
           >
-            <Microscope size={15} />
+            <Microscope size={15} /> インサイト
           </button>
           <button
             onClick={() => {
               onConnections?.();
               onClose?.();
             }}
-            className={`rounded-lg border px-2.5 py-2 text-[13px] transition-colors ${
+            className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-[13px] transition-colors ${
               connecting
                 ? "border-blue-500 bg-blue-500/10 text-blue-300"
-                : "border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+                : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100"
             }`}
             title="接続状態(Ollama / OpenAI互換サーバー / Claude API の接続確認)"
             aria-label="接続状態"
           >
-            <Plug size={15} />
+            <Plug size={15} /> 接続状態
           </button>
           <button
             onClick={onClose}
-            className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 lg:hidden"
+            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200 lg:hidden"
             title="閉じる"
           >
             <X size={16} />
@@ -199,12 +199,12 @@ export default function Sidebar({
         </div>
 
         <div className="relative px-3 pb-2">
-          <Search size={12} className="absolute left-5 top-1/2 -translate-y-1/2 text-zinc-600" />
+          <Search size={12} className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-600" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="タスクを検索…"
-            className="w-full rounded-md border border-zinc-800 bg-zinc-950 py-1.5 pl-7 pr-2 text-[12px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-blue-500"
+            className="w-full rounded-md border border-slate-800 bg-slate-950 py-1.5 pl-7 pr-2 text-[12px] text-slate-200 placeholder-slate-600 outline-none focus:border-blue-500"
           />
         </div>
 
@@ -214,7 +214,7 @@ export default function Sidebar({
             <li>
               <div className="flex cursor-default items-center gap-2 border-l-2 border-blue-500 bg-blue-500/10 px-3 py-2.5">
                 <Sparkles size={13} className="shrink-0 text-blue-400" />
-                <span className="text-[12.5px] font-semibold text-zinc-100">新しいタスク(下書き)</span>
+                <span className="text-[12.5px] font-semibold text-slate-100">新しいタスク(下書き)</span>
               </div>
             </li>
           )}
@@ -222,14 +222,14 @@ export default function Sidebar({
             <li>
               <div className="flex cursor-default items-center gap-2 border-l-2 border-blue-500 bg-blue-500/10 px-3 py-2.5">
                 <Gauge size={13} className="shrink-0 text-blue-400" />
-                <span className="text-[12.5px] font-semibold text-zinc-100">性能ベンチ(設定)</span>
+                <span className="text-[12.5px] font-semibold text-slate-100">性能ベンチ(設定)</span>
               </div>
             </li>
           )}
           {group("実行中・待機中", live)}
           {group("履歴", history)}
           {!live.length && !history.length && !drafting && !benching && (
-            <li className="px-3 py-6 text-center text-[12px] text-zinc-500">
+            <li className="px-3 py-6 text-center text-[12px] text-slate-500">
               {query ? "一致するタスクがありません" : "まだタスクがありません"}
             </li>
           )}

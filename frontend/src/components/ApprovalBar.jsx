@@ -68,7 +68,7 @@ export default function ApprovalBar({ runId, approvals }) {
 
   return (
     <div
-      className="space-y-2 border-b border-yellow-500/30 bg-yellow-500/5 px-4 py-2.5"
+      className="space-y-2 border-b border-yellow-500/30 bg-yellow-500/15 px-4 py-4"
       role="alert"
       aria-label="コマンド実行の承認要求"
     >
@@ -84,7 +84,7 @@ export default function ApprovalBar({ runId, approvals }) {
           >
             <ShieldAlert size={15} className="soft-pulse shrink-0 text-yellow-400" />
             {/* コマンドは全文読めるようにする(承認するのに後半が読めないのは危険) */}
-            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-zinc-900 px-2 py-1 font-mono text-[12px] text-yellow-200">
+            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-slate-900 px-2 py-1 font-mono text-[12px] text-yellow-200">
               {a.command}
             </code>
             {danger && (
@@ -93,7 +93,7 @@ export default function ApprovalBar({ runId, approvals }) {
               </span>
             )}
             <span
-              className={`shrink-0 tabular-nums text-[11px] ${remainMs < 60_000 ? "font-bold text-red-400" : "text-zinc-500"}`}
+              className={`shrink-0 tabular-nums text-[11px] ${remainMs < 60_000 ? "font-bold text-red-400" : "text-slate-500"}`}
               title="この時間を過ぎるとサーバー側で自動的に却下されます"
               aria-hidden="true"
             >
@@ -105,7 +105,7 @@ export default function ApprovalBar({ runId, approvals }) {
               <button
                 onClick={() => approve(a, danger)}
                 disabled={busy[a.aid]}
-                className={`flex items-center gap-1 rounded-md px-3 py-1 text-[12px] font-semibold text-white disabled:opacity-50 ${
+                className={`flex items-center gap-1 rounded-xl px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 ${
                   armed === a.aid ? "bg-red-600 hover:bg-red-500" : "bg-green-600 hover:bg-green-500"
                 }`}
               >
@@ -115,12 +115,12 @@ export default function ApprovalBar({ runId, approvals }) {
               <button
                 onClick={() => respond(a, false)}
                 disabled={busy[a.aid]}
-                className="flex items-center gap-1 rounded-md border border-red-500/70 px-3 py-1 text-[12px] font-semibold text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                className="flex items-center gap-1 rounded-xl border border-red-500/70 px-4 py-2.5 text-sm font-semibold text-red-400 hover:bg-red-500/10 disabled:opacity-50"
               >
                 <X size={12} /> 却下
               </button>
             </div>
-            <span className="w-full pl-6 text-[10px] text-zinc-500">cwd: {a.cwd}</span>
+            <span className="w-full pl-6 text-[10px] text-slate-500">cwd: {a.cwd}</span>
             {rowError[a.aid] && (
               <p className="w-full text-[11px] font-semibold text-red-400">{rowError[a.aid]}</p>
             )}

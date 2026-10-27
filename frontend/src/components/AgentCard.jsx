@@ -51,19 +51,19 @@ export default function AgentCard({
           onOpen();
         }
       }}
-      className={`group flex cursor-pointer flex-col gap-2 rounded-xl border bg-zinc-900 p-3.5 transition-colors hover:border-blue-500/70 focus-visible:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
+      className={`group flex cursor-pointer flex-col gap-2 rounded-xl border bg-slate-900 p-3.5 transition-colors hover:border-blue-500/70 focus-visible:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
         agentState.key === "stalled" ? "stall-blink border-orange-500" : meta.border
       }`}
     >
       {/* 1行目: 名前 + 役割バッジ + 状態 */}
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">
           {node.title}
         </span>
-        <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-400">
+        <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-400">
           {KIND_LABEL[node.kind] ?? node.kind}
         </span>
-        <span className={`flex shrink-0 items-center gap-1 rounded-full bg-zinc-800/80 px-2 py-0.5 text-[11px] font-semibold ${meta.text} ${isLive ? "soft-pulse" : ""}`}>
+        <span className={`flex shrink-0 items-center gap-1 rounded-full bg-slate-800/80 px-2 py-0.5 text-[11px] font-semibold ${meta.text} ${isLive ? "soft-pulse" : ""}`}>
           <Icon size={11} />
           {loading ? "モデル準備中" : meta.label}
           {agentState.key === "queued" && agentState.pos != null && ` #${agentState.pos}`}
@@ -71,10 +71,10 @@ export default function AgentCard({
       </div>
 
       {/* 2行目: 経過 + t/s + 依存(待機系のみ) + ctx警告。tok/進捗は LogDrawer ヘッダーへ退避 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
         {model.has && (
           <span
-            className="flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-px font-mono text-[11.5px] text-zinc-300"
+            className="flex min-w-0 items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-1.5 py-px font-mono text-[11.5px] text-slate-300"
             title={`使用モデル: ${model.tag}${model.roleLabel && model.roleLabel !== model.tag ? `(${model.roleLabel})` : ""}`}
           >
             <Cpu size={10} className="shrink-0 text-blue-400" />
@@ -91,9 +91,9 @@ export default function AgentCard({
             (完了後まで出し続けると全カードに常設チップが並び雑音になる) */}
         {dep && ["waiting", "queued"].includes(agentState.key) ? (
           <span className="flex min-w-0 items-center gap-1">
-            <span className="shrink-0 text-zinc-600">前段:</span>
-            <span className={`flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-zinc-400"}`}>
-              <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${depState ? AGENT_STATES[depState.key].dot : "bg-zinc-500"}`} />
+            <span className="shrink-0 text-slate-600">前段:</span>
+            <span className={`flex min-w-0 items-center gap-1 rounded-full border border-slate-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-slate-400"}`}>
+              <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${depState ? AGENT_STATES[depState.key].dot : "bg-slate-500"}`} />
               <span className="max-w-32 truncate">{dep.title}</span>
             </span>
           </span>
@@ -107,7 +107,7 @@ export default function AgentCard({
           </span>
         )}
         {/* 詳細導線はカード全体がクリック可能なので、hover/focus時のアイコンのみに抑える */}
-        <span className="ml-auto shrink-0 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <span className="ml-auto shrink-0 text-slate-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           <BookOpen size={11} aria-hidden="true" />
         </span>
       </div>
@@ -123,13 +123,13 @@ export default function AgentCard({
           {(node.output || "エラー詳細なし").split("\n")[0]}
         </p>
       ) : agentState.key === "canceled" ? (
-        <p className="truncate px-0.5 font-mono text-[11px] text-zinc-500">
+        <p className="truncate px-0.5 font-mono text-[11px] text-slate-500">
           依存先の失敗により自動キャンセルされました
         </p>
       ) : line ? (
-        <p className="truncate px-0.5 font-mono text-[11px] text-zinc-500">{line}</p>
+        <p className="truncate px-0.5 font-mono text-[11px] text-slate-500">{line}</p>
       ) : (
-        <p className="px-0.5 font-mono text-[11px] text-zinc-500">
+        <p className="px-0.5 font-mono text-[11px] text-slate-500">
           {agentState.key === "waiting" ? "前段の完了を待機中…" : agentState.key === "queued" ? "GPUの空きを待機中…" : " "}
         </p>
       )}

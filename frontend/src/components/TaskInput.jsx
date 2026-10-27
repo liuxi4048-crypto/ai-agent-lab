@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Loader2, X, Sparkles, ChevronRight, History } from "lucide-react";
-import { groupByBackend, modelStatusLine, modelStatusNote } from "../derive.js";
+import { groupByBackend, modelStatusLine, modelStatusNote, RUN_STATUS, fmtElapsed } from "../derive.js";
 
 // 進め方(mode)と成果物形式(deliverable)はメインエージェントが自動で決めるため、
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
@@ -19,7 +19,7 @@ const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, a
  * onCancel: 下書きをやめて直前のRunへ戻る(戻り先が無ければ App が null を渡す)
  * suggestions: 空欄時に出す開始チップ [{emoji?, text}](直近タスク+サンプル)
  */
-export default function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = [] }) {
+export default function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = [], runs = [], onSelectRun }) {
   const [task, setTask] = useState("");
   const taskRef = useRef(null);
   const [model, setModel] = useState(DEFAULTS.model);
@@ -114,17 +114,13 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto px-4 py-8">
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-5xl">
         <div className="mb-3 flex items-center gap-2">
-          <Sparkles size={15} className="text-blue-400" />
-          <h2 className="text-base font-semibold text-zinc-100">新しいタスク</h2>
-          <span className="hidden text-xs text-zinc-600 sm:inline">
-            進め方・成果物の形式はエージェントが自動で決めます
-          </span>
+          <div><h2 className="text-2xl font-bold text-slate-100">何を作りますか？</h2><p className="mt-2 text-sm text-slate-400">やりたいことを自然な言葉で入力してください。進め方・成果物の形式はエージェントが自動で決めます</p></div>
           {onCancel && (
             <button
               onClick={onCancel}
-              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
               title="下書きをやめて元の画面へ戻る(Esc)"
             >
               <X size={13} /> キャンセル
@@ -158,7 +154,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
           }}
           rows={6}
           placeholder="何を作りますか? / 何を調べますか? (Ctrl+Enterで実行)"
-          className="w-full resize-none rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm leading-relaxed text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500"
+          className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm leading-relaxed text-slate-100 placeholder-slate-600 outline-none focus:border-blue-500"
         />
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -166,7 +162,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
             value={model}
             onChange={(e) => setModel(e.target.value)}
             title="使うモデル。auto ならタスク内容に合わせて自動で選ばれる"
-            className="max-w-72 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 outline-none focus:border-blue-500"
+            className="max-w-72 rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-[13px] text-slate-200 outline-none focus:border-blue-500"
           >
             <option value="auto">auto (タスクに合わせて自動選択)</option>
             {groupByBackend(modelOptions).map((g) => (
@@ -197,7 +193,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
           {/* 選択中モデルの接続先と状態(どのエンジンで動くかを常時見せる) */}
           {statusLine && (
-            <span className="flex items-center gap-1.5 text-xs text-zinc-400" title="選択中のモデルの接続先と状態">
+            <span className="flex items-center gap-1.5 text-xs text-slate-400" title="選択中のモデルの接続先と状態">
               <span className={`h-2 w-2 shrink-0 rounded-full ${statusLine.dot}`} />
               {statusLine.text}
             </span>
@@ -218,15 +214,15 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
           <button
             onClick={submit}
             disabled={busy || !task.trim()}
-            className="ml-auto flex items-center gap-1.5 rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+            className="ml-auto flex items-center gap-1.5 rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
           >
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
             実行
           </button>
         </div>
 
-        <details className="group mt-3 rounded-lg border border-zinc-800">
-          <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-[12.5px] text-zinc-400 hover:text-zinc-200">
+        <details className="group mt-3 rounded-lg border border-slate-800">
+          <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-[12.5px] text-slate-400 hover:text-slate-200">
             <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
             詳細設定
             {diffCount > 0 && (
@@ -235,54 +231,54 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
               </span>
             )}
           </summary>
-          <div className="border-t border-zinc-800 px-3 py-3">
-            <p className="text-xs font-semibold text-zinc-300">実行の安全と品質</p>
+          <div className="border-t border-slate-800 px-3 py-3">
+            <p className="text-xs font-semibold text-slate-300">実行の安全と品質</p>
             <div className="mt-2 space-y-2.5">
               <label className="flex cursor-pointer items-start gap-2">
                 <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)}
                        className="mt-0.5 accent-blue-500" />
                 <span>
-                  <span className="block text-[13px] text-zinc-200">コマンド実行前に承認</span>
-                  <span className="block text-xs text-zinc-500">コマンドを実行する前に、毎回あなたの確認を挟みます</span>
+                  <span className="block text-[13px] text-slate-200">コマンド実行前に承認</span>
+                  <span className="block text-xs text-slate-500">コマンドを実行する前に、毎回あなたの確認を挟みます</span>
                 </span>
               </label>
               <label className="flex cursor-pointer items-start gap-2">
                 <input type="checkbox" checked={critique} onChange={(e) => setCritique(e.target.checked)}
                        className="mt-0.5 accent-blue-500" />
                 <span>
-                  <span className="block text-[13px] text-zinc-200">完了後レビュー</span>
-                  <span className="block text-xs text-zinc-500">終わったあと、別のモデルが成果物を批評して必要なら直します</span>
+                  <span className="block text-[13px] text-slate-200">完了後レビュー</span>
+                  <span className="block text-xs text-slate-500">終わったあと、別のモデルが成果物を批評して必要なら直します</span>
                 </span>
               </label>
               <label className="flex items-start gap-2">
                 <span className="mt-0.5 inline-block w-4 shrink-0" />
                 <span>
-                  <span className="flex items-center gap-2 text-[13px] text-zinc-200">
+                  <span className="flex items-center gap-2 text-[13px] text-slate-200">
                     最大イテレーション
                     <input
                       type="number" min={1} max={60} value={maxIter}
                       onChange={(e) => setMaxIter(Number(e.target.value) || DEFAULTS.maxIter)}
-                      className="w-14 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-zinc-200 outline-none focus:border-blue-500"
+                      className="w-14 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-slate-200 outline-none focus:border-blue-500"
                     />
                   </span>
-                  <span className="block text-xs text-zinc-500">「作る→直す」の往復回数の上限です</span>
+                  <span className="block text-xs text-slate-500">「作る→直す」の往復回数の上限です</span>
                 </span>
               </label>
             </div>
 
-            <p className="mt-4 border-t border-zinc-800 pt-3 text-xs font-semibold text-zinc-300">モデルと仕上げのレビュー</p>
+            <p className="mt-4 border-t border-slate-800 pt-3 text-xs font-semibold text-slate-300">モデルと仕上げのレビュー</p>
             <div className="mt-2 space-y-2.5">
               <label className="flex cursor-pointer items-start gap-2">
                 <input type="checkbox" checked={allowRam} onChange={(e) => setAllowRam(e.target.checked)}
                        className="mt-0.5 accent-blue-500" />
                 <span>
-                  <span className="block text-[13px] text-zinc-200">
+                  <span className="block text-[13px] text-slate-200">
                     大きいモデルも使う（RAM併用・低速）
                     {models?.free_ram_gb != null && (
-                      <span className="ml-1.5 text-xs text-zinc-500">空きRAM {models.free_ram_gb}GB</span>
+                      <span className="ml-1.5 text-xs text-slate-500">空きRAM {models.free_ram_gb}GB</span>
                     )}
                   </span>
-                  <span className="block text-xs text-zinc-500">VRAMに収まらない大型モデルも候補に入ります。品質は上がりますが低速になります</span>
+                  <span className="block text-xs text-slate-500">VRAMに収まらない大型モデルも候補に入ります。品質は上がりますが低速になります</span>
                 </span>
               </label>
               <label className={`flex items-start gap-2 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
@@ -290,10 +286,10 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                        onChange={(e) => setClaudeReview(e.target.checked)}
                        className="mt-0.5 accent-orange-500" />
                 <span>
-                  <span className={`block text-[13px] ${claudeReview ? "text-orange-300" : "text-zinc-200"}`}>
+                  <span className={`block text-[13px] ${claudeReview ? "text-orange-300" : "text-slate-200"}`}>
                     🤖 Claudeが最終レビュー
                   </span>
-                  <span className="block text-xs text-zinc-500">
+                  <span className="block text-xs text-slate-500">
                     {claude?.available
                       ? `完了後にClaude（${claude.model}）が成果物をレビューし、その場で修正して仕上げます。API課金は発生しませんが、サブスクの5時間利用枠を消費します`
                       : (claude?.reason || "Claudeレビューは利用できません")}
@@ -305,10 +301,10 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                        onChange={(e) => setApiReview(e.target.checked)}
                        className="mt-0.5 accent-cyan-500" />
                 <span>
-                  <span className={`block text-[13px] ${apiReview ? "text-cyan-300" : "text-zinc-200"}`}>
+                  <span className={`block text-[13px] ${apiReview ? "text-cyan-300" : "text-slate-200"}`}>
                     🔌 任意モデルで最終レビュー
                   </span>
-                  <span className="block text-xs text-zinc-500">
+                  <span className="block text-xs text-slate-500">
                     {api?.available
                       ? `完了後に${api.model}が成果物を読み取りレビューします（修正はしません）。APIキーはサーバー側だけで使われます`
                       : (api?.reason || "任意モデルレビューは利用できません")}
@@ -323,7 +319,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
         {suggestions.length > 0 && !task.trim() && (
           <div className="mt-5">
-            <p className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-zinc-600">
+            <p className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-slate-600">
               ここから始める
             </p>
             <div className="flex flex-wrap gap-2">
@@ -334,7 +330,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
                     setTask(s.text);
                     taskRef.current?.focus({ preventScroll: true });
                   }}
-                  className="max-w-full truncate rounded-full border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-blue-500 hover:text-blue-400"
+                  className="max-w-full truncate rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-blue-500 hover:text-blue-400"
                   title={s.text}
                 >
                   {s.emoji ? `${s.emoji} ` : ""}{s.text}
@@ -343,6 +339,13 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
             </div>
           </div>
         )}
+        {runs.length > 0 && <section className="mt-8 border-t border-slate-800 pt-5">
+          <h3 className="mb-3 text-xl font-bold text-slate-100">最近のタスク</h3>
+          <div className="overflow-x-auto rounded-xl border border-slate-800"><table className="w-full text-left text-sm">
+            <thead className="bg-slate-800 text-slate-300"><tr>{["タスク名", "状態", "使用モデル", "経過時間"].map(label => <th key={label} className="px-4 py-3 font-semibold">{label}</th>)}</tr></thead>
+            <tbody>{runs.slice(0, 6).map(r => { const meta = RUN_STATUS[r.status] ?? RUN_STATUS.cancelled; return <tr key={r.id} onClick={() => onSelectRun?.(r.id)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectRun?.(r.id); } }} tabIndex={0} role="button" className="cursor-pointer border-t border-slate-800 hover:bg-slate-800/60"><td className="px-4 py-3">{r.task}</td><td className="px-4 py-3"><span className={`rounded-full border px-2 py-1 text-xs ${meta.chip} ${meta.text}`}>{meta.label}</span></td><td className="px-4 py-3 text-slate-300">{r.plan?.model_tag ?? r.model_tag ?? r.model ?? "—"}</td><td className="whitespace-nowrap px-4 py-3 text-slate-400">{r.created_at ? fmtElapsed((r.finished_at ?? Date.now() / 1000) - r.created_at) : "—"}</td></tr>; })}</tbody>
+          </table></div>
+        </section>}
       </div>
     </div>
   );

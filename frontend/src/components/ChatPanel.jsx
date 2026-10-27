@@ -104,9 +104,9 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
         : "成果物への追加指示(例: 難易度を上げて / 色を変えて / スコア表示を追加して)";
 
   return (
-    <section className="border-t border-zinc-800 bg-zinc-900">
+    <section className="border-t border-slate-800 bg-slate-900">
       {expanded && (thread.length > 0 || pendingMsg) && (
-        <div className="max-h-56 space-y-2 overflow-y-auto border-b border-zinc-800 px-4 py-2">
+        <div className="max-h-56 space-y-2 overflow-y-auto border-b border-slate-800 px-4 py-2">
           {thread.map((m, i) => (
             <div key={i} className="flex gap-2 text-[13.5px]">
               <span
@@ -116,11 +116,11 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
                 {m.role === "user" ? <User size={13} /> : <Bot size={13} />}
               </span>
               {m.role === "user" ? (
-                <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-zinc-200">
+                <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-slate-200">
                   {m.text}
                 </p>
               ) : (
-                <Markdown text={m.text} className="min-w-0 flex-1 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-zinc-300" />
+                <Markdown text={m.text} className="min-w-0 flex-1 rounded-lg bg-slate-800 px-2.5 py-1.5 text-slate-300" />
               )}
             </div>
           ))}
@@ -129,8 +129,8 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
               <span className="mt-0.5 shrink-0 text-blue-400" title="あなた">
                 <User size={13} />
               </span>
-              <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 italic text-zinc-300">
-                {pendingMsg} <span className="not-italic text-zinc-500">(送信中…)</span>
+              <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 italic text-slate-300">
+                {pendingMsg} <span className="not-italic text-slate-500">(送信中…)</span>
               </p>
             </div>
           )}
@@ -139,7 +139,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
       )}
 
       <div className="flex items-end gap-2 px-4 py-2.5">
-        <MessageSquare size={14} className="mb-2.5 shrink-0 text-zinc-600" aria-hidden="true" />
+        <MessageSquare size={14} className="mb-2.5 shrink-0 text-slate-600" aria-hidden="true" />
         <textarea
           ref={textareaRef}
           value={msg}
@@ -155,13 +155,13 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
           rows={1}
           placeholder={placeholder}
           aria-label="このRunへの追加指示"
-          className="max-h-32 min-h-[38px] flex-1 resize-none overflow-y-auto rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-blue-500"
+          className="max-h-32 min-h-[38px] flex-1 resize-none overflow-y-auto rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 outline-none focus:border-blue-500"
         />
         {(thread.length > 0 || pendingMsg) && (
           <button
             onClick={() => setExpanded((v) => !v)}
             className={`mb-0.5 shrink-0 rounded-md border px-2 py-1.5 text-[11px] tabular-nums ${
-              expanded ? "border-blue-500 text-blue-400" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              expanded ? "border-blue-500 text-blue-400" : "border-slate-700 text-slate-400 hover:text-slate-200"
             }`}
             title="このRunの会話履歴を開閉"
           >
@@ -181,7 +181,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
             onClick={send}
             disabled={sendDisabled || !msg.trim()}
             title="Enterで送信 / Shift+Enterで改行"
-            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
           >
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
             送信

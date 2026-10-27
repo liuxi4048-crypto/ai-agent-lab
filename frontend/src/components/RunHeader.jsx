@@ -43,7 +43,7 @@ export default function RunHeader({
   const reason = plan?.reason;
 
   return (
-    <section className="flex items-center gap-2.5 border-b border-zinc-800 bg-zinc-900 px-4 py-2">
+    <section className="flex flex-wrap items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-4">
       <span
         className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${meta.chip} ${meta.text}`}
       >
@@ -55,7 +55,7 @@ export default function RunHeader({
           動いた/動いているかを一目で分かるようにする。 */}
       {modelTag && (
         <span
-          className="hidden shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 font-mono text-[11px] text-zinc-300 sm:flex"
+          className="hidden shrink-0 items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 font-mono text-[11px] text-slate-300 sm:flex"
           title="使用モデル(Runの主モデル。カスケード昇格時は各エージェントカードのバッジが実モデルを示します)"
         >
           <Cpu size={11} className="text-blue-400" />
@@ -71,17 +71,19 @@ export default function RunHeader({
         }}
         aria-haspopup="dialog"
         aria-expanded={infoOpen}
-        className="min-w-0 flex-1 truncate text-left text-[15px] text-zinc-100 hover:text-blue-300"
+        className="order-first w-full min-w-0 text-left text-xl font-bold text-slate-100 hover:text-blue-300"
         title="クリックで全文と実行条件を表示"
       >
         {run.task}
       </button>
 
+      <span className="rounded-full border border-slate-700 px-2 py-1 text-xs text-slate-300">経過 {fmtElapsed(elapsed)}</span>
+
       {/* 進捗(実行中のみ。code=iter/max、orchestra/swarm=完了サブタスク数) */}
       {total > 0 && (
         <span className="flex shrink-0 items-center gap-1.5">
           {/* バーは狭幅では畳むが、決定的進捗(n/m)の数字は常に残す */}
-          <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-zinc-800 sm:block">
+          <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-slate-800 sm:block">
             <span
               className={`block h-full rounded-full transition-all duration-500 ${
                 running ? "bg-blue-500" : "bg-green-500"
@@ -89,7 +91,7 @@ export default function RunHeader({
               style={{ width: `${ratio * 100}%` }}
             />
           </span>
-          <span className="tabular-nums text-xs text-zinc-500">{done}/{total}</span>
+          <span className="tabular-nums text-xs text-slate-500">{done}/{total}</span>
         </span>
       )}
 
@@ -109,7 +111,7 @@ export default function RunHeader({
           <button
             onClick={onAbort}
             disabled={aborting}
-            className="flex items-center gap-1 rounded-md border border-red-500/60 px-2 py-1 text-[11px] text-red-400 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex items-center gap-1 rounded-xl border border-red-500 px-4 py-2 text-sm font-semibold text-red-400 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
             title="このRunを中断する(推論は途中再開できないため、再開ではなくコンテキストを保持した再実行になります)"
           >
             {aborting
@@ -119,7 +121,7 @@ export default function RunHeader({
         ) : (
           <button
             onClick={onRerun}
-            className="flex items-center gap-1 rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-blue-500 hover:text-blue-400"
+            className="flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-blue-500 hover:text-blue-400"
             title="同じ設定で新しいRunを開始"
           >
             <RotateCcw size={10} /> 再実行
@@ -137,7 +139,7 @@ export default function RunHeader({
             aria-expanded={infoOpen}
             aria-haspopup="dialog"
             className={`rounded-md border p-1 transition-colors ${
-              infoOpen ? "border-blue-500 text-blue-400" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"
+              infoOpen ? "border-blue-500 text-blue-400" : "border-slate-700 text-slate-400 hover:text-slate-200"
             }`}
             title="タスク全文と実行条件"
           >
@@ -146,53 +148,53 @@ export default function RunHeader({
           <Popover open={infoOpen} onClose={() => setInfoOpen(false)} align="right"
                    labelledBy="run-info-title" returnFocusRef={openerRef}>
             <h3 id="run-info-title" className="sr-only">タスク全文と実行条件</h3>
-            <p className="mb-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-snug text-zinc-100">
+            <p className="mb-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-snug text-slate-100">
               {run.task}
             </p>
-            <dl className="space-y-1.5 border-t border-zinc-700 pt-2 text-xs">
+            <dl className="space-y-1.5 border-t border-slate-700 pt-2 text-xs">
               <div className="flex items-center gap-2">
-                <dt className="flex w-20 shrink-0 items-center gap-1 text-zinc-500">
+                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
                   <Wand2 size={11} className="text-blue-400" /> 進め方
                 </dt>
-                <dd className="text-zinc-200">
+                <dd className="text-slate-200">
                   {modeLabel}
                   {dlvLabel ? ` / ${dlvLabel}` : ""}
                 </dd>
               </div>
               <div className="flex items-center gap-2">
-                <dt className="w-20 shrink-0 text-zinc-500">モデル</dt>
+                <dt className="w-20 shrink-0 text-slate-500">モデル</dt>
                 <dd className="font-semibold text-blue-400">{modelTag}</dd>
               </div>
               {run.claude_review && (
                 <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-zinc-500">最終レビュー</dt>
+                  <dt className="w-20 shrink-0 text-slate-500">最終レビュー</dt>
                   <dd className="font-semibold text-orange-400">🤖 Claude</dd>
                 </div>
               )}
               {run.api_review && (
                 <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-zinc-500">最終レビュー</dt>
+                  <dt className="w-20 shrink-0 text-slate-500">最終レビュー</dt>
                   <dd className="font-semibold text-cyan-400">🔌 APIモデル</dd>
                 </div>
               )}
               {reason && (
                 <div className="flex items-start gap-2">
-                  <dt className="w-20 shrink-0 text-zinc-500">判定理由</dt>
-                  <dd className="text-zinc-400">{reason}</dd>
+                  <dt className="w-20 shrink-0 text-slate-500">判定理由</dt>
+                  <dd className="text-slate-400">{reason}</dd>
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <dt className="flex w-20 shrink-0 items-center gap-1 text-zinc-500">
+                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
                   <Timer size={11} /> 経過
                 </dt>
-                <dd className="tabular-nums text-zinc-200">{fmtElapsed(elapsed)}</dd>
+                <dd className="tabular-nums text-slate-200">{fmtElapsed(elapsed)}</dd>
               </div>
               {run.tokens > 0 && (
                 <div className="flex items-center gap-2">
-                  <dt className="flex w-20 shrink-0 items-center gap-1 text-zinc-500">
+                  <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
                     <Coins size={11} /> トークン
                   </dt>
-                  <dd className="tabular-nums text-zinc-200">{run.tokens.toLocaleString()} tok</dd>
+                  <dd className="tabular-nums text-slate-200">{run.tokens.toLocaleString()} tok</dd>
                 </div>
               )}
             </dl>
@@ -202,7 +204,7 @@ export default function RunHeader({
                   setInfoOpen(false);
                   onEditRerun();
                 }}
-                className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-zinc-600 px-2 py-1.5 text-xs text-zinc-200 hover:border-blue-500 hover:text-blue-400"
+                className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-600 px-2 py-1.5 text-xs text-slate-200 hover:border-blue-500 hover:text-blue-400"
               >
                 <FileCog size={11} /> 設定を変更して再実行
               </button>

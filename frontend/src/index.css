@@ -38,7 +38,7 @@
 ::selection { background: rgb(59 130 246 / 0.35); }
 
 body {
-  background-color: #09090b;
+  background-color: #020617;
   /* 日本語UIなので、和文が破綻しない範囲でOSの標準UIフォントに寄せる(外部フォント不可) */
   font-family: "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
 }

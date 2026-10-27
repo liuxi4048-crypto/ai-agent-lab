@@ -49,22 +49,22 @@ export default function ConnectionsView({ models, onRefresh }) {
       <div className="mx-auto max-w-5xl p-4 sm:p-6">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold text-zinc-100">接続状態</h2>
-            <p className="mt-1 text-[13px] leading-relaxed text-zinc-400">
+            <h2 className="text-2xl font-bold text-slate-100">接続状態</h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
               バックエンドごとに、今つながっているか・どのモデルが使えるかをまとめて確認できます。
               モデルを選ぶことが、そのまま接続先の切り替えになります。
             </p>
           </div>
           <button
             onClick={handleRefresh}
-            className="flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-2 text-[13px] text-zinc-200 transition-colors hover:border-zinc-500 hover:text-white"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-[13px] text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
           >
             <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> 再確認
           </button>
         </div>
 
         {!catalog ? (
-          <p className="mt-8 text-sm text-zinc-500">読み込み中…</p>
+          <p className="mt-8 text-sm text-slate-500">読み込み中…</p>
         ) : (
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             {conns.map((c) => {
@@ -73,21 +73,21 @@ export default function ConnectionsView({ models, onRefresh }) {
               return (
                 <section
                   key={`${c.kind}:${c.base_url}`}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 p-4"
+                  className="rounded-xl border border-slate-800 bg-slate-900 p-4"
                 >
                   <div className="flex items-center gap-2">
-                    <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">
+                    <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">
                       {connTitle(c)}
                     </h3>
                     <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold ${chip.cls}`}>
                       {chip.text}
                     </span>
                   </div>
-                  <p className="mt-1 break-all font-mono text-xs text-zinc-500">{c.base_url}</p>
+                  <p className="mt-1 break-all font-mono text-xs text-slate-500">{c.base_url}</p>
 
                   {c.kind !== "anthropic" && (
                     <div className="mt-3">
-                      <p className="text-xs font-semibold text-zinc-400">
+                      <p className="text-xs font-semibold text-slate-400">
                         {c.kind === "ollama" ? "導入済みモデル" : "サーバーが公開しているモデル"}
                       </p>
                       {c.reachable ? (
@@ -96,17 +96,17 @@ export default function ConnectionsView({ models, onRefresh }) {
                             {c.served.map((id) => (
                               <span
                                 key={id}
-                                className="rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 font-mono text-xs text-zinc-300"
+                                className="rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 font-mono text-xs text-slate-300"
                               >
                                 {id}
                               </span>
                             ))}
                           </div>
                         ) : (
-                          <p className="mt-1 text-xs text-zinc-500">（なし）</p>
+                          <p className="mt-1 text-xs text-slate-500">（なし）</p>
                         )
                       ) : (
-                        <p className="mt-1 text-xs text-zinc-500">
+                        <p className="mt-1 text-xs text-slate-500">
                           {c.kind === "ollama"
                             ? "Ollamaが起動していません"
                             : "サーバーが起動すると、ここに公開モデルが表示されます"}
@@ -115,14 +115,14 @@ export default function ConnectionsView({ models, onRefresh }) {
                     </div>
                   )}
 
-                  <div className="mt-3 border-t border-zinc-800 pt-3">
-                    <p className="text-xs font-semibold text-zinc-400">この接続先を使うモデル（models.yaml登録）</p>
+                  <div className="mt-3 border-t border-slate-800 pt-3">
+                    <p className="text-xs font-semibold text-slate-400">この接続先を使うモデル（models.yaml登録）</p>
                     {registered.length > 0 ? (
                       <ul className="mt-1.5 space-y-1">
                         {registered.map((m) => (
                           <li key={m.key} className="flex items-baseline gap-2 text-[13px]">
-                            <span className="font-medium text-zinc-200">{m.tag}</span>
-                            <span className="text-zinc-500">{m.key}</span>
+                            <span className="font-medium text-slate-200">{m.tag}</span>
+                            <span className="text-slate-500">{m.key}</span>
                             {m.installed ? (
                               <span className="ml-auto shrink-0 font-semibold text-green-400">使用可</span>
                             ) : (
@@ -134,7 +134,7 @@ export default function ConnectionsView({ models, onRefresh }) {
                         ))}
                       </ul>
                     ) : (
-                      <p className="mt-1 text-xs text-zinc-500">未登録です</p>
+                      <p className="mt-1 text-xs text-slate-500">未登録です</p>
                     )}
                   </div>
                 </section>
@@ -143,7 +143,7 @@ export default function ConnectionsView({ models, onRefresh }) {
           </div>
         )}
 
-        <p className="mt-6 text-xs leading-relaxed text-zinc-500">
+        <p className="mt-6 text-xs leading-relaxed text-slate-500">
           設定の変更はこの画面では行いません。モデルの登録・接続先・表示名（server_name）は models.yaml、
           Claude API のキーは環境変数 ANTHROPIC_API_KEY で設定します（キーを画面に表示・保存することはありません）。
         </p>

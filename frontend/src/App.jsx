@@ -1,3 +1,5 @@
+import PhaseStepper from "./components/PhaseStepper.jsx";
+import Markdown from "./components/md.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Star, Inbox, WifiOff, AlertTriangle, Hourglass, X } from "lucide-react";
 import Header from "./components/Header.jsx";
@@ -448,9 +450,10 @@ export default function App() {
   return (
     // h-dvh: iOS Safari の 100vh はツールバー分を含むため、最下部の入力欄が
     // ツールバーの下に隠れて操作できなくなる。動的ビューポート高で回避する
-    <div className="flex h-dvh flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="flex h-dvh flex-col overflow-hidden bg-slate-950 text-slate-100">
       <Header
         gpu={gpu}
+        connections={models?.connections ?? []}
         health={health}
         active={headerActive}
         queueCount={queuedRuns.length}
@@ -494,6 +497,8 @@ export default function App() {
               visible={drafting}
               onCancel={view.from || runsView.length ? handleCancelDraft : null}
               suggestions={suggestions}
+              runs={runsView.map(r => ({ ...r, plan: plans[r.id] ?? r.plan }))}
+              onSelectRun={selectRun}
             />
           </div>
 
@@ -558,31 +563,33 @@ export default function App() {
                 />
               )}
               <div className="p-4">
+                <PhaseStepper nodes={agentNodes} />
+                {answerNode && <section className="mb-5 rounded-xl border border-slate-700 bg-slate-900 p-4"><h2 className="mb-3 text-lg font-bold">最終回答</h2><Markdown text={answerNode.output} /></section>}
                 {agentNodes.length === 0 ? (
-                  <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-zinc-600">
+                  <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-slate-600">
                     <Inbox size={36} strokeWidth={1.2} />
                     <p className="text-sm">エージェントを起動しています…</p>
                   </div>
                 ) : (
-                  segments.map((seg, i) => {
+                  segments.map(seg => ({ ...seg, nodes: seg.nodes.filter(node => node.id !== answerNode?.id) })).filter(seg => seg.nodes.length).map((seg, i) => {
                     const pm = PHASE_META[seg.phase];
                     const doneCount = seg.nodes.filter((n) => n.status === "done").length;
                     return (
                       <section key={`${seg.phase}-${i}`} className="mb-5 last:mb-0">
                         {/* 見出しは sticky: 長いセグメントをスクロール中も「今どの工程か」を保つ */}
-                        <div className="sticky top-0 z-10 -mx-1 mb-2 flex items-center gap-2 bg-zinc-950/95 px-1 py-1 backdrop-blur">
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-[10px] font-bold tabular-nums text-zinc-400">
+                        <div className="sticky top-0 z-10 -mx-1 mb-2 flex items-center gap-2 bg-slate-950/95 px-1 py-1 backdrop-blur">
+                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-800 text-[10px] font-bold tabular-nums text-slate-400">
                             {i + 1}
                           </span>
-                          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300">
+                          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
                             {pm.label}
                           </h2>
-                          <span className="hidden text-[10px] text-zinc-600 sm:inline">{pm.hint}</span>
+                          <span className="hidden text-[10px] text-slate-600 sm:inline">{pm.hint}</span>
                           {/* 決定的進捗(n/m)は待機許容度に効くため1件でも常時出す */}
-                          <span className="shrink-0 rounded bg-zinc-800/80 px-1.5 text-[10px] tabular-nums text-zinc-400">
+                          <span className="shrink-0 rounded bg-slate-800/80 px-1.5 text-[10px] tabular-nums text-slate-400">
                             {doneCount}/{seg.nodes.length} 完了
                           </span>
-                          <span className="h-px flex-1 bg-zinc-800" />
+                          <span className="h-px flex-1 bg-slate-800" />
                         </div>
                         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
                           {seg.nodes.map((node) => {
@@ -625,7 +632,7 @@ export default function App() {
           )}
 
           {!drafting && !benching && !insighting && !currentRun && (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-600">
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-600">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">左の一覧からタスクを選ぶか、新しいタスクを開始してください</p>
               <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
@@ -633,7 +640,7 @@ export default function App() {
                   <button
                     key={s.text}
                     onClick={() => handleNewTask(s.text)}
-                    className="rounded-full border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-blue-500 hover:text-blue-400"
+                    className="rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-blue-500 hover:text-blue-400"
                   >
                     {s.emoji} {s.text}
                   </button>
@@ -650,14 +657,14 @@ export default function App() {
           {notices.map((n) => (
             <div
               key={n.key}
-              className={`flex items-center gap-2.5 rounded-xl border bg-zinc-800 px-3 py-2.5 shadow-2xl ${
+              className={`flex items-center gap-2.5 rounded-xl border bg-slate-800 px-3 py-2.5 shadow-2xl ${
                 n.kind === "error" ? "border-red-500/60" : "border-yellow-500/50"
               }`}
             >
               {n.kind === "error"
                 ? <AlertTriangle size={15} className="shrink-0 text-red-400" />
                 : <Star size={15} className="shrink-0 text-yellow-400" fill="currentColor" />}
-              <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-zinc-100">{n.text}</span>
+              <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-slate-100">{n.text}</span>
               {n.runId && (
                 <button
                   onClick={() => {
@@ -665,14 +672,14 @@ export default function App() {
                     else selectRun(n.runId);
                     dismissNotice(n.key);
                   }}
-                  className="shrink-0 rounded-md bg-yellow-500 px-2 py-1 text-[11px] font-bold text-zinc-900 hover:bg-yellow-400"
+                  className="shrink-0 rounded-md bg-yellow-500 px-2 py-1 text-[11px] font-bold text-slate-900 hover:bg-yellow-400"
                 >
                   表示
                 </button>
               )}
               <button
                 onClick={() => dismissNotice(n.key)}
-                className="shrink-0 rounded p-0.5 text-zinc-500 hover:text-zinc-300"
+                className="shrink-0 rounded p-0.5 text-slate-500 hover:text-slate-300"
                 title="閉じる"
               >
                 <X size={13} />
