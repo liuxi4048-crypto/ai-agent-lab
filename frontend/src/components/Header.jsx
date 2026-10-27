@@ -57,7 +57,7 @@ export default function Header({
 
       {/* 要対応バッジ群(条件を満たすときだけ現れる) */}
       {oom && (
-        <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-[11px] font-bold text-red-400">
+        <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-xs font-bold text-red-400">
           <AlertTriangle size={11} /> VRAM残りわずか
         </span>
       )}

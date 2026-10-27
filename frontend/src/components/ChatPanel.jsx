@@ -108,7 +108,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
       {expanded && (thread.length > 0 || pendingMsg) && (
         <div className="max-h-56 space-y-2 overflow-y-auto border-b border-zinc-800 px-4 py-2">
           {thread.map((m, i) => (
-            <div key={i} className="flex gap-2 text-[12.5px]">
+            <div key={i} className="flex gap-2 text-[13.5px]">
               <span
                 className={`mt-0.5 shrink-0 ${m.role === "user" ? "text-blue-400" : "text-green-400"}`}
                 title={m.role === "user" ? "あなた" : "エージェント"}
@@ -125,7 +125,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
             </div>
           ))}
           {pendingMsg && (
-            <div className="flex gap-2 text-[12.5px] opacity-50">
+            <div className="flex gap-2 text-[13.5px] opacity-50">
               <span className="mt-0.5 shrink-0 text-blue-400" title="あなた">
                 <User size={13} />
               </span>
@@ -172,7 +172,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
           <button
             onClick={() => onStartDraft?.(msg.trim())}
             title="この内容で新しいタスクの下書きを開く"
-            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md border border-blue-500/70 px-3 text-[12.5px] font-semibold text-blue-400 hover:bg-blue-500/10"
+            className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-md border border-blue-500/70 px-3 text-[13.5px] font-semibold text-blue-400 hover:bg-blue-500/10"
           >
             <Sparkles size={13} /> 新しいタスクとして始める
           </button>

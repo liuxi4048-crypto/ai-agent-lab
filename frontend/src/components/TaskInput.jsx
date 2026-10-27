@@ -117,14 +117,14 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
       <div className="w-full max-w-2xl">
         <div className="mb-3 flex items-center gap-2">
           <Sparkles size={15} className="text-blue-400" />
-          <h2 className="text-sm font-semibold text-zinc-100">新しいタスク</h2>
-          <span className="hidden text-[11px] text-zinc-600 sm:inline">
+          <h2 className="text-base font-semibold text-zinc-100">新しいタスク</h2>
+          <span className="hidden text-xs text-zinc-600 sm:inline">
             進め方・成果物の形式はエージェントが自動で決めます
           </span>
           {onCancel && (
             <button
               onClick={onCancel}
-              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-[11.5px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
               title="下書きをやめて元の画面へ戻る(Esc)"
             >
               <X size={13} /> キャンセル
@@ -133,7 +133,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
         </div>
 
         {inherited && (
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-[11.5px] text-blue-300">
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300">
             <History size={12} className="shrink-0" />
             <span className="min-w-0 flex-1">元のタスクから設定を引き継ぎました</span>
             <button
@@ -166,7 +166,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
             value={model}
             onChange={(e) => setModel(e.target.value)}
             title="使うモデル。auto ならタスク内容に合わせて自動で選ばれる"
-            className="max-w-72 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+            className="max-w-72 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 outline-none focus:border-blue-500"
           >
             <option value="auto">auto (タスクに合わせて自動選択)</option>
             {groupByBackend(modelOptions).map((g) => (
@@ -197,7 +197,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
           {/* 選択中モデルの接続先と状態(どのエンジンで動くかを常時見せる) */}
           {statusLine && (
-            <span className="flex items-center gap-1.5 text-[11px] text-zinc-400" title="選択中のモデルの接続先と状態">
+            <span className="flex items-center gap-1.5 text-xs text-zinc-400" title="選択中のモデルの接続先と状態">
               <span className={`h-2 w-2 shrink-0 rounded-full ${statusLine.dot}`} />
               {statusLine.text}
             </span>
@@ -205,12 +205,12 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
           {/* 安全・コストに響く設定は折りたたみ中でも常時チップで見せる */}
           {!approve && (
-            <span className="rounded-full border border-red-500/60 bg-red-500/10 px-2 py-0.5 text-[10.5px] font-semibold text-red-300">
+            <span className="rounded-full border border-red-500/60 bg-red-500/10 px-2 py-0.5 text-[11.5px] font-semibold text-red-300">
               承認なしで実行
             </span>
           )}
           {claudeReview && (
-            <span className="rounded-full border border-orange-500/60 bg-orange-500/10 px-2 py-0.5 text-[10.5px] font-semibold text-orange-300">
+            <span className="rounded-full border border-orange-500/60 bg-orange-500/10 px-2 py-0.5 text-[11.5px] font-semibold text-orange-300">
               🤖 Claudeレビュー
             </span>
           )}
@@ -226,70 +226,96 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
         </div>
 
         <details className="group mt-3 rounded-lg border border-zinc-800">
-          <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-[11.5px] text-zinc-400 hover:text-zinc-200">
+          <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-[12.5px] text-zinc-400 hover:text-zinc-200">
             <ChevronRight size={12} className="transition-transform group-open:rotate-90" />
             詳細設定
             {diffCount > 0 && (
-              <span className="rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-blue-300">
+              <span className="rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-blue-300">
                 {diffCount}件が既定と異なります
               </span>
             )}
           </summary>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-zinc-800 px-3 py-2.5 text-xs text-zinc-400">
-            <label className="flex cursor-pointer items-center gap-1.5">
-              <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)}
-                     className="accent-blue-500" />
-              コマンド実行前に承認
-            </label>
-            <label className="flex cursor-pointer items-center gap-1.5">
-              <input type="checkbox" checked={critique} onChange={(e) => setCritique(e.target.checked)}
-                     className="accent-blue-500" />
-              完了後レビュー(critique)
-            </label>
-          <label
-              className="flex cursor-pointer items-center gap-1.5"
-              title="ONにするとVRAMに収まらない大型モデル(RAM併用)も使えます。品質は上がりますが低速になります"
-            >
-              <input type="checkbox" checked={allowRam} onChange={(e) => setAllowRam(e.target.checked)}
-                     className="accent-blue-500" />
-              大きいモデルも使う(RAM併用・低速)
-              {models?.free_ram_gb != null && (
-                <span className="text-zinc-600">空き{models.free_ram_gb}GB</span>
-              )}
-            </label>
-            <label
-              className={`flex items-center gap-1.5 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
-              title={claude?.available
-                ? `完了後にClaude(${claude.model})が成果物をレビューし、その場で修正して最終成果物に仕上げます。`
-                  + "\n※ローカルのClaude Code CLIをサブスク認証で使います。API課金は発生しませんが、"
-                  + "サブスクの5時間利用枠を消費します"
-                : (claude?.reason || "Claudeレビューは利用できません")}
-            >
-              <input type="checkbox" checked={claudeReview} disabled={!claude?.available}
-                     onChange={(e) => setClaudeReview(e.target.checked)}
-                     className="accent-orange-500" />
-              <span className={claudeReview ? "text-orange-400" : ""}>
-                🤖 Claudeが最終レビュー
-              </span>
-              <span className="text-zinc-600">※サブスク枠を消費</span>
-            </label>
-            <label
-              className={`flex items-center gap-1.5 ${api?.available ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
-              title={api?.available ? `完了後に${api.model}が成果物を読み取りレビューします。APIキーはサーバー側だけで使われます。` : (api?.reason || "任意モデルレビューは利用できません")}
-            >
-              <input type="checkbox" checked={apiReview} disabled={!api?.available}
-                     onChange={(e) => setApiReview(e.target.checked)} className="accent-cyan-500" />
-              <span className={apiReview ? "text-cyan-400" : ""}>🔌 任意モデルで最終レビュー</span>
-              <span className="text-zinc-600">※{api?.model || "未設定"}</span>
-            </label>
-            <label className="flex items-center gap-1.5">
-              最大イテレーション
-              <input
-                type="number" min={1} max={60} value={maxIter}
-                onChange={(e) => setMaxIter(Number(e.target.value) || DEFAULTS.maxIter)}
-                className="w-14 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-zinc-200 outline-none focus:border-blue-500"
-              />
-            </label>
+          <div className="border-t border-zinc-800 px-3 py-3">
+            <p className="text-xs font-semibold text-zinc-300">実行の安全と品質</p>
+            <div className="mt-2 space-y-2.5">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)}
+                       className="mt-0.5 accent-blue-500" />
+                <span>
+                  <span className="block text-[13px] text-zinc-200">コマンド実行前に承認</span>
+                  <span className="block text-xs text-zinc-500">コマンドを実行する前に、毎回あなたの確認を挟みます</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" checked={critique} onChange={(e) => setCritique(e.target.checked)}
+                       className="mt-0.5 accent-blue-500" />
+                <span>
+                  <span className="block text-[13px] text-zinc-200">完了後レビュー</span>
+                  <span className="block text-xs text-zinc-500">終わったあと、別のモデルが成果物を批評して必要なら直します</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <span className="mt-0.5 inline-block w-4 shrink-0" />
+                <span>
+                  <span className="flex items-center gap-2 text-[13px] text-zinc-200">
+                    最大イテレーション
+                    <input
+                      type="number" min={1} max={60} value={maxIter}
+                      onChange={(e) => setMaxIter(Number(e.target.value) || DEFAULTS.maxIter)}
+                      className="w-14 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-zinc-200 outline-none focus:border-blue-500"
+                    />
+                  </span>
+                  <span className="block text-xs text-zinc-500">「作る→直す」の往復回数の上限です</span>
+                </span>
+              </label>
+            </div>
+
+            <p className="mt-4 border-t border-zinc-800 pt-3 text-xs font-semibold text-zinc-300">モデルと仕上げのレビュー</p>
+            <div className="mt-2 space-y-2.5">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" checked={allowRam} onChange={(e) => setAllowRam(e.target.checked)}
+                       className="mt-0.5 accent-blue-500" />
+                <span>
+                  <span className="block text-[13px] text-zinc-200">
+                    大きいモデルも使う（RAM併用・低速）
+                    {models?.free_ram_gb != null && (
+                      <span className="ml-1.5 text-xs text-zinc-500">空きRAM {models.free_ram_gb}GB</span>
+                    )}
+                  </span>
+                  <span className="block text-xs text-zinc-500">VRAMに収まらない大型モデルも候補に入ります。品質は上がりますが低速になります</span>
+                </span>
+              </label>
+              <label className={`flex items-start gap-2 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+                <input type="checkbox" checked={claudeReview} disabled={!claude?.available}
+                       onChange={(e) => setClaudeReview(e.target.checked)}
+                       className="mt-0.5 accent-orange-500" />
+                <span>
+                  <span className={`block text-[13px] ${claudeReview ? "text-orange-300" : "text-zinc-200"}`}>
+                    🤖 Claudeが最終レビュー
+                  </span>
+                  <span className="block text-xs text-zinc-500">
+                    {claude?.available
+                      ? `完了後にClaude（${claude.model}）が成果物をレビューし、その場で修正して仕上げます。API課金は発生しませんが、サブスクの5時間利用枠を消費します`
+                      : (claude?.reason || "Claudeレビューは利用できません")}
+                  </span>
+                </span>
+              </label>
+              <label className={`flex items-start gap-2 ${api?.available ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+                <input type="checkbox" checked={apiReview} disabled={!api?.available}
+                       onChange={(e) => setApiReview(e.target.checked)}
+                       className="mt-0.5 accent-cyan-500" />
+                <span>
+                  <span className={`block text-[13px] ${apiReview ? "text-cyan-300" : "text-zinc-200"}`}>
+                    🔌 任意モデルで最終レビュー
+                  </span>
+                  <span className="block text-xs text-zinc-500">
+                    {api?.available
+                      ? `完了後に${api.model}が成果物を読み取りレビューします（修正はしません）。APIキーはサーバー側だけで使われます`
+                      : (api?.reason || "任意モデルレビューは利用できません")}
+                  </span>
+                </span>
+              </label>
+            </div>
           </div>
         </details>
 
@@ -297,7 +323,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
 
         {suggestions.length > 0 && !task.trim() && (
           <div className="mt-5">
-            <p className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-600">
+            <p className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-zinc-600">
               ここから始める
             </p>
             <div className="flex flex-wrap gap-2">

@@ -57,10 +57,10 @@ export default function AgentCard({
     >
       {/* 1行目: 名前 + 役割バッジ + 状態 */}
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-100">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">
           {node.title}
         </span>
-        <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+        <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-400">
           {KIND_LABEL[node.kind] ?? node.kind}
         </span>
         <span className={`flex shrink-0 items-center gap-1 rounded-full bg-zinc-800/80 px-2 py-0.5 text-[11px] font-semibold ${meta.text} ${isLive ? "soft-pulse" : ""}`}>
@@ -71,10 +71,10 @@ export default function AgentCard({
       </div>
 
       {/* 2行目: 経過 + t/s + 依存(待機系のみ) + ctx警告。tok/進捗は LogDrawer ヘッダーへ退避 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
         {model.has && (
           <span
-            className="flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-px font-mono text-[10.5px] text-zinc-300"
+            className="flex min-w-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-px font-mono text-[11.5px] text-zinc-300"
             title={`使用モデル: ${model.tag}${model.roleLabel && model.roleLabel !== model.tag ? `(${model.roleLabel})` : ""}`}
           >
             <Cpu size={10} className="shrink-0 text-blue-400" />
@@ -100,7 +100,7 @@ export default function AgentCard({
         ) : null}
         {ctxLevel !== "none" && (
           <span
-            className={`rounded-full border px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${CTX_PILL_CLASS[ctxLevel]}`}
+            className={`rounded-full border px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${CTX_PILL_CLASS[ctxLevel]}`}
             title="コンテキスト充填率(上限に近いと要約や打ち切りが起きやすくなります)"
           >
             ctx {Math.round(node.ctx_fill * 100)}%

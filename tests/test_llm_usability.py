@@ -90,3 +90,30 @@ def test_resolve_server_name_passthrough():
                             "server_name": "Strata"}}}
     assert llm.resolve(cfg, "s")["server_name"] == "Strata"
     assert llm.resolve(CFG, "remote")["server_name"] == ""
+
+
+def test_summarize_connections(monkeypatch):
+    async def fake_probe(base):
+        return {"served", "extra-1"} if "8080" in base else None
+
+    monkeypatch.setattr(llm, "probe_openai_models", fake_probe)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = {"models": dict(CFG["models"])}
+    cfg["models"]["strata"] = {"tag": "gone", "backend": "openai",
+                               "base_url": "http://localhost:9000/v1",
+                               "server_name": "Strata"}
+    models = [llm.resolve(cfg, k) for k in cfg["models"]]
+    probes = {}
+    run(llm.annotate_models(cfg, models, {"qwen:7b"}, probes))
+    conns = llm.summarize_connections(models, {"qwen:7b"}, True, probes)
+    by_kind = {}
+    for c in conns:
+        by_kind.setdefault(c["kind"], []).append(c)
+    assert by_kind["ollama"][0]["reachable"] is True
+    assert by_kind["ollama"][0]["served"] == ["qwen:7b"]
+    openai = {c["base_url"]: c for c in by_kind["openai"]}
+    assert openai["http://localhost:8080/v1"]["reachable"] is True
+    assert openai["http://localhost:8080/v1"]["served"] == ["extra-1", "served"]
+    assert openai["http://localhost:9000/v1"]["reachable"] is False
+    assert openai["http://localhost:9000/v1"]["name"] == "Strata"
+    assert by_kind["anthropic"][0]["key_set"] is False

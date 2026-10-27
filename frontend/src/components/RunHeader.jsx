@@ -71,7 +71,7 @@ export default function RunHeader({
         }}
         aria-haspopup="dialog"
         aria-expanded={infoOpen}
-        className="min-w-0 flex-1 truncate text-left text-[13.5px] text-zinc-100 hover:text-blue-300"
+        className="min-w-0 flex-1 truncate text-left text-[15px] text-zinc-100 hover:text-blue-300"
         title="クリックで全文と実行条件を表示"
       >
         {run.task}
@@ -89,7 +89,7 @@ export default function RunHeader({
               style={{ width: `${ratio * 100}%` }}
             />
           </span>
-          <span className="tabular-nums text-[10.5px] text-zinc-500">{done}/{total}</span>
+          <span className="tabular-nums text-xs text-zinc-500">{done}/{total}</span>
         </span>
       )}
 
@@ -149,7 +149,7 @@ export default function RunHeader({
             <p className="mb-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-snug text-zinc-100">
               {run.task}
             </p>
-            <dl className="space-y-1.5 border-t border-zinc-700 pt-2 text-[11.5px]">
+            <dl className="space-y-1.5 border-t border-zinc-700 pt-2 text-xs">
               <div className="flex items-center gap-2">
                 <dt className="flex w-20 shrink-0 items-center gap-1 text-zinc-500">
                   <Wand2 size={11} className="text-blue-400" /> 進め方
@@ -202,7 +202,7 @@ export default function RunHeader({
                   setInfoOpen(false);
                   onEditRerun();
                 }}
-                className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-zinc-600 px-2 py-1.5 text-[11.5px] text-zinc-200 hover:border-blue-500 hover:text-blue-400"
+                className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-zinc-600 px-2 py-1.5 text-xs text-zinc-200 hover:border-blue-500 hover:text-blue-400"
               >
                 <FileCog size={11} /> 設定を変更して再実行
               </button>

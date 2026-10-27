@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Sparkles, Trash2, X, Gauge, Microscope } from "lucide-react";
+import { Plus, Search, Sparkles, Trash2, X, Gauge, Microscope, Plug } from "lucide-react";
 import { RUN_STATUS, fmtAgo } from "../derive.js";
 
 /**
@@ -12,7 +12,7 @@ import { RUN_STATUS, fmtAgo } from "../derive.js";
  * lg未満ではオフキャンバス(ハンバーガーで開閉)、lg以上は常設カラム。
  */
 export default function Sidebar({
-  runs, currentId, drafting, onSelect, onDelete, onNew, onBench, benching, onInsight, insighting, open, onClose,
+  runs, currentId, drafting, onSelect, onDelete, onNew, onBench, benching, onInsight, insighting, onConnections, connecting, open, onClose,
 }) {
   const [query, setQuery] = useState("");
   // 削除は誤操作防止の2段階確認(1回目で「削除?」→3秒以内の再クリックで実行)
@@ -74,7 +74,7 @@ export default function Sidebar({
         >
           <div className="flex items-start gap-2">
             <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${meta.dot}`} title={meta.label} />
-            <p className={`min-w-0 flex-1 line-clamp-2 text-[12.5px] leading-snug ${selected ? "text-zinc-100" : "text-zinc-300"}`}>
+            <p className={`min-w-0 flex-1 line-clamp-2 text-[13.5px] leading-snug ${selected ? "text-zinc-100" : "text-zinc-300"}`}>
               {r.task}
             </p>
             {r.pending_approvals > 0 && (
@@ -83,7 +83,7 @@ export default function Sidebar({
               </span>
             )}
           </div>
-          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[10.5px] text-zinc-500">
+          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] text-zinc-500">
             <span className={meta.text}>{meta.label}</span>
             <span className="ml-auto shrink-0 tabular-nums">{fmtAgo(r.created_at)}</span>
             {finished && (
@@ -108,7 +108,7 @@ export default function Sidebar({
   const group = (label, items) =>
     items.length > 0 && (
       <>
-        <li className="sticky top-0 z-10 flex items-center gap-2 bg-zinc-900 px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+        <li className="sticky top-0 z-10 flex items-center gap-2 bg-zinc-900 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           {label}
           <span className="tabular-nums text-zinc-400">{items.length}</span>
         </li>
@@ -173,6 +173,21 @@ export default function Sidebar({
             aria-label="インサイト"
           >
             <Microscope size={15} />
+          </button>
+          <button
+            onClick={() => {
+              onConnections?.();
+              onClose?.();
+            }}
+            className={`rounded-lg border px-2.5 py-2 text-[13px] transition-colors ${
+              connecting
+                ? "border-blue-500 bg-blue-500/10 text-blue-300"
+                : "border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+            }`}
+            title="接続状態(Ollama / OpenAI互換サーバー / Claude API の接続確認)"
+            aria-label="接続状態"
+          >
+            <Plug size={15} />
           </button>
           <button
             onClick={onClose}

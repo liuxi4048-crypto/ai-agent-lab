@@ -12,6 +12,7 @@ import ApprovalBar from "./components/ApprovalBar.jsx";
 import BenchView from "./components/BenchView.jsx";
 import BenchPanel from "./components/BenchPanel.jsx";
 import InsightView from "./components/insight/InsightView.jsx";
+import ConnectionsView from "./components/ConnectionsView.jsx";
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf, segmentByPhase, PHASE_META } from "./derive.js";
 import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun, startBench } from "./api.js";
@@ -39,6 +40,7 @@ export default function App() {
   const drafting = view.kind === "draft";
   const benching = view.kind === "bench";
   const insighting = view.kind === "insight";   // 実行記録の可視化と分析(InsightView)
+  const connecting = view.kind === "connections";   // 接続状態パネル(ConnectionsView)
   const [prefill, setPrefill] = useState(null);
   const [benchPrefill, setBenchPrefill] = useState(null);   // [設定変更して再実行] からのベンチ設定
   const [drawerNodeId, setDrawerNodeId] = useState(null);
@@ -58,6 +60,7 @@ export default function App() {
 
   // ---- ポーリング(一覧3s / リソース5s) & 1秒tick(経過時間表示用) ----
   const refreshRuns = useCallback(() => fetchRuns().then((d) => setRuns(d.runs)).catch(() => {}), []);
+  const refreshModels = useCallback(() => fetchModels().then(setModels).catch(() => {}), []);
   useEffect(() => {
     // 初回だけ: Runが1件も無い(=初めて開いた)ときは下書きから始める
     fetchRuns()
@@ -66,7 +69,7 @@ export default function App() {
         if (!d.runs.length) setView((v) => (v.kind === "empty" ? { kind: "draft", from: null } : v));
       })
       .catch(() => {});
-    fetchModels().then(setModels).catch(() => {});
+    refreshModels();
     const t1 = setInterval(refreshRuns, 3000);
     const poll = () => {
       fetchGpu().then(setGpu).catch(() => setGpu(null));
@@ -280,6 +283,11 @@ export default function App() {
     setView((v) => (v.kind === "insight" ? v : { kind: "insight", from: v.kind === "run" ? v.id : null }));
     setSidebarOpen(false);
   }, []);
+  const handleOpenConnections = useCallback(() => {
+    refreshModels();
+    setView((v) => (v.kind === "connections" ? v : { kind: "connections", from: v.kind === "run" ? v.id : null }));
+    setSidebarOpen(false);
+  }, [refreshModels]);
   const handleOpenBench = useCallback((pre = null) => {
     setBenchPrefill(pre);
     setView((v) => (v.kind === "bench" ? v : { kind: "bench", from: v.kind === "run" ? v.id : null }));
@@ -468,6 +476,8 @@ export default function App() {
           benching={benching}
           onInsight={handleOpenInsight}
           insighting={insighting}
+          onConnections={handleOpenConnections}
+          connecting={connecting}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -488,6 +498,8 @@ export default function App() {
           </div>
 
           {insighting && <InsightView models={models} />}
+
+          {connecting && <ConnectionsView models={models} onRefresh={refreshModels} />}
 
           {benching && (
             <BenchView
@@ -522,7 +534,7 @@ export default function App() {
                 <ApprovalBar runId={currentId} approvals={state.approvals} />
               ) : banner ? (
                 <div
-                  className={`flex items-center gap-2 border-b px-4 py-2 text-xs font-semibold ${
+                  className={`flex items-center gap-2 border-b px-4 py-2 text-[13px] font-semibold ${
                     banner.kind === "warn"
                       ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300"
                       : banner.kind === "error"

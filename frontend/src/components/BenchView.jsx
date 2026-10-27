@@ -142,7 +142,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
               <select
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 outline-none focus:border-blue-500"
               >
                 {groupByBackend(modelOptions).map((g) => (
                   <optgroup key={g.key} label={g.label}>
@@ -167,7 +167,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
               <select
                 value={judge}
                 onChange={(e) => setJudge(e.target.value)}
-                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 outline-none focus:border-blue-500"
               >
                 <option value="auto">auto(異ファミリー)</option>
                 <option value="none">なし(自動チェックのみ)</option>

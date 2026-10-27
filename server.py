@@ -154,7 +154,11 @@ async def models() -> dict:
     # 使えるか(installed)はバックエンドごとに判定する(Ollama=導入済み、
     # OpenAI互換=サーバー応答とモデル有無、Anthropic=キー有無)。
     # backend_status に理由も付け、UIが状態表示に使う。
-    await llm.annotate_models(cfg, catalog["models"], installed)
+    probes: dict = {}
+    await llm.annotate_models(cfg, catalog["models"], installed, probes)
+    # 接続状態パネル用: 接続先単位の到達可否と公開モデル一覧
+    catalog["connections"] = llm.summarize_connections(
+        catalog["models"], installed, await llm.is_alive(), probes)
     catalog["free_ram_gb"] = round(free_ram, 1) if free_ram is not None else None
     catalog["claude"] = claude_review.status()
     catalog["api_review"] = api_review.status()

@@ -837,10 +837,12 @@ async def model_usable(cfg, key, ollama_installed, _probes=None):
     return (True, "ok") if found else (False, "not_installed")
 
 
-async def annotate_models(cfg, models, ollama_installed):
+async def annotate_models(cfg, models, ollama_installed, _probes_out=None):
     """カタログ用: 各モデル dict に installed(使えるか) と backend_status を付ける。
 
     OpenAI互換のプローブは base_url 単位で1回だけ行う。
+    _probes_out(dict)を渡すと base_url → プローブ結果(None可) を書き戻す
+    (summarize_connections が接続状態パネル用に再利用する)。
     """
     bases = sorted({m["base_url"] for m in models
                     if m.get("backend") == "openai" and m.get("base_url")})
@@ -849,11 +851,50 @@ async def annotate_models(cfg, models, ollama_installed):
         results = await asyncio.gather(
             *(probe_openai_models(b) for b in bases))
         probes = dict(zip(bases, results))
+    if _probes_out is not None:
+        _probes_out.update(probes)
     for m in models:
         usable, status = await model_usable(cfg, m["key"], ollama_installed, probes)
         m["installed"] = usable
         m["backend_status"] = status
     return models
+
+
+def summarize_connections(models, ollama_installed, ollama_alive, probes):
+    """接続状態パネル用: 接続先(バックエンド/サーバー)単位の状態サマリ。
+
+    models は annotate_models 済みを想定。モデルの内訳は models 側に任せ、
+    ここでは接続先ごとの到達可否と「サーバーが公開しているモデルID一覧」だけ返す。
+    """
+    conns = [{
+        "kind": "ollama", "name": "Ollama", "base_url": OLLAMA_BASE,
+        "reachable": bool(ollama_alive),
+        "served": sorted(ollama_installed),
+    }]
+    seen = {}
+    for m in models:
+        if m.get("backend") != "openai":
+            continue
+        base = m.get("base_url") or ""
+        if base not in seen:
+            ids = (probes or {}).get(base)
+            seen[base] = {
+                "kind": "openai",
+                "name": m.get("server_name") or "",
+                "base_url": base,
+                "reachable": ids is not None,
+                "served": sorted(ids) if ids else [],
+            }
+        elif not seen[base]["name"] and m.get("server_name"):
+            seen[base]["name"] = m["server_name"]
+    conns.extend(seen.values())
+    if any(m.get("backend") == "anthropic" for m in models):
+        conns.append({
+            "kind": "anthropic", "name": "Claude API", "base_url": ANTHROPIC_BASE,
+            "reachable": anthropic_ready(), "key_set": anthropic_ready(),
+            "served": [],
+        })
+    return conns
 
 
 def unusable_reason(info, status):
