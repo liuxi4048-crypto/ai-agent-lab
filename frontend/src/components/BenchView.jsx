@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Gauge, Play, Loader2, X, ChevronRight, Info, ArrowUpDown } from "lucide-react";
 import { fetchBenchSuite } from "../api.js";
-import { fmtAgo, fmtNum as fmt, fmtMs, groupByBackend, modelStatusNote } from "../derive.js";
+import { fmtAgo, fmtNum as fmt, fmtMs, modelStatusNote } from "../derive.js";
+import ModelPicker from "./ModelPicker.jsx";
 
 // 選定状態(models.yaml の tier)の短い説明。保留/退役モデルの再ベンチがこの画面の用途の1つ
 const TIER_LABEL = {
@@ -136,50 +137,38 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
 
         {/* 設定 */}
         <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              対象モデル
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="max-w-80 rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-[13px] text-slate-200 outline-none focus:border-blue-500"
-              >
-                {groupByBackend(modelOptions).map((g) => (
-                  <optgroup key={g.key} label={g.label}>
-                    {g.models.map((m) => {
-                      const tier = TIER_LABEL[m.tier];
-                      const note = m.scanned ? ""
-                        : modelStatusNote(m)
-                        || (m.needs_ram && !m.ram_ok ? " ※RAM不足"
-                          : m.needs_ram ? " ※RAM併用" : "");
-                      return (
-                        <option key={m.key} value={m.key} disabled={!usable(m)}>
-                          {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{tier ? ` [${tier}]` : ""}{note}
-                        </option>
-                      );
-                    })}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-xs text-slate-400" title="LLM採点に使うモデル。auto=対象と異なるファミリーを自動で選ぶ(自己評価の甘さを避ける)">
-              judge
-              <select
-                value={judge}
-                onChange={(e) => setJudge(e.target.value)}
-                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-[13px] text-slate-200 outline-none focus:border-blue-500"
-              >
-                <option value="auto">auto(異ファミリー)</option>
-                <option value="none">なし(自動チェックのみ)</option>
-                {groupByBackend(modelOptions.filter(usable)).map((g) => (
-                  <optgroup key={g.key} label={g.label}>
-                    {g.models.map((m) => (
-                      <option key={m.key} value={m.key}>{m.tag}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
+          <p className="mb-2 text-xs font-semibold text-slate-400">対象モデル</p>
+          <ModelPicker
+            models={modelOptions}
+            value={model}
+            onChange={setModel}
+            describe={(m) => {
+              const tier = TIER_LABEL[m.tier];
+              const note = m.scanned ? ""
+                : modelStatusNote(m)
+                || (m.needs_ram && !m.ram_ok ? " ※RAM不足"
+                  : m.needs_ram ? " ※RAM併用" : "");
+              return {
+                blocked: !usable(m),
+                note,
+                suffix: [m.scanned ? "(PCから検出)" : m.for ? `(${m.for})` : "", tier ? `[${tier}]` : ""].filter(Boolean).join(" "),
+              };
+            }}
+          />
+          <p className="mb-2 mt-4 text-xs font-semibold text-slate-400" title="LLM採点に使うモデル。auto=対象と異なるファミリーを自動で選ぶ(自己評価の甘さを避ける)">
+            judge(採点モデル)
+          </p>
+          <ModelPicker
+            models={modelOptions.filter(usable)}
+            value={judge}
+            onChange={setJudge}
+            extraOptions={[
+              { value: "auto", label: "auto(異ファミリー)" },
+              { value: "none", label: "なし(自動チェックのみ)" },
+            ]}
+            describe={() => ({ blocked: false, note: "", suffix: "" })}
+          />
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-2 text-xs text-slate-400" title="各課題の反復回数。2以上にすると速度のばらつき(±)が出る">
               反復
               <input

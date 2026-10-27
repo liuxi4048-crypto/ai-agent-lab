@@ -58,7 +58,7 @@ export default function Header({
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {connections.map((c, i) => {
           const ok = c.kind === "anthropic" ? c.key_set : c.reachable;
-          const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : (c.server_name || c.name || "OpenAI互換")} ${ok ? "接続OK" : "未接続"}`;
+          const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : (c.server_name || c.name || c.base_url)} ${ok ? "接続OK" : "未接続"}`;
           return <span key={`${c.kind}:${c.base_url}:${i}`} title={c.base_url} className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs text-slate-200"><span className={`h-2 w-2 rounded-full ${ok ? "bg-green-400" : "bg-red-400"}`} />{label}</span>;
         })}
       </div>

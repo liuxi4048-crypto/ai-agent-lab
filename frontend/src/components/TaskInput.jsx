@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Loader2, X, Sparkles, ChevronRight, History } from "lucide-react";
-import { groupByBackend, modelStatusLine, modelStatusNote, RUN_STATUS, fmtElapsed } from "../derive.js";
+import { modelStatusLine, modelStatusNote, RUN_STATUS, fmtElapsed } from "../derive.js";
+import ModelPicker from "./ModelPicker.jsx";
 
 // 進め方(mode)と成果物形式(deliverable)はメインエージェントが自動で決めるため、
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
@@ -157,39 +158,32 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
           className="w-full resize-none rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm leading-relaxed text-slate-100 placeholder-slate-600 outline-none focus:border-blue-500"
         />
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <select
+        <div className="mt-3">
+          <ModelPicker
+            models={modelOptions}
             value={model}
-            onChange={(e) => setModel(e.target.value)}
-            title="使うモデル。auto ならタスク内容に合わせて自動で選ばれる"
-            className="max-w-72 rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-[13px] text-slate-200 outline-none focus:border-blue-500"
-          >
-            <option value="auto">auto (タスクに合わせて自動選択)</option>
-            {groupByBackend(modelOptions).map((g) => (
-              <optgroup key={g.key} label={g.label}>
-                {g.models.map((m) => {
-                  // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
-                  // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)
-                  // RAM条件は Ollama の配置概念なので、他バックエンドには適用しない
-                  const isOllama = (m.backend ?? "ollama") === "ollama";
-                  const light = isLightHybrid(m);
-                  const blocked = !m.installed
-                    || (isOllama && m.needs_ram && !m.ram_ok)
-                    || (isOllama && m.needs_ram && !light && !allowRam);
-                  const note = modelStatusNote(m)
-                    || (!isOllama ? ""
-                      : m.needs_ram && !m.ram_ok ? " ※RAM不足"
-                      : m.needs_ram && !light && !allowRam ? " ※RAM併用をONに"
-                      : m.needs_ram && !light ? " ※低速" : "");
-                  return (
-                    <option key={m.key} value={m.key} disabled={blocked}>
-                      {m.tag}{m.scanned ? " (PCから検出)" : m.for ? ` (${m.for})` : ""}{note}
-                    </option>
-                  );
-                })}
-              </optgroup>
-            ))}
-          </select>
+            onChange={setModel}
+            extraOptions={[{ value: "auto", label: "auto（自動選択）", title: "使うモデル。auto ならタスク内容に合わせて自動で選ばれる" }]}
+            describe={(m) => {
+              // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
+              // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)
+              // RAM条件は Ollama の配置概念なので、他サーバーには適用しない
+              const isOllama = (m.backend ?? "ollama") === "ollama";
+              const light = isLightHybrid(m);
+              const blocked = !m.installed
+                || (isOllama && m.needs_ram && !m.ram_ok)
+                || (isOllama && m.needs_ram && !light && !allowRam);
+              const note = modelStatusNote(m)
+                || (!isOllama ? ""
+                  : m.needs_ram && !m.ram_ok ? " ※RAM不足"
+                  : m.needs_ram && !light && !allowRam ? " ※RAM併用をONに"
+                  : m.needs_ram && !light ? " ※低速" : "");
+              return { blocked, note, suffix: m.scanned ? "(PCから検出)" : m.for ? `(${m.for})` : "" };
+            }}
+          />
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
 
           {/* 選択中モデルの接続先と状態(どのエンジンで動くかを常時見せる) */}
           {statusLine && (

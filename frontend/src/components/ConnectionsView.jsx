@@ -12,7 +12,7 @@ const CONN_TITLE = {
 };
 
 function connTitle(c) {
-  if (c.kind === "openai") return c.name ? `${c.name}（OpenAI互換サーバー）` : "OpenAI互換サーバー";
+  if (c.kind === "openai") return c.name || c.base_url;
   return CONN_TITLE[c.kind] ?? c.kind;
 }
 

@@ -184,7 +184,7 @@ export default function Sidebar({
                 ? "border-blue-500 bg-blue-500/10 text-blue-300"
                 : "border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100"
             }`}
-            title="接続状態(Ollama / OpenAI互換サーバー / Claude API の接続確認)"
+            title="接続状態(サーバーごとの接続確認)"
             aria-label="接続状態"
           >
             <Plug size={15} /> 接続状態

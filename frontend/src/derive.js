@@ -226,7 +226,7 @@ export function lastLine(node) {
 // 「どのサーバーで動くか」が分かる見出しにし、状態は色だけでなく言葉でも出す。
 export const BACKEND_META = {
   ollama: { label: "Ollama（このPC）", short: "Ollama" },
-  openai: { label: "OpenAI互換サーバー（llama-server / Strata）", short: "OpenAI互換サーバー" },
+  openai: { label: "接続先サーバー", short: "サーバー" },
   anthropic: { label: "Claude API（クラウド・従量課金）", short: "Claude API" },
 };
 
@@ -257,7 +257,7 @@ export function groupByBackend(models) {
     groups.push({
       key: `openai:${base}`,
       backend: "openai",
-      label: name ? `${name} ・ ${base}` : `OpenAI互換サーバー ・ ${base}`,
+      label: name ? `${name} ・ ${base}` : `${base}`,
       models: ms,
     });
   }
