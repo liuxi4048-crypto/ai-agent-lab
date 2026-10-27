@@ -31,6 +31,13 @@ class Node:
         self.preview = ""         # 生成中テキストの末尾プレビュー
         self.output = ""          # 完全な出力
         self.think = ""           # thinking(推論)テキスト。UIでは折りたたみ表示
+        # ストリーム蓄積用バッファ。output/think へ文字列 += で足すと、チャンク
+        # ごとに蓄積済み全文のコピーが発生し二乗オーダーになる(長文生成で顕著)。
+        # 部品を貯めて flush/snapshot のタイミングで join する(2026-10-27監査)。
+        self._out_parts: list[str] = []
+        self._out_len = 0         # output + _out_parts の合計長
+        self._think_parts: list[str] = []
+        self._think_len = 0       # think + _think_parts の合計長(切り捨て前)
         self.prompt = ""          # 与えたプロンプト(ログ表示用)
         self.log: list[str] = []  # coder ノードの逐次ログ
         self.started_at: float | None = None
@@ -38,7 +45,36 @@ class Node:
         self.progress: tuple[int, int] | None = None  # (完了, 総数) 親ノード用
         self.ctx_fill: float | None = None  # コンテキスト充填率(coderノード)
 
+    def sync_output(self) -> str:
+        """貯めた部品を output へ合体させる(冪等)。"""
+        if self._out_parts:
+            self.output += "".join(self._out_parts)
+            self._out_parts.clear()
+            if len(self.output) > OUTPUT_CAP:
+                self.output = self.output[:OUTPUT_CAP]
+            self._out_len = len(self.output)
+        return self.output
+
+    def sync_think(self) -> str:
+        """貯めた部品を think へ合体させる(冪等)。上限超過分は先頭から落とす。"""
+        if self._think_parts:
+            self.think += "".join(self._think_parts)
+            self._think_parts.clear()
+            if len(self.think) > THINK_CAP:
+                self.think = self.think[-THINK_CAP:]
+            self._think_len = len(self.think)
+        return self.think
+
+    def output_len(self) -> int:
+        return self._out_len
+
+    def think_len(self) -> int:
+        return min(self._think_len, THINK_CAP)
+
     def snapshot(self) -> dict[str, Any]:
+        self.sync_output()
+        self.sync_think()
+        self.preview = self.output[-120:]
         # log はコピーを返す(persist がワーカースレッドで json.dumps する間に
         # イベントループ側が append すると "changed size during iteration" になるため)
         return {
@@ -80,7 +116,9 @@ class EventBus:
 
     # ---- 購読 ----
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+        # 上限なしだと、詰まったクライアント分だけメモリが際限なく育つ。
+        # 満杯の購読者にはそのイベントを落とす(再接続時の snapshot で回復する)
+        q: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._subscribers.append(q)
         return q
 
@@ -90,7 +128,10 @@ class EventBus:
 
     def _publish(self, event: dict) -> None:
         for q in self._subscribers:
-            q.put_nowait(event)
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
 
     def full_snapshot(self) -> dict:
         """スナップショット全量。必ずイベントループスレッド上で呼ぶこと
@@ -123,7 +164,9 @@ class EventBus:
             node.tokens = nd.get("tokens", 0)
             node.preview = nd.get("preview", "")
             node.output = nd.get("output", "")
+            node._out_len = len(node.output)
             node.think = nd.get("think", "")
+            node._think_len = len(node.think)
             node.prompt = nd.get("prompt", "")
             node.log = list(nd.get("log") or [])
             node.started_at = nd.get("started_at")
@@ -194,9 +237,9 @@ class EventBus:
     def token_progress(self, node_id: str, piece: str) -> None:
         node = self.nodes[node_id]
         node.tokens += 1
-        if len(node.output) < OUTPUT_CAP:
-            node.output += piece
-        node.preview = node.output[-120:]
+        if node._out_len < OUTPUT_CAP:
+            node._out_parts.append(piece)
+            node._out_len += len(piece)
         if node.status != "generating":
             # set_status 経由で正規の status_changed を発行(started_at も立つ)
             self.set_status(node_id, "generating")
@@ -212,9 +255,8 @@ class EventBus:
         実測値は区切りごとに set_tokens で上書きされるため、近似カウントでよい。
         """
         node = self.nodes[node_id]
-        node.think += piece
-        if len(node.think) > THINK_CAP:
-            node.think = node.think[-THINK_CAP:]
+        node._think_parts.append(piece)
+        node._think_len += len(piece)
         node.tokens += 1
         if node.status != "generating":
             self.set_status(node_id, "generating")
@@ -237,6 +279,8 @@ class EventBus:
         for node_id in self._tok_dirty:
             node = self.nodes.get(node_id)
             if node is not None and node.status not in ("done", "error", "cancelled"):
+                node.sync_output()
+                node.preview = node.output[-120:]
                 self._publish({"type": "token_progress", "id": node_id,
                                "tokens": node.tokens, "preview": node.preview})
         self._tok_dirty.clear()
@@ -245,6 +289,7 @@ class EventBus:
             if node is not None:
                 # total を添える: snapshot直後に接続したクライアントが、snapshotに
                 # 含まれ済みのバッファ分を二重追記しないための冪等キー
+                node.sync_think()
                 self._publish({"type": "think_progress", "id": node_id,
                                "piece": "".join(pieces), "total": len(node.think)})
         self._think_buf.clear()
@@ -292,10 +337,15 @@ class EventBus:
         node = self.nodes[node_id]
         if output is not None:
             node.output = output
+            node._out_parts.clear()
+            node._out_len = len(output)
             node.preview = output[-120:]
         if error is not None:
             node.output = error
+            node._out_parts.clear()
+            node._out_len = len(error)
             node.preview = error[:120]
+        node.sync_think()
         self.set_status(node_id, "error" if error else "done")
         self._publish({"type": "node_completed", "id": node_id,
                        "output": node.output, "error": error})

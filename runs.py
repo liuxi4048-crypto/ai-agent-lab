@@ -46,8 +46,8 @@ def _run_signature(run: "Run") -> tuple:
     total = 0
     statuses = []
     for n in bus.nodes.values():
-        total += (len(n.log) + len(n.preview or "") + len(n.think or "")
-                  + len(n.output or "") + len(n.prompt or "") + n.tokens)
+        total += (len(n.log) + len(n.preview or "") + n.think_len()
+                  + n.output_len() + len(n.prompt or "") + n.tokens)
         statuses.append((n.status, n.progress, n.ctx_fill))
     hist = 0
     for m in run.history:
@@ -283,10 +283,16 @@ class RunManager:
             finally:
                 ck.cancel()
                 run.reject_pending()
-                self.persist(run)
+                await self.persist_async(run)   # 最終保存の書き込みでループを塞がない
                 self.live.pop(run.id, None)  # 以後は runs/*.json から配信(メモリ解放)
 
         run.task_obj = asyncio.create_task(_gated())
+
+    async def persist_async(self, run: Run, final: bool = True) -> None:
+        """persist の非同期版: _encode はループ上で行い、json 化と書き込みだけを
+        ワーカースレッドへ逃がす(終了時の最終保存でループを塞がない。監査)。"""
+        data = self._encode(run, final)
+        await asyncio.to_thread(self._write_record, run, data, final)
 
     def persist(self, run: Run, final: bool = True) -> None:
         """Runの状態をディスクへ書く。final=False はチェックポイント(実行中のまま)。
@@ -360,7 +366,12 @@ class RunManager:
             items.append(s)
         seen = {r["id"] for r in items}
         if RUNS_DIR.is_dir():
-            for path in RUNS_DIR.glob("*.json"):
+            paths = list(RUNS_DIR.glob("*.json"))
+            # 消えたファイルのキャッシュを掃除する(残すと件数分だけ静かに育つ)
+            current = {str(p) for p in paths}
+            for key in [k for k in self._summary_cache if k not in current]:
+                self._summary_cache.pop(key, None)
+            for path in paths:
                 if path.stem in seen:
                     continue   # ライブ実行中のチェックポイントは毎回mtimeが変わるためパースしない
                 summary = self._summary_cached(path)

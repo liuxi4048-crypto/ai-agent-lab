@@ -424,7 +424,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
         messages.append({"role": "user",
                          "content": "反復上限に達した。ここまでの成果・動くもの・残課題を簡潔に日本語でREPORTして。"})
         try:
-            rep = await llm.chat(cfg, key, messages)
+            rep = await llm.chat(cfg, key, messages, num_predict=1200)   # REPORT は要約。無制限生成を防ぐ
             llm.strip_meta(rep)
             report = rep.get("content") or ""
             messages.append(rep)
@@ -463,11 +463,22 @@ COMPRESS_RATIO = 0.7    # 概算トークンが num_ctx のこの割合を超え
 MEASURED_RATIO = 0.85   # 実測プロンプトトークンがこの割合を超えたら概算に関係なく圧縮
 
 
+def _chars(obj) -> int:
+    """json.dumps せずに文字列量だけを数える(dumps は毎ステップ全文を複製していた)。"""
+    if isinstance(obj, str):
+        return len(obj)
+    if isinstance(obj, dict):
+        return sum(len(str(k)) + _chars(v) for k, v in obj.items())
+    if isinstance(obj, (list, tuple)):
+        return sum(_chars(v) for v in obj)
+    return len(str(obj))
+
+
 def _approx_tokens(messages):
     # 日本語は1文字≒1トークン、英語コードは3〜4文字≒1トークン。混在前提で //2 の
     # 保守的係数を使う(//3 は日本語主体の履歴で約3倍の過小評価になり、Ollamaの
     # 無言切り捨てを見逃していた)。
-    return sum(len(json.dumps(m, ensure_ascii=False)) for m in messages) // 2
+    return sum(_chars(m) for m in messages) // 2
 
 
 def _squash(messages, keep, cap=160):

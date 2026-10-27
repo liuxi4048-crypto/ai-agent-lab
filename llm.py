@@ -401,6 +401,8 @@ async def _openai_events(info, payload, timeout):
     """SSEを逐次通知し、最後に内部形式の応答を返す。"""
     base = info["base_url"].rstrip("/")
     msg = {"role": "assistant", "content": ""}
+    content_parts: list[str] = []   # 文字列 += の二乗コピーを避け最後に join する
+    arg_parts: dict[int, list[str]] = {}
     thinking, calls, usage = [], {}, {}
     started, first = time.monotonic(), None
     reason = None
@@ -433,24 +435,29 @@ async def _openai_events(info, payload, timeout):
                                 if first is None:
                                     first = time.monotonic()
                                 if target == "content":
-                                    msg["content"] += piece
+                                    content_parts.append(piece)
                                 else:
                                     thinking.append(piece)
                                 yield {target: piece}
                         for tc in delta.get("tool_calls") or []:
-                            call = calls.setdefault(tc.get("index", 0), {
+                            idx = tc.get("index", 0)
+                            call = calls.setdefault(idx, {
                                 "id": "", "type": "function", "function": {"name": "", "arguments": ""}})
                             if tc.get("id"):
                                 call["id"] += tc["id"]
-                            for field in ("name", "arguments"):
-                                call["function"][field] += (tc.get("function") or {}).get(field) or ""
+                            call["function"]["name"] += (tc.get("function") or {}).get("name") or ""
+                            piece = (tc.get("function") or {}).get("arguments")
+                            if piece:
+                                arg_parts.setdefault(idx, []).append(piece)
                         if choice.get("finish_reason"):
                             reason = choice["finish_reason"]
     except httpx.ConnectError as e:
         raise OllamaError(f"OpenAI互換に接続できません ({base})。llama-server / Strata が起動しているか確認: {e}") from e
     except (httpx.TransportError, json.JSONDecodeError) as e:
         raise OllamaError(f"OpenAI互換 ({base}) 応答の受信に失敗: {e}") from e
-    for call in calls.values():
+    msg["content"] = "".join(content_parts)
+    for idx, call in calls.items():
+        call["function"]["arguments"] = "".join(arg_parts.get(idx, []))
         try:
             call["function"]["arguments"] = json.loads(call["function"]["arguments"] or "{}")
         except json.JSONDecodeError as e:
@@ -547,6 +554,7 @@ async def _anthropic_events(info, payload, timeout):
                "content-type": "application/json"}
     msg = {"role": "assistant", "content": ""}
     blocks, fragments, usage = {}, {}, {}
+    text_parts: dict[str, list[str]] = {}   # 文字列 + の二乗コピーを避け最後に join
     started, first, reason, complete = time.monotonic(), None, None, False
     try:
         async with _client_ctx("anthropic", timeout) as client:
@@ -598,7 +606,7 @@ async def _anthropic_events(info, payload, timeout):
                         delta = event["delta"]
                         if delta["type"] == "input_json_delta":
                             index = event["index"]
-                            fragments[index] = fragments.get(index, "") + delta.get("partial_json", "")
+                            fragments.setdefault(index, []).append(delta.get("partial_json", ""))
                         elif delta["type"] == "text_delta":
                             piece, target = delta.get("text"), "content"
                         elif delta["type"] == "thinking_delta":
@@ -606,7 +614,7 @@ async def _anthropic_events(info, payload, timeout):
                     elif typ == "content_block_stop":
                         index = event["index"]
                         if index in fragments:
-                            blocks[index]["input"] = json.loads(fragments.pop(index))
+                            blocks[index]["input"] = json.loads("".join(fragments.pop(index)))
                     elif typ == "message_delta":
                         usage.update(event.get("usage") or {})
                         reason = event.get("delta", {}).get("stop_reason") or reason
@@ -617,12 +625,16 @@ async def _anthropic_events(info, payload, timeout):
                         if first is None:
                             first = time.monotonic()
                         field = "content" if target == "content" else "_thinking"
-                        msg[field] = msg.get(field, "") + piece
+                        text_parts.setdefault(field, []).append(piece)
                         yield {target: piece}
     except (httpx.TransportError, json.JSONDecodeError) as e:
         raise OllamaError(f"Anthropic 応答の受信に失敗: {type(e).__name__}") from None
     if not complete:
         raise OllamaError("Anthropic: message_stop 前にストリームが切断されました")
+    if text_parts.get("content"):
+        msg["content"] = "".join(text_parts["content"])
+    if text_parts.get("_thinking"):
+        msg["_thinking"] = "".join(text_parts["_thinking"])
     calls = []
     for index, block in sorted(blocks.items()):
         if block["type"] == "tool_use":
@@ -697,6 +709,7 @@ async def _stream_collect(payload, timeout, on_delta=None):
     (ツールループ側が生成の進行をUIへ流すために使う。同期・軽量な処理のみ想定)。
     """
     msg = {"role": "assistant", "content": ""}
+    content_parts: list[str] = []   # 文字列 += の二乗コピーを避け最後に join する
     thinking: list = []
     tool_calls: list = []
     t_start = time.monotonic()
@@ -725,7 +738,7 @@ async def _stream_collect(payload, timeout, on_delta=None):
                 if t_first is None and (m.get("content") or m.get("thinking")):
                     t_first = time.monotonic()
                 if m.get("content"):
-                    msg["content"] += m["content"]
+                    content_parts.append(m["content"])
                     notify("content", m["content"])
                 if m.get("thinking"):
                     thinking.append(m["thinking"])
@@ -743,6 +756,7 @@ async def _stream_collect(payload, timeout, on_delta=None):
                     msg["_done_reason"] = reason or "unknown"
                     msg["_timing"] = _timing_from_done(chunk, t_start, t_first)
                     break
+    msg["content"] = "".join(content_parts)
     if tool_calls:
         msg["tool_calls"] = tool_calls
     if thinking:
@@ -767,27 +781,29 @@ async def chat(cfg, key, messages, tools=None, temperature=None,
                        True, json_schema, think, num_predict, options_override)
     t = httpx.Timeout(timeout or IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
     last_err = None
-    async with _gate(info):
-        for attempt in range(max(1, retries)):
-            try:
+    for attempt in range(max(1, retries)):
+        try:
+            # ゲートは生成中だけ保持し、リトライ間隔の sleep は外で待つ
+            # (hybrid の直列化ロックを待機時間まで占有しない。監査 2026-10-27)
+            async with _gate(info):
                 if info.get("backend") == "anthropic":
                     return await _anthropic_collect(info, payload, t, on_delta)
                 if info.get("backend") == "openai":
                     return await _openai_collect(info, payload, t, on_delta)
                 return await _stream_collect(payload, t, on_delta)
-            except OllamaFatal:
-                raise    # 4xx はリトライしても無駄。即時失敗
-            except httpx.ConnectError as e:
-                last_err = OllamaError(
-                    f"Ollamaに接続できません ({OLLAMA_BASE})。ollama serve の起動を確認: {e}")
-            except (httpx.TransportError, json.JSONDecodeError) as e:
-                # ReadTimeout / ConnectTimeout / RemoteProtocolError / 途中切断の
-                # 不正JSON行 — いずれも一時障害としてリトライ対象
-                last_err = OllamaError(f"Ollama応答の受信に失敗: {type(e).__name__}: {e}")
-            except OllamaError as e:
-                last_err = e
-            if attempt < retries - 1:
-                await asyncio.sleep(2 * (attempt + 1))
+        except OllamaFatal:
+            raise    # 4xx はリトライしても無駄。即時失敗
+        except httpx.ConnectError as e:
+            last_err = OllamaError(
+                f"Ollamaに接続できません ({OLLAMA_BASE})。ollama serve の起動を確認: {e}")
+        except (httpx.TransportError, json.JSONDecodeError) as e:
+            # ReadTimeout / ConnectTimeout / RemoteProtocolError / 途中切断の
+            # 不正JSON行 — いずれも一時障害としてリトライ対象
+            last_err = OllamaError(f"Ollama応答の受信に失敗: {type(e).__name__}: {e}")
+        except OllamaError as e:
+            last_err = e
+        if attempt < retries - 1:
+            await asyncio.sleep(2 * (attempt + 1))
     raise last_err
 
 
@@ -796,11 +812,31 @@ async def chat_stream(cfg, key, messages, temperature=None,
                       think=None, num_predict=None):
     """ストリーミング呼び出し。{"content": piece} / {"thinking": piece} /
     {"done": True, "meta": {...}} の dict を逐次yieldする(ツールなし用途)。
+
+    まだ何も yield していない段階の接続失敗だけ、1回だけ再試行する
+    (chat() と違い従来はリトライが無く、接続直後の切断で即死していた。
+    途中まで流した後の再試行は出力が二重になるため行わない。監査 2026-10-27)。
     """
     info = resolve(cfg, key)
     payload = _payload(info, messages, None, temperature, num_ctx, json_mode,
                        True, json_schema, think, num_predict)
     t = httpx.Timeout(IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
+    emitted = False
+    for attempt in range(2):
+        try:
+            async for event in _chat_stream_once(info, payload, t):
+                emitted = True
+                yield event
+            return
+        except OllamaFatal:
+            raise
+        except OllamaError:
+            if emitted or attempt == 1:
+                raise
+            await asyncio.sleep(1.5)
+
+
+async def _chat_stream_once(info, payload, t):
     if info.get("backend") in ("openai", "anthropic"):
         events = _anthropic_events if info["backend"] == "anthropic" else _openai_events
         async with _gate(info):
@@ -1001,15 +1037,25 @@ async def prewarm_default(wait_sec=60.0):
     return await prewarm(cfg, key)
 
 
-async def list_models():
-    """インストール済みOllamaモデル名の一覧。"""
+async def list_models_with_status():
+    """(インストール済みモデル名一覧, 到達できたか) を /api/tags 1回で返す。
+
+    /models ハンドラが list_models と is_alive を別々に呼ぶと、同じ
+    /api/tags を2回叩くため、まとめて取る経路を用意した(監査 2026-10-27)。
+    """
     try:
         async with _client_ctx("ollama", httpx.Timeout(5.0)) as client:
             resp = await client.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
             resp.raise_for_status()
-            return [m["name"] for m in resp.json().get("models", [])]
+            return [m["name"] for m in resp.json().get("models", [])], True
     except httpx.HTTPError:
-        return []
+        return [], False
+
+
+async def list_models():
+    """インストール済みOllamaモデル名の一覧。"""
+    models, _alive = await list_models_with_status()
+    return models
 
 
 async def is_alive():

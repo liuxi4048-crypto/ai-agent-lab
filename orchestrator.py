@@ -943,8 +943,12 @@ class CodeOrchestrator:
             # 同じワークスペースで新たに作業させる
             extra = ""
             if not run.history:
-                prev = next((bus.nodes[i].output for i in reversed(bus.order)
-                             if bus.nodes[i].kind == "answer" and bus.nodes[i].output), "")
+                prev = ""
+                for i in reversed(bus.order):
+                    _n = bus.nodes[i]
+                    if _n.kind == "answer" and _n.sync_output():
+                        prev = _n.output
+                        break
                 extra = (f"元の依頼: {run.task}\n\nこれまでの結果:\n{prev[:4000]}\n\n"
                          "この続きとして、以下の追加指示に対応すること。") if prev else ""
             summary, history = await self._one_round(

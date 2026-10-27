@@ -165,7 +165,8 @@ async def claude() -> dict:
 @app.get("/models")
 async def models() -> dict:
     cfg = llm.load_config()
-    installed = set(await llm.list_models())
+    models_list, alive = await llm.list_models_with_status()   # /api/tags は1回だけ
+    installed = set(models_list)
     catalog = llm.model_catalog(cfg, installed)
 
     def _found(tag: str) -> bool:
@@ -184,7 +185,7 @@ async def models() -> dict:
     await llm.annotate_models(cfg, catalog["models"], installed, probes)
     # 接続状態パネル用: 接続先単位の到達可否と公開モデル一覧
     catalog["connections"] = llm.summarize_connections(
-        catalog["models"], installed, await llm.is_alive(), probes)
+        catalog["models"], installed, alive, probes)
     catalog["free_ram_gb"] = round(free_ram, 1) if free_ram is not None else None
     catalog["claude"] = claude_review.status()
     catalog["api_review"] = api_review.status()
@@ -466,10 +467,23 @@ class ExplainRequest(BaseModel):
     model: str = "worker"
 
 
+_json_file_cache: dict = {}
+
+
+def _read_json_cached(path: Path):
+    """静的JSONの読み込みキャッシュ(mtime+size が変わったときだけ読み直す)。"""
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key not in _json_file_cache:
+        _json_file_cache.clear()
+        _json_file_cache[key] = json.loads(path.read_text(encoding="utf-8"))
+    return _json_file_cache[key]
+
+
 @app.get("/insight/glossary")
 def insight_glossary():
-    base = json.loads((Path(__file__).parent / "insight" / "cclab" / "data" / "glossary.json").read_text(encoding="utf-8"))
-    local = json.loads((Path(__file__).parent / "insight" / "glossary_local.json").read_text(encoding="utf-8"))
+    base = _read_json_cached(Path(__file__).parent / "insight" / "cclab" / "data" / "glossary.json")
+    local = _read_json_cached(Path(__file__).parent / "insight" / "glossary_local.json")
     return {"categories": local["categories"] + base["categories"], "terms": local["terms"] + base["terms"]}
 
 

@@ -366,17 +366,31 @@ class Toolbox:
         p = self._safe_path(path)
         if not os.path.isfile(p):
             return f"(存在しない: {path})"
+        if start_line or end_line:
+            # 範囲指定時はその範囲だけ読む(巨大ファイルの全行読みを避ける)
+            s = max(1, int(start_line or 1))
+            e_req = int(end_line) if end_line else None
+            picked: list[str] = []
+            total = 0
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    total = i
+                    if i >= s and (e_req is None or i <= e_req):
+                        picked.append(line)
+            e = min(total, e_req) if e_req else total
+            body = "".join(picked)
+            prefix = f"(行 {s}-{e} / 全{total}行)\n"
+            if len(body) > 8000:
+                body = (body[:6000]
+                        + f"\n…(省略: 範囲{s}-{e}行/{len(body)}字。"
+                        "start_line/end_line で範囲を狭めて続きを読める)…\n"
+                        + body[-1000:])
+            return prefix + body
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         total = len(lines)
-        if start_line or end_line:
-            s = max(1, int(start_line or 1))
-            e = min(total, int(end_line or total))
-            body = "".join(lines[s - 1:e])
-            prefix = f"(行 {s}-{e} / 全{total}行)\n"
-        else:
-            body = "".join(lines)
-            prefix = ""
+        body = "".join(lines)
+        prefix = ""
         # コードはヘッダ・import・定義が先頭にあるため「先頭優先+末尾少量」で切る
         if len(body) > 8000:
             body = (body[:6000]
@@ -756,14 +770,16 @@ class Toolbox:
                     "手順書ではなく、実際に動くコードを作ってから finish してください。")
         return None
 
-    async def _check_js_after_write(self, path):
-        """書き込み直後のファイルを読み直してJS構文を検査する。"""
+    async def _check_js_after_write(self, path, content=None):
+        """書いた内容のJS構文を検査する。content があれば読み直さない。"""
         if not path:
             return None
         try:
-            p = self._safe_path(path)
-            with open(p, "r", encoding="utf-8", errors="replace") as f:
-                return await js_syntax_check(path, f.read())
+            if content is None:
+                p = self._safe_path(path)
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            return await js_syntax_check(path, content)
         except (OSError, ValueError):
             return None
 
@@ -804,7 +820,8 @@ class Toolbox:
         # HTML/JS はエージェントが実行して確かめられないので、書いた直後に構文だけ検査する
         # (write_file/edit_file の同期チェックは py/json 用。ここは非同期の Node 検査)
         if name in ("write_file", "edit_file") and not result.startswith(("[", "(")):
-            warn = await self._check_js_after_write(args.get("path", ""))
+            warn = await self._check_js_after_write(
+                args.get("path", ""), args.get("content") if name == "write_file" else None)
             if warn:
                 result += "\n" + warn
         if len(result) > RESULT_CAP:

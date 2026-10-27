@@ -19,12 +19,28 @@ KEY_HEADER = "Authorization"
 # 秘密検知の正本。読めない場合は外部送信しない(fail-closed)。
 SECRETSCAN_PATH = os.path.join(os.path.expanduser("~"), ".claude", "scripts", "secretscan.py")
 
+_secretscan_mod = None   # モジュール読み込みのキャッシュ(None=未試行 / False=読込失敗)
+
+
+def _load_secretscan():
+    global _secretscan_mod
+    if _secretscan_mod is None:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_api_review_secretscan", SECRETSCAN_PATH)
+            mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+            _secretscan_mod = mod
+        except Exception:
+            _secretscan_mod = False
+    return _secretscan_mod or None
+
+
 def _secret_hits(text: str):
     """送信本文の high 検知を (種別, 行) の一覧で返す。値は返さない。検査できなければ None。"""
+    mod = _load_secretscan()
+    if mod is None:
+        return None
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("_api_review_secretscan", SECRETSCAN_PATH)
-        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
         return [(h.kind, h.line) for h in mod.find(text) if h.severity == "high"]
     except Exception:
         return None
@@ -47,6 +63,8 @@ def _files(root: str) -> str:
         dirnames[:] = sorted(d for d in dirnames if d != ".git" and not _is_link(os.path.join(dirpath, d)))
         found += [Path(dirpath, n) for n in filenames]
     parts = []
+    total = 0
+    CAP = 800_000   # 送信上限。貯めてから切る方式だと巨大ツリーで無駄にメモリを使う
     for p in sorted(found):
         try:
             if _is_link(p):
@@ -54,10 +72,15 @@ def _files(root: str) -> str:
             real = p.resolve()
             if not real.is_relative_to(base) or real.stat().st_size > 200_000:   # 対象ルートの外は読まない
                 continue
-            parts.append(f"\n--- {p.relative_to(base)} ---\n{real.read_text(encoding='utf-8', errors='replace')}")
+            part = f"\n--- {p.relative_to(base)} ---\n{real.read_text(encoding='utf-8', errors='replace')}"
         except OSError:
-            pass
-    return "".join(parts)[:800_000]
+            continue
+        if total + len(part) > CAP:
+            parts.append(part[:CAP - total])
+            break
+        parts.append(part)
+        total += len(part)
+    return "".join(parts)
 
 async def review(*, task: str, root: str, summary: str = "", emit=None, should_stop=None) -> dict:
     out = {"ok": False, "summary": "", "tokens": 0, "error": None}

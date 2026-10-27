@@ -25,6 +25,7 @@ import shutil
 import statistics
 import time
 
+import httpx
 import yaml
 
 import llm
@@ -412,6 +413,12 @@ class BenchOrchestrator:
             "judge_tag": llm.resolve(self.cfg, self.judge_model)["tag"] if self.judge_model else None,
             "repeats": self.repeats,
             "task_ids": [t["id"] for t in self.tasks],
+            # 計測環境の記録(結果の再現性・比較可能性のため。監査 2026-10-27)。
+            # Ollama バージョンは run_bench 開始時に best-effort で埋める。
+            "env": {"ollama_version": None,
+                    **{k: os.environ[k] for k in ("OLLAMA_FLASH_ATTENTION", "OLLAMA_KV_CACHE_TYPE",
+                                                  "OLLAMA_NUM_PARALLEL", "OLLAMA_MAX_LOADED_MODELS")
+                       if os.environ.get(k)}},
             "phase": "generate",
             "tasks": [{
                 "id": t["id"], "title": t["title"], "category": t.get("category", ""),
@@ -538,7 +545,7 @@ class BenchOrchestrator:
         raw, result = "", None
         for attempt in range(2):   # _review_json と同じ「1回だけ再要求」方式
             msg = await llm.chat(self.cfg, self.judge_model, messages, json_schema=JUDGE_SCHEMA,
-                                 temperature=0.1, num_predict=4000, on_delta=on_delta, retries=1)
+                                 temperature=0.1, num_predict=1500, on_delta=on_delta, retries=1)
             meta = llm.strip_meta(msg)
             if meta.get("_usage"):
                 bus.set_tokens(node_id, meta["_usage"])
@@ -562,13 +569,17 @@ class BenchOrchestrator:
         bus, rec = self.bus, self.run.bench
         rec["phase"] = "judge"
         total = len(self.tasks) * self.repeats * 2
-        step = len(self.tasks) * self.repeats
-        for t_idx, task in enumerate(self.tasks):
-            for rep in rec["tasks"][t_idx]["reps"]:
-                step += 1
-                if rep.get("error"):
-                    bus.set_progress(root_id, step, total)
-                    continue
+        base = len(self.tasks) * self.repeats
+        done = sum(1 for t in rec["tasks"] for r in t["reps"] if r.get("error"))
+        bus.set_progress(root_id, base + done, total)
+        # judge は同一モデルへの短い呼び出しの繰り返しなので 2 並列にする
+        # (生成フェーズと違いモデル切替は起きない。OLLAMA_NUM_PARALLEL=2 前提。
+        # judge が hybrid の場合は llm 側ゲートで直列化される。監査 2026-10-27)
+        sem = asyncio.Semaphore(2)
+
+        async def one(task: dict, rep: dict) -> None:
+            nonlocal done
+            async with sem:
                 suffix = f" #{rep['rep']}" if self.repeats > 1 else ""
                 node_id = bus.create_node("reviewer", f"🔍 品質評価: {task['title']}{suffix}",
                                           f"judge: {rec['judge_tag']}", root_id)
@@ -588,8 +599,14 @@ class BenchOrchestrator:
                 except Exception as e:
                     rep["judge"] = {"scores": None, "comment": f"採点失敗: {e}", "model": self.judge_model}
                     bus.complete(node_id, error=f"採点失敗: {type(e).__name__}: {str(e)[:300]}")
-                bus.set_progress(root_id, step, total)
-                await self._refresh()
+            done += 1
+            bus.set_progress(root_id, base + done, total)
+            await self._refresh()
+
+        jobs = [one(task, rep) for t_idx, task in enumerate(self.tasks)
+                for rep in rec["tasks"][t_idx]["reps"] if not rep.get("error")]
+        if jobs:
+            await asyncio.gather(*jobs)
 
     # ---- まとめ ----
     def _report(self) -> str:
@@ -632,6 +649,12 @@ class BenchOrchestrator:
             f"課題 {len(self.tasks)}件 × {self.repeats}回 / judge: {rec['judge_tag'] or 'なし'}")
         bus.set_status(root_id, "running")
         bus.set_progress(root_id, 0, len(self.tasks) * self.repeats * (2 if self.judge_model else 1))
+        try:   # 計測環境: Ollama バージョン(best-effort、失敗してもベンチは続行)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as c:
+                r = await c.get(f"{llm.OLLAMA_BASE}/api/version")
+                rec["env"]["ollama_version"] = (r.json() or {}).get("version")
+        except Exception:
+            pass
         t0 = time.time()
         try:
             await self._phase_generate(root_id)

@@ -121,7 +121,13 @@ if ($Restart -and (Test-Path $PidPath)) {
     if ($proc -and $proc.ProcessName -like 'python*') {
         Write-Log "[run] 既存サーバ(PID $oldPid)を停止"
         Stop-Process -Id $oldPid -Force
-        Start-Sleep -Milliseconds 800
+        # 固定 sleep ではなく、プロセス終了とポート解放を実際に待つ(最大5秒)
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline) {
+            $alive = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+            if (-not $alive -and -not (Test-Port $Port)) { break }
+            Start-Sleep -Milliseconds 200
+        }
     }
     Remove-Item $PidPath -ErrorAction SilentlyContinue
 }
