@@ -70,6 +70,21 @@ def test_payload():
     assert llm._openai_payload(native)["response_format"] == {"type": "json_object"}
 
 
+@pytest.mark.parametrize("think, expected", [
+    (False, "none"), (True, "high"), ("low", "low"), (50, 50), (None, None),
+])
+def test_reasoning_effort(think, expected):
+    # think の指定は OpenAI 互換サーバー向けに reasoning_effort へ読み替える
+    native = llm._payload(llm.resolve(CFG, "remote"), [], None, None, None,
+                          False, True, None, think, None)
+    payload = llm._openai_payload(native)
+    if expected is None:
+        assert "reasoning_effort" not in payload
+    else:
+        assert payload["reasoning_effort"] == expected
+    assert "think" not in payload
+
+
 def test_stream_collection(monkeypatch):
     chunks = [
         {"choices": [{"delta": {"reasoning_content": "考察"}}]},

@@ -317,6 +317,17 @@ def _openai_payload(payload):
         options["max_tokens"] = payload["options"]["num_predict"]
     result = {**options, "model": payload["model"], "messages": messages,
               "stream": True, "stream_options": {"include_usage": True}}
+    # thinking の指定は OpenAI 互換の reasoning_effort へ読み替える(Strata の
+    # DeepSeek V4.1 等、think キーではなく reasoning_effort で推論量を決める
+    # サーバー向け)。未指定なら送らない(サーバー既定)。False は "none"=思考OFF、
+    # True はサーバー側の既定水準 "high"、文字列("low"等)と数値(1〜100)はそのまま。
+    tk = payload.get("think")
+    if tk is False:
+        result["reasoning_effort"] = "none"
+    elif tk is True:
+        result["reasoning_effort"] = "high"
+    elif isinstance(tk, (str, int)) and not isinstance(tk, bool):
+        result["reasoning_effort"] = tk
     if payload.get("tools"):
         result["tools"] = [{"type": "function", "function": dict(t.get("function", t))}
                            for t in payload["tools"]]

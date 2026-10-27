@@ -459,6 +459,31 @@ URLそのものが画面の主表示になることはありません。
 そのサーバーで対応していることを確認してください。サーバーの起動・モデルのロードは
 別途行います。UIの死活・GPU表示は引き続き Ollama 用です。
 
+#### DeepSeek V4.1-Flash-1017 を Strata で使う場合
+
+Strata 0.2.4 以降、DeepSeek V4.1-Flash-1017（552B MoE）が専用エンジン
+`strata-dsv41` で動きます（2026-10-27 時点の公式ドキュメントに基づく）。
+登録例は models.yaml の「deepseek_strata」のコメントを参照してください。
+使う前に実機で `strata launch --family deepseek41 --model ist-das-2.25bpw --plan`
+を実行し、自分のグラフィックカード向けのエンジンが存在するか・配置予測・
+Speed モードを、大きなダウンロードの前に確認すること。
+
+- 量子化は ISTA-DASLab の GSQ-RCO セット。コーディング／エージェント用途は
+  **IQ2_XS（2.25bpw、274GB）** が公式の推奨（品質低下は agent 作業で +2.2%）。
+  ディスクが厳しければ IQ2_XXS（2.00bpw、257GB）。要 NVMe SSD・RAM 46GB 以上
+  （64GB が実測で快適な水準）。Engram テーブル 111GB は各セットに含まれる。
+- 対応は NVIDIA RTX 30/40/50（Windows / Linux）と Radeon AI PRO R9700
+  （Linux のみ）。**RX 9070 系は「ビルドはあるが未検証」**で、Windows 向けの
+  DeepSeek エンジンは 0.2.4.2 時点で未提供（Windows 用パッケージは CUDA のみ）。
+- 制約：コンテキストは起動時の **8192 トークン**、同時リクエスト不可、画像不可。
+  ai-agent-lab では単独 Run のチャット／調査向きで、並列実行や swarm には使わない。
+- thinking はサーバー既定で ON（水準 high、思考予算は最大 32768 トークン）。
+  数 tok/s 級の速度では思考だけで何時間もかかるため、llm.py は models.yaml の
+  `think` を OpenAI 互換の `reasoning_effort` として送ります（登録例では "low"）。
+  速度の最適化は Strata 側の `--speed faster`（VRAM 16GB 以下では既定。専門家の
+  6→5 で少しだけ品質が下がる）と `strata launch --tune quick`（実測して 5% 以上
+  速くなる設定だけを残す自動調整、5〜10分）が担います。
+
 ### Anthropic（Claude API）バックエンド
 
 `models:` 配下に次のように追加し、`tag` に利用可能な Claude のモデルIDを指定します。

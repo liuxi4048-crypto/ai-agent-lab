@@ -394,6 +394,28 @@ models:
     for: "軽量チャット・多言語(コード生成は不可)"
     use: "高速チャット・多言語 / 非エージェント"
 
+  # === DeepSeek V4.1-Flash-1017 を Strata(strata-dsv41)で使う場合の登録例 ===
+  # 使うときにコメントを外し、tag を実機の http://127.0.0.1:8080/v1/models が
+  # 返す id に合わせること。制約と前提(2026-10-27、Strata 0.2.4.2/0.2.5 の公式
+  # ドキュメント時点): コンテキストは起動時の 8192 が上限、同時リクエスト不可
+  # (並列Run・swarm では使わない)、画像不可、速度は数 tok/s 級。
+  # deepseek_strata:
+  #   tag: "<Strata の /v1/models が返す id>"
+  #   backend: openai
+  #   base_url: "http://127.0.0.1:8080/v1"
+  #   server_name: "Strata"
+  #   family: deepseek
+  #   tier: probation        # 実タスク完走の実測が無いうちはツール必須経路の自動選択から外す
+  #   placement: hybrid      # 直列実行を強制(dsv41 は同時リクエストを受けないため)
+  #   tools: true            # DSML のツール呼び出しをサーバーが OpenAI 形式へ変換する
+  #   num_ctx: 8192          # dsv41 の起動時コンテキスト(既定8192)に一致させる
+  #   think: "low"           # 既定は high で思考予算が最大32768トークンまで伸びる。
+  #                          # 数 tok/s 級では思考だけで何時間もかかるため浅くする
+  #                          # (llm.py が reasoning_effort として送信する)
+  #   options: {temperature: 0.6, top_p: 0.95, min_p: 0}
+  #   strengths: [coding, reasoning, tool]
+  #   for: "超大型MoE(552B)。Strata経由・低速・8K文脈"
+
 default: coder
 
 # カスケード(安価な一次受け → 本命 → 上位のエスカレーション)。
