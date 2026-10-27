@@ -234,12 +234,37 @@ export function backendMeta(m) {
   return BACKEND_META[m?.backend] ?? BACKEND_META.ollama;
 }
 
-/** モデル一覧をバックエンド順(Ollama → OpenAI互換 → Claude API)にグループ化する */
+/**
+ * モデル一覧をグループ化する(Ollama → OpenAI互換 → Claude API の順)。
+ * OpenAI互換は「プロトコル」ではなく「接続先サーバー」ごとに分ける:
+ * llama-server と Strata が同じ枠に入ると見分けが付かないため、base_url 単位で
+ * グループを作り、見出しに server_name(models.yaml の任意指定)があれば名前を、
+ * なければ接続先URLを出す。返り値: [{key, backend, label, models}]
+ */
 export function groupByBackend(models) {
-  const order = ["ollama", "openai", "anthropic"];
-  return order
-    .map((b) => ({ backend: b, meta: BACKEND_META[b], models: models.filter((m) => (m.backend ?? "ollama") === b) }))
-    .filter((g) => g.models.length > 0);
+  const groups = [];
+  const ollama = models.filter((m) => (m.backend ?? "ollama") === "ollama");
+  if (ollama.length > 0)
+    groups.push({ key: "ollama", backend: "ollama", label: BACKEND_META.ollama.label, models: ollama });
+  const byServer = new Map();
+  for (const m of models.filter((m) => m.backend === "openai")) {
+    const base = m.base_url || "";
+    if (!byServer.has(base)) byServer.set(base, []);
+    byServer.get(base).push(m);
+  }
+  for (const [base, ms] of byServer) {
+    const name = ms.find((m) => m.server_name)?.server_name;
+    groups.push({
+      key: `openai:${base}`,
+      backend: "openai",
+      label: name ? `${name} ・ ${base}` : `OpenAI互換サーバー ・ ${base}`,
+      models: ms,
+    });
+  }
+  const anthropic = models.filter((m) => m.backend === "anthropic");
+  if (anthropic.length > 0)
+    groups.push({ key: "anthropic", backend: "anthropic", label: BACKEND_META.anthropic.label, models: anthropic });
+  return groups;
 }
 
 /** 選択肢の末尾に付ける状態注記(使えない理由)。使える場合は "" */
@@ -264,11 +289,12 @@ export function modelStatusLine(m) {
   }
   if (m.backend === "openai") {
     const base = m.base_url || "";
+    const who = m.server_name || meta.short;
     if (m.backend_status === "server_unreachable")
-      return { dot: "bg-red-400", text: `${meta.short} ・ ${base} ・ サーバー未接続（起動すると使えます）` };
+      return { dot: "bg-red-400", text: `${who} ・ ${base} ・ サーバー未接続（起動すると使えます）` };
     if (m.backend_status === "model_missing")
-      return { dot: "bg-red-400", text: `${meta.short} ・ ${base} ・ このモデルはサーバーにありません` };
-    return { dot: "bg-green-400", text: `${meta.short} ・ ${base} ・ 接続OK` };
+      return { dot: "bg-red-400", text: `${who} ・ ${base} ・ このモデルはサーバーにありません` };
+    return { dot: "bg-green-400", text: `${who} ・ ${base} ・ 接続OK` };
   }
   return m.installed
     ? { dot: "bg-green-400", text: "Ollama ・ このPCに導入済み" }

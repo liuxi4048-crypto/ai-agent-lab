@@ -170,7 +170,7 @@ export default function TaskInput({ models, onStart, prefill, onCancel, visible,
           >
             <option value="auto">auto (タスクに合わせて自動選択)</option>
             {groupByBackend(modelOptions).map((g) => (
-              <optgroup key={g.backend} label={g.meta.label}>
+              <optgroup key={g.key} label={g.label}>
                 {g.models.map((m) => {
                   // RAM併用モデルは、トグルOFF・空きRAM不足なら選ばせない。
                   // ただし軽量hybrid(≤8GB)は実用速度なのでトグル不要(自動選択と同じ基準)

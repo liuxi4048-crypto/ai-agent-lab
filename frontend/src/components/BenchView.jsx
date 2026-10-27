@@ -145,7 +145,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                 className="max-w-80 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
               >
                 {groupByBackend(modelOptions).map((g) => (
-                  <optgroup key={g.backend} label={g.meta.label}>
+                  <optgroup key={g.key} label={g.label}>
                     {g.models.map((m) => {
                       const tier = TIER_LABEL[m.tier];
                       const note = m.scanned ? ""
@@ -172,7 +172,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                 <option value="auto">auto(異ファミリー)</option>
                 <option value="none">なし(自動チェックのみ)</option>
                 {groupByBackend(modelOptions.filter(usable)).map((g) => (
-                  <optgroup key={g.backend} label={g.meta.label}>
+                  <optgroup key={g.key} label={g.label}>
                     {g.models.map((m) => (
                       <option key={m.key} value={m.key}>{m.tag}</option>
                     ))}

@@ -153,6 +153,7 @@ def resolve(cfg, key):
         return {"key": key, "tag": key, "family": fam, "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
                 "num_gpu": None, "ram_gb": 0, "backend": "ollama", "base_url": OLLAMA_BASE,
+                "server_name": "",
                 "options": default_options(fam), "options_no_think": {},
                 "think": None, "tier": "discovered",
                 "strengths": [], "for": f"{key} (自動検出)",
@@ -163,6 +164,7 @@ def resolve(cfg, key):
         "base_url": (m.get("base_url") or os.environ.get("OPENAI_COMPAT_BASE") or "http://localhost:8080/v1")
                     if m.get("backend") == "openai" else (
                         ANTHROPIC_BASE if m.get("backend") == "anthropic" else OLLAMA_BASE),
+        "server_name": m.get("server_name", ""),  # UI表示用: 接続先サーバーの名前(任意)
         "tag": m["tag"],
         "family": m.get("family", "unknown"),
         "placement": m.get("placement", "vram"),

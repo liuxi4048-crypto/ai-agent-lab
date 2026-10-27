@@ -82,3 +82,11 @@ def test_unusable_reason_mentions_backend():
     assert "ANTHROPIC_API_KEY" in llm.unusable_reason(cloud, "no_api_key")
     local = llm.resolve(CFG, "local")
     assert "ollama pull" in llm.unusable_reason(local, "not_installed")
+
+
+def test_resolve_server_name_passthrough():
+    cfg = {"models": {"s": {"tag": "m1", "backend": "openai",
+                            "base_url": "http://localhost:9000/v1",
+                            "server_name": "Strata"}}}
+    assert llm.resolve(cfg, "s")["server_name"] == "Strata"
+    assert llm.resolve(CFG, "remote")["server_name"] == ""
