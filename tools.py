@@ -559,13 +559,31 @@ class Toolbox:
                         else _console_approve(command, cwd))
             if not ok:
                 return "[スキップ] ユーザーが実行を承認しなかった"
+        async def _drain(stream, keep_bytes):
+            """末尾だけを保持しながら読み切る(巨大出力でメモリを膨らませない)。"""
+            tail = bytearray()
+            total = 0
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                tail += chunk
+                if len(tail) > keep_bytes * 2:
+                    del tail[:len(tail) - keep_bytes]
+            return bytes(tail), total
+
         proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=cwd, env=self.env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                (out_b, out_total), (err_b, err_total) = await asyncio.wait_for(
+                    asyncio.gather(_drain(proc.stdout, 32768),
+                                   _drain(proc.stderr, 16384)),
+                    timeout=timeout)
+                await proc.wait()
             except asyncio.TimeoutError:
                 return f"[timeout] {timeout}s 超過: {command}"
         except OSError as e:
@@ -580,8 +598,12 @@ class Toolbox:
                     await asyncio.shield(proc.wait())
                 except BaseException:
                     pass
-        out = stdout.decode("utf-8", errors="replace")[-4000:]
-        err = stderr.decode("utf-8", errors="replace")[-2000:]
+        out = out_b.decode("utf-8", errors="replace")[-4000:]
+        err = err_b.decode("utf-8", errors="replace")[-2000:]
+        if out_total > len(out_b):
+            out = f"…(全{out_total}バイトの末尾のみ表示)…\n" + out
+        if err_total > len(err_b):
+            err = f"…(全{err_total}バイトの末尾のみ表示)…\n" + err
         if proc.returncode == 0:
             self.verified_run = True   # script/exe の finishゲートが参照する「動いた証拠」
         return f"exit={proc.returncode}\n--- stdout ---\n{out}\n--- stderr ---\n{err}"

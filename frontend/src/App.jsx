@@ -1,6 +1,6 @@
 import PhaseStepper from "./components/PhaseStepper.jsx";
 import Markdown from "./components/md.jsx";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Star, Inbox, WifiOff, AlertTriangle, Hourglass, X } from "lucide-react";
 import Header from "./components/Header.jsx";
 import TaskInput from "./components/TaskInput.jsx";
@@ -11,10 +11,13 @@ import LogDrawer from "./components/LogDrawer.jsx";
 import ArtifactDrawer from "./components/ArtifactDrawer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import ApprovalBar from "./components/ApprovalBar.jsx";
-import BenchView from "./components/BenchView.jsx";
-import BenchPanel from "./components/BenchPanel.jsx";
-import InsightView from "./components/insight/InsightView.jsx";
-import ConnectionsView from "./components/ConnectionsView.jsx";
+// 重い画面は遅延読み込みにして初期バンドルを小さく保つ(開いたときにだけ取得)
+const BenchView = lazy(() => import("./components/BenchView.jsx"));
+const BenchPanel = lazy(() => import("./components/BenchPanel.jsx"));
+const InsightView = lazy(() => import("./components/insight/InsightView.jsx"));
+const ConnectionsView = lazy(() => import("./components/ConnectionsView.jsx"));
+
+const viewFallback = <div className="p-6 text-sm text-slate-400">読み込み中…</div>;
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf, segmentByPhase, PHASE_META } from "./derive.js";
 import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun, startBench } from "./api.js";
@@ -530,19 +533,29 @@ export default function App() {
             />
           </div>
 
-          {insighting && <InsightView models={models} />}
+          {insighting && (
+            <Suspense fallback={viewFallback}>
+              <InsightView models={models} />
+            </Suspense>
+          )}
 
-          {connecting && <ConnectionsView models={models} onRefresh={refreshModels} />}
+          {connecting && (
+            <Suspense fallback={viewFallback}>
+              <ConnectionsView models={models} onRefresh={refreshModels} />
+            </Suspense>
+          )}
 
           {benching && (
-            <BenchView
-              models={models}
-              runs={runsView}
-              onStart={handleStartBench}
-              onCancel={view.from || runsView.length ? handleCancelBench : null}
-              prefill={benchPrefill}
-              onSelectRun={selectRun}
-            />
+            <Suspense fallback={viewFallback}>
+              <BenchView
+                models={models}
+                runs={runsView}
+                onStart={handleStartBench}
+                onCancel={view.from || runsView.length ? handleCancelBench : null}
+                prefill={benchPrefill}
+                onSelectRun={selectRun}
+              />
+            </Suspense>
           )}
 
           {!drafting && currentRun && (
@@ -584,11 +597,13 @@ export default function App() {
               {/* ワークスペース: 工程セグメント別のエージェントカード(ベンチは2軸パネルを先頭に) */}
               <main className="min-h-0 flex-1 overflow-y-auto">
               {currentRun.mode === "bench" && (
-                <BenchPanel
-                  bench={currentRun.bench}
-                  status={currentRun.status}
-                  othersRunning={runsView.filter((r) => r.status === "running" && r.id !== currentId).length}
-                />
+                <Suspense fallback={viewFallback}>
+                  <BenchPanel
+                    bench={currentRun.bench}
+                    status={currentRun.status}
+                    othersRunning={runsView.filter((r) => r.status === "running" && r.id !== currentId).length}
+                  />
+                </Suspense>
               )}
               <div className="p-4">
                 <PhaseStepper nodes={agentNodes} />

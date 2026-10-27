@@ -231,12 +231,13 @@ def _classify_artifact(rel: str) -> tuple[str, int]:
     return "file", 6
 
 
-def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
+def _collect_files(root: str, cap_bytes: int = 30000, digest: bool = True) -> tuple[str, list[dict]]:
     """run ディレクトリ配下のファイル一覧と(上限付き)内容ダイジェストを返す。
 
     返り値: (レビュー用テキスト, artifacts用 [{name, path, kind, runnable}])
     path は /projects/ 配下の静的配信URL。runnable=True のものはダッシュボードで
     「▶ 実行」として最上位に表示される。
+    digest=False の呼び出し(成果物一覧だけが要る箇所)では内容を読まない。
     """
     from tools import WORKSPACE
     # テキストとして読む価値のある拡張子だけダイジェストに載せる(バイナリの化け文字混入防止)
@@ -263,6 +264,8 @@ def _collect_files(root: str, cap_bytes: int = 30000) -> tuple[str, list[dict]]:
             artifacts.append({"name": rel, "path": f"/projects/{rel_ws}",
                               "kind": kind, "runnable": kind in ("html", "exe", "bat"),
                               "_prio": prio})
+            if not digest:
+                continue   # 一覧のみの呼び出しでは内容を読まない
             if os.path.splitext(fn)[1].lower() not in text_ext:
                 continue   # バイナリ等は一覧のみ(内容は載せない)
             if used >= cap_bytes:
@@ -321,7 +324,7 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
         if res["edits"] > 0:
             # 途中終了でも実際に書き込まれた修正はディスクに残っているので、
             # ロールバックせず成果物として救い出す
-            _, artifacts = _collect_files(toolbox.root)
+            _, artifacts = _collect_files(toolbox.root, digest=False)
             merged = ((summary + "\n\n" if summary else "")
                       + f"⚠ Claudeレビューは途中終了({res['error']})だが、"
                         f"{res['edits']}件の修正はディスクに適用済み")
@@ -331,7 +334,7 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
 
     bus.set_title(node_id, f"🤖 Claudeレビュー — {res['edits']}件修正")
     bus.complete(node_id, res["summary"])
-    _, artifacts = _collect_files(toolbox.root)
+    _, artifacts = _collect_files(toolbox.root, digest=False)
     merged = ((summary + "\n\n" if summary else "")
               + "【Claudeレビュー】\n" + res["summary"])
     return merged, artifacts, True

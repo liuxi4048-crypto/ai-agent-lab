@@ -221,6 +221,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
     fail_streak = 0          # 同一ツール+同一引数の連続失敗回数
     last_fail_key = None
     loop_hint = ""
+    pending_nudge = ""       # ツール無し応答への催促。履歴に残さず次回呼び出しにだけ付与する
 
     def _status(d):
         if on_status:
@@ -236,7 +237,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
         会話履歴はそのまま引き継ぎ、交代の事実と理由だけをユーザーターンで伝える
         (system への後挿入はチャットテンプレート依存になるため避ける)。
         """
-        nonlocal rung, key, info, first_is_cheap, loop_hint
+        nonlocal rung, key, info, first_is_cheap, loop_hint, pending_nudge
         nonlocal finish_rejects, fail_streak, last_fail_key, no_tool_streak
         while rung + 1 < len(ladder):
             rung += 1
@@ -249,6 +250,7 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
             finish_rejects = fail_streak = no_tool_streak = 0
             last_fail_key = None
             loop_hint = ""                # 旧モデル宛の警告文を持ち越さない
+            pending_nudge = ""
             if cascade_state is not None:
                 cascade_state["rung"] = rung   # 次の run_agent はこの段から再開する
             emit(f"\n[エスカレーション] {why} → {cand} ({cand_info['tag']}) へ交代")
@@ -294,6 +296,9 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
             if loop_hint:
                 hint += "\n" + loop_hint
                 loop_hint = ""
+            if pending_nudge:
+                hint += "\n" + pending_nudge
+                pending_nudge = ""
             # 推論の開始と生成の進行をUIへ流す(状態表示・t/s・停滞検知の実データになる)
             _status({"type": "phase", "state": "infer"})
             msg = await llm.chat(cfg, key, messages + [{"role": "user", "content": hint}],
@@ -327,18 +332,31 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                 if no_tool_streak >= 5:
                     emit("\n[中断] ツールを使わない応答が5回続いたため早期終了します。")
                     break   # maxiter 扱いで REPORT へ
-                nudge = ("ツールを使って前進して。完了なら finish を呼んで。"
-                         if no_tool_streak < 3 else
-                         "警告: ツール呼び出しの無い応答が続いている。次の応答では必ず"
-                         "ツールを1つ以上呼ぶこと。作業が完了しているなら finish を呼ぶこと。")
-                messages.append({"role": "user", "content": nudge})
-                _sync_out()
+                # 催促は履歴へ恒久挿入しない(溜まると毎回の送信に乗り続ける)。
+                # 次回呼び出しの末尾ヒントへ一時付与する(進行状況ヒントと同じ方式)
+                pending_nudge = ("ツールを使って前進して。完了なら finish を呼んで。"
+                                  if no_tool_streak < 3 else
+                                  "警告: ツール呼び出しの無い応答が続いている。次の応答では必ず"
+                                  "ツールを1つ以上呼ぶこと。作業が完了しているなら finish を呼ぶこと。")
                 continue
             no_tool_streak = 0
 
             _status({"type": "phase", "state": "tool"})   # ここからGPUは解放される
             tool_names, last_run_ok, summary = [], True, None
             pending_escalation = None      # この反復で発生した交代理由(tool ループ後に実行)
+            # 読み取り専用だけのバッチは先に並列実行しておく(探索フェーズで
+            # read_file / search をまとめて呼ぶ型が多く、直列だと待ちが積む)。
+            # 履歴への取り込み・失敗検知は従来どおり呼び出し順に処理する。
+            pre_results: dict[int, object] = {}
+            if len(tool_calls) >= 2:
+                _meta = [(tc.get("function", {}).get("name", ""),
+                          tc.get("function", {}).get("arguments") or {})
+                         for tc in tool_calls]
+                if all(n in READONLY_TOOLS and isinstance(a, dict) for n, a in _meta):
+                    _gathered = await asyncio.gather(
+                        *(tb.run(n, a) for n, a in _meta), return_exceptions=True)
+                    pre_results = {i: (f"[実行エラー] {r}" if isinstance(r, Exception) else r)
+                                   for i, r in enumerate(_gathered)}
             for idx, tc in enumerate(tool_calls):
                 fn = tc.get("function", {})
                 name = fn.get("name", "")
@@ -381,7 +399,8 @@ async def run_agent(goal, model=None, max_iter=25, approve=True, emit=print,
                                          "content": "[finishにより未実行]"})
                     break
 
-                result = await tb.run(name, args)
+                result = (pre_results[idx] if idx in pre_results
+                          else await tb.run(name, args))
                 if name == "run_command" and not str(result).startswith("exit=0"):
                     last_run_ok = False
                 emit(f"     {str(result)[:400]}")
@@ -458,6 +477,8 @@ def _patch_dangling_tool_calls(history):
 
 
 MAX_FINISH_REJECTS = 3  # finish差し戻しの上限(超えたら通してmax_iterに委ねる)
+# 副作用のない読み取り専用ツール。これらだけのバッチは並列実行できる
+READONLY_TOOLS = {"list_dir", "read_file", "search_files", "search_vault"}
 KEEP_RECENT = 8         # 直近メッセージは圧縮しない(第2パスで段階的に縮める)
 COMPRESS_RATIO = 0.7    # 概算トークンが num_ctx のこの割合を超えたら圧縮
 MEASURED_RATIO = 0.85   # 実測プロンプトトークンがこの割合を超えたら概算に関係なく圧縮
