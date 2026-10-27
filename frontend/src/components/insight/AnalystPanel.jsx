@@ -31,29 +31,29 @@ export default function AnalystPanel({ source, id, models }) {
   };
 
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+    <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <Bot size={16} className="text-violet-300" />
-        <h3 className="text-[14px] font-semibold text-zinc-100">分析エージェント(ローカルLLM)</h3>
-        <span className="rounded bg-amber-500/90 px-1.5 text-[11px] font-bold text-zinc-950" title="LLM が書いた推定。数値は記録から数えた事実だけを渡している">D 推定</span>
+        <h3 className="text-sm font-semibold text-slate-100">分析エージェント(ローカルLLM)</h3>
+        <span className="rounded-full bg-amber-500/90 px-2 py-0.5 text-xs font-bold text-slate-950" title="LLM が書いた推定。数値は記録から数えた事実だけを渡している">D 推定</span>
         <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="分析に使うモデル"
-          className="ml-auto rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[12.5px]">
+          className="ml-auto rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[13px]">
           {(usable.length ? usable : [{ key: "worker", tag: "worker" }]).map((m) => <option key={m.key} value={m.key}>{m.key}({m.tag})</option>)}
         </select>
         <button onClick={run} disabled={busy}
-          className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-[12.5px] font-semibold text-white hover:bg-violet-500 disabled:opacity-60">
+          className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-[13px] font-semibold text-white hover:bg-violet-500 disabled:opacity-60">
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />} {busy ? "解説を作成中…" : "この記録を解説して"}
         </button>
       </div>
-      <p className="mt-1.5 text-[12px] text-zinc-500">記録の本文(プロンプトや出力)は渡さず、数えた事実(件数・時間・トークン・改善候補)だけを渡します。API 課金はありません。</p>
-      {error && <p className="mt-2 text-[12.5px] text-red-400">{error}</p>}
+      <p className="mt-1.5 text-[12px] text-slate-500">記録の本文(プロンプトや出力)は渡さず、数えた事実(件数・時間・トークン・改善候補)だけを渡します。API 課金はありません。</p>
+      {error && <p className="mt-2 text-[13px] text-red-400">{error}</p>}
       {res && (
-        <div className="mt-2 border-t border-zinc-800 pt-2">
-          <div className="mb-1 text-[11.5px] text-zinc-500">{res.model} ・ {res.seconds} 秒</div>
+        <div className="mt-2 border-t border-slate-800 pt-2">
+          <div className="mb-1 text-xs text-slate-500">{res.model} ・ {res.seconds} 秒</div>
           <Markdown text={res.text} className="text-[13px]" />
-          <details className="mt-2 text-[12px] text-zinc-500">
+          <details className="mt-2 text-[12px] text-slate-500">
             <summary className="cursor-pointer text-blue-400">渡した事実を見る</summary>
-            <pre className="mt-1 max-h-60 overflow-auto rounded bg-zinc-950 p-2 text-[11.5px]">{JSON.stringify(res.facts, null, 1)}</pre>
+            <pre className="mt-1 max-h-60 overflow-auto rounded bg-slate-950 p-2 text-xs">{JSON.stringify(res.facts, null, 1)}</pre>
           </details>
         </div>
       )}

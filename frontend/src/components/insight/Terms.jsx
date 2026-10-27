@@ -41,12 +41,12 @@ export function Term({ id, children }) {
         {children}
       </span>
       {show && (
-        <span role="tooltip" className="absolute left-0 top-full z-50 mt-1 block w-72 rounded-lg border border-blue-500/60 bg-zinc-900 p-2.5 text-left text-[12px] leading-relaxed text-zinc-200 shadow-xl">
-          <span className="block text-[10.5px] text-zinc-500">{t.cat}</span>
-          <span className="block text-[13px] font-semibold text-zinc-100">{t.term}</span>
+        <span role="tooltip" className="absolute left-0 top-full z-50 mt-1 block w-72 rounded-lg border border-blue-500/60 bg-slate-900 p-2.5 text-left text-[12px] leading-relaxed text-slate-200 shadow-xl">
+          <span className="block text-[11px] text-slate-500">{t.cat}</span>
+          <span className="block text-[13px] font-semibold text-slate-100">{t.term}</span>
           <span className="mt-1 block font-semibold">{t.short}</span>
-          <span className="mt-1 block text-zinc-400">{t.detail}</span>
-          <button onMouseDown={(e) => { e.preventDefault(); open(t.id); }} className="mt-1.5 text-[11.5px] text-blue-400 hover:underline">用語集で開く</button>
+          <span className="mt-1 block text-slate-400">{t.detail}</span>
+          <button onMouseDown={(e) => { e.preventDefault(); open(t.id); }} className="mt-1.5 text-xs text-blue-400 hover:underline">用語集で開く</button>
         </span>
       )}
     </span>
@@ -88,25 +88,25 @@ export function GlossaryList({ focusId }) {
       <div className="flex flex-wrap items-center gap-1.5">
         {["", ...categories].map((c) => (
           <button key={c || "all"} onClick={() => setCat(c)}
-            className={`rounded-full border px-2.5 py-0.5 text-[12px] ${cat === c ? "border-blue-500 bg-blue-500/15 text-blue-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}>
+            className={`rounded-full border px-2.5 py-0.5 text-[12px] ${cat === c ? "border-blue-500 bg-blue-500/15 text-blue-200" : "border-slate-700 text-slate-400 hover:text-slate-200"}`}>
             {c || `すべて(${terms.length})`}
           </button>
         ))}
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="用語を絞り込み" aria-label="用語を絞り込み"
-          className="ml-auto w-48 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[12.5px]" />
+          className="ml-auto w-48 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[13px]" />
       </div>
       <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
         {list.map((t) => (
           <article key={t.id} id={`gl-${t.id}`}
-            className={`rounded-lg border bg-zinc-900 p-3 ${focusId === t.id ? "border-blue-500" : "border-zinc-800"}`}>
-            <div className="text-[10.5px] text-zinc-500">{t.cat}</div>
-            <h3 className="text-[14px] font-semibold text-zinc-100">{t.term}</h3>
-            {t.aliases.length > 0 && <div className="text-[11.5px] text-zinc-500">別名: {t.aliases.join("、")}</div>}
-            <p className="mt-1 text-[12.5px] font-semibold text-zinc-200">{t.short}</p>
-            <p className="mt-1 text-[12.5px] leading-relaxed text-zinc-400">{t.detail}</p>
+            className={`rounded-xl border bg-slate-900 p-4 ${focusId === t.id ? "border-blue-500" : "border-slate-800"}`}>
+            <div className="text-[11px] text-slate-500">{t.cat}</div>
+            <h3 className="text-sm font-semibold text-slate-100">{t.term}</h3>
+            {t.aliases.length > 0 && <div className="text-xs text-slate-500">別名: {t.aliases.join("、")}</div>}
+            <p className="mt-1 text-[13px] font-semibold text-slate-200">{t.short}</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-slate-400">{t.detail}</p>
           </article>
         ))}
-        {!list.length && <p className="text-[13px] text-zinc-500">該当なし</p>}
+        {!list.length && <p className="text-[13px] text-slate-500">該当なし</p>}
       </div>
     </div>
   );

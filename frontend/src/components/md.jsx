@@ -12,7 +12,7 @@ function renderInline(text, keyPrefix) {
   for (const codeSeg of text.split(/(`[^`]+`)/g)) {
     if (codeSeg.startsWith("`") && codeSeg.endsWith("`") && codeSeg.length > 1) {
       nodes.push(
-        <code key={`${keyPrefix}-c${n++}`} className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-[0.9em] text-blue-300">
+        <code key={`${keyPrefix}-c${n++}`} className="rounded bg-slate-800 px-1 py-0.5 font-mono text-[0.9em] text-blue-300">
           {codeSeg.slice(1, -1)}
         </code>,
       );
@@ -21,7 +21,7 @@ function renderInline(text, keyPrefix) {
     for (const boldSeg of codeSeg.split(/(\*\*[^*]+\*\*)/g)) {
       if (boldSeg.startsWith("**") && boldSeg.endsWith("**") && boldSeg.length > 3) {
         nodes.push(
-          <b key={`${keyPrefix}-b${n++}`} className="font-semibold text-zinc-100">
+          <b key={`${keyPrefix}-b${n++}`} className="font-semibold text-slate-100">
             {boldSeg.slice(2, -2)}
           </b>,
         );
@@ -46,7 +46,7 @@ function renderBlocks(text) {
       // 奇数インデックス = コードブロック本体。先頭行が言語指定のみならそれを取り除く。
       const body = chunk.replace(/^[ \t]*[\w-]*\n/, "").replace(/\n$/, "");
       blocks.push(
-        <pre key={`code-${idx}`} className="my-1.5 overflow-x-auto rounded-lg border border-zinc-800 bg-black/40 p-2.5 font-mono text-[12px] leading-relaxed text-zinc-200">
+        <pre key={`code-${idx}`} className="my-1.5 overflow-x-auto rounded-lg border border-slate-800 bg-black/40 p-2.5 font-mono text-[12px] leading-relaxed text-slate-200">
           <code>{body}</code>
         </pre>,
       );
@@ -69,7 +69,7 @@ function renderBlocks(text) {
       if (/^##\s+/.test(line)) {
         flushList(`${key}-ul`);
         blocks.push(
-          <h3 key={key} className="mb-1 mt-2 text-[13px] font-bold text-zinc-100">
+          <h3 key={key} className="mb-1 mt-2 text-[13px] font-bold text-slate-100">
             {renderInline(line.replace(/^##\s+/, ""), key)}
           </h3>,
         );
@@ -99,5 +99,5 @@ function renderBlocks(text) {
 export default function Markdown({ text, className = "" }) {
   const blocks = useMemo(() => (text ? renderBlocks(text) : null), [text]);
   if (!blocks) return null;
-  return <div className={`space-y-0.5 text-[12.5px] leading-relaxed ${className}`}>{blocks}</div>;
+  return <div className={`space-y-0.5 text-[13px] leading-relaxed ${className}`}>{blocks}</div>;
 }
