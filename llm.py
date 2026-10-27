@@ -1,11 +1,12 @@
-"""共有モジュール: models.yaml の読込 と Ollama ネイティブ /api/chat クライアント。
+"""共有モジュール: models.yaml の読込と Ollama / OpenAI互換 / Anthropic クライアント。
 
 /v1(OpenAI互換)ではなくネイティブAPIを使う理由:
 - options.num_ctx がリクエスト単位で有効(0.32.1で実測確認済み)。
   → 従来の「派生モデルに num_ctx を焼き込む」ワークアラウンドは不要になった。
 - tools(function calling)・streaming・format(JSONスキーマ)も全て対応。
-注意: ネイティブAPIの tool_calls は arguments が dict(OpenAI互換はJSON文字列)、
-tool_call_id は存在しない。ツール結果は role=tool を呼び出し順で対応付ける。
+注意: ネイティブAPIの tool_calls は arguments が dict(OpenAI互換はJSON文字列)。
+Ollamaでは tool_call_id は存在せず、ツール結果は role=tool を呼び出し順で対応付ける。
+OpenAI互換バックエンドでは送信時にIDを補い、受信した引数をdictへ戻す。
 
 設計メモ(2026-08-12改修):
 - chat() は内部でストリーミング受信して結合する。read timeout がチャンク間隔にのみ
@@ -26,6 +27,7 @@ import json
 import os
 import sys
 import time
+import warnings
 
 import httpx
 import yaml
@@ -41,6 +43,9 @@ COMPLETION_METADATA_VERSION = 1  # _done_reason includes successful stop
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "models.yaml")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
+OPENAI_COMPAT_BASE = os.environ.get("OPENAI_COMPAT_BASE", "http://localhost:8080/v1")
+ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+ANTHROPIC_MAX_TOKENS = 4096  # コンテキスト長とは独立した生成上限
 DEFAULT_NUM_CTX = 16384
 RETRIES = 3
 CONNECT_TIMEOUT = 10.0
@@ -147,13 +152,17 @@ def resolve(cfg, key):
         fam = infer_family(key)
         return {"key": key, "tag": key, "family": fam, "placement": "vram",
                 "tools": True, "num_ctx": DEFAULT_NUM_CTX, "keep_alive": "30m",
-                "num_gpu": None, "ram_gb": 0,
+                "num_gpu": None, "ram_gb": 0, "backend": "ollama", "base_url": OLLAMA_BASE,
                 "options": default_options(fam), "options_no_think": {},
                 "think": None, "tier": "discovered",
                 "strengths": [], "for": f"{key} (自動検出)",
                 "use": "models.yaml未定義=自動検出。公式サンプリング推定・自動ルーティング対象外(明示指定でのみ使用)"}
     return {
         "key": key,
+        "backend": m.get("backend", "ollama"),
+        "base_url": (m.get("base_url") or os.environ.get("OPENAI_COMPAT_BASE") or "http://localhost:8080/v1")
+                    if m.get("backend") == "openai" else (
+                        ANTHROPIC_BASE if m.get("backend") == "anthropic" else OLLAMA_BASE),
         "tag": m["tag"],
         "family": m.get("family", "unknown"),
         "placement": m.get("placement", "vram"),
@@ -273,6 +282,312 @@ def _payload(info, messages, tools, temperature, num_ctx, json_mode, stream,
     return payload
 
 
+def _openai_payload(payload):
+    """内部の履歴をコピーし、呼び出し順のツール結果へIDを補う。"""
+    messages, pending = [], []
+    for original in payload["messages"]:
+        m = {k: v for k, v in original.items()
+             if not k.startswith("_") and k not in ("tool_name", "thinking")}
+        if m.get("tool_calls"):
+            calls = []
+            pending = []
+            for i, call in enumerate(m["tool_calls"]):
+                cid = call.get("id") or f"call_{len(messages)}_{i}"
+                fn = dict(call["function"])
+                if not isinstance(fn.get("arguments"), str):
+                    fn["arguments"] = json.dumps(fn.get("arguments", {}), ensure_ascii=False)
+                calls.append({"id": cid, "type": "function", "function": fn})
+                pending.append(cid)
+            m["tool_calls"] = calls
+        if m.get("role") == "tool":
+            cid = m.get("tool_call_id")
+            if cid is None and pending:
+                cid = pending[0]
+            if cid in pending:
+                pending.remove(cid)
+            if cid is not None:
+                m["tool_call_id"] = cid
+        messages.append(m)
+    # コンテキスト長・GPU配置はサーバー起動時に設定する。
+    options = {k: v for k, v in payload["options"].items()
+               if k not in ("num_ctx", "num_gpu", "num_predict")}
+    if "num_predict" in payload["options"]:
+        options["max_tokens"] = payload["options"]["num_predict"]
+    result = {**options, "model": payload["model"], "messages": messages,
+              "stream": True, "stream_options": {"include_usage": True}}
+    if payload.get("tools"):
+        result["tools"] = [{"type": "function", "function": dict(t.get("function", t))}
+                           for t in payload["tools"]]
+    fmt = payload.get("format")
+    if isinstance(fmt, dict):
+        result["response_format"] = {"type": "json_schema", "json_schema": {
+            "name": "response", "schema": fmt}}
+    elif fmt == "json":
+        result["response_format"] = {"type": "json_object"}
+    return result
+
+
+async def _openai_events(info, payload, timeout):
+    """SSEを逐次通知し、最後に内部形式の応答を返す。"""
+    base = info["base_url"].rstrip("/")
+    msg = {"role": "assistant", "content": ""}
+    thinking, calls, usage = [], {}, {}
+    started, first = time.monotonic(), None
+    reason = None
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", f"{base}/chat/completions",
+                                     json=_openai_payload(payload)) as resp:
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    error = OllamaFatal if 400 <= resp.status_code < 500 else OllamaError
+                    raise error(f"OpenAI互換 ({base}) HTTP {resp.status_code}: {body[:500]}")
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = json.loads(data)
+                    if chunk.get("error"):
+                        raise OllamaError(f"OpenAI互換 ({base}): {chunk['error']}")
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for choice in chunk.get("choices", []):
+                        if choice.get("index", 0) != 0:
+                            continue
+                        delta = choice.get("delta") or choice.get("message") or {}
+                        for source, target in (("content", "content"), ("reasoning_content", "thinking")):
+                            piece = delta.get(source)
+                            if piece:
+                                if first is None:
+                                    first = time.monotonic()
+                                if target == "content":
+                                    msg["content"] += piece
+                                else:
+                                    thinking.append(piece)
+                                yield {target: piece}
+                        for tc in delta.get("tool_calls") or []:
+                            call = calls.setdefault(tc.get("index", 0), {
+                                "id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                            if tc.get("id"):
+                                call["id"] += tc["id"]
+                            for field in ("name", "arguments"):
+                                call["function"][field] += (tc.get("function") or {}).get(field) or ""
+                        if choice.get("finish_reason"):
+                            reason = choice["finish_reason"]
+    except httpx.ConnectError as e:
+        raise OllamaError(f"OpenAI互換に接続できません ({base})。llama-server / Strata が起動しているか確認: {e}") from e
+    except (httpx.TransportError, json.JSONDecodeError) as e:
+        raise OllamaError(f"OpenAI互換 ({base}) 応答の受信に失敗: {e}") from e
+    for call in calls.values():
+        try:
+            call["function"]["arguments"] = json.loads(call["function"]["arguments"] or "{}")
+        except json.JSONDecodeError as e:
+            raise OllamaError(f"OpenAI互換のツール引数が不正: {e}") from e
+    if calls:
+        msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+    if thinking:
+        msg["_thinking"] = "".join(thinking)
+    if reason:
+        msg["_done_reason"] = reason
+    now = time.monotonic()
+    msg["_timing"] = {
+        "ttft_ms": round((first - started) * 1000, 1) if first is not None else None,
+        "wall_ms": round((now - started) * 1000, 1),
+        "load_ms": None, "prompt_eval_ms": None, "eval_ms": None,
+        "total_ms": None, "tok_per_s": None,
+        "prompt_tokens": usage.get("prompt_tokens"), "eval_tokens": usage.get("completion_tokens")}
+    for source, target in (("prompt_tokens", "_prompt_tokens"), ("completion_tokens", "_usage")):
+        if source in usage:
+            msg[target] = usage[source]
+    yield {"message": msg}
+
+
+async def _openai_collect(info, payload, timeout, on_delta):
+    async for event in _openai_events(info, payload, timeout):
+        if "message" in event:
+            return event["message"]
+        if on_delta:
+            for kind, piece in event.items():
+                try:
+                    on_delta(kind, piece)
+                except Exception:
+                    pass  # 表示通知の失敗で生成を止めない
+
+
+def _anthropic_payload(payload):
+    """内部履歴をコンテンツブロックへ変換し、同じロールを結合する。"""
+    messages, system = [], []
+    # 既存の変換で引数の文字列化とツール結果へのID補完を行う。
+    for m in _openai_payload(payload)["messages"]:
+        role, content = m["role"], m.get("content") or ""
+        if role == "system":
+            if content:
+                system.append(content)
+            continue
+        blocks = []
+        if role == "tool":
+            if not m.get("tool_call_id"):
+                raise OllamaFatal("Anthropic: ツール結果に対応する呼び出しIDがありません")
+            role = "user"
+            blocks.append({"type": "tool_result", "tool_use_id": m["tool_call_id"],
+                           "content": content})
+        else:
+            if content:
+                blocks.append({"type": "text", "text": content})
+            for call in m.get("tool_calls") or []:
+                fn = call["function"]
+                blocks.append({"type": "tool_use", "id": call["id"], "name": fn["name"],
+                               "input": json.loads(fn["arguments"])})
+        if not blocks:
+            continue
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"].extend(blocks)
+        else:
+            messages.append({"role": role, "content": blocks})
+    options = payload["options"]
+    result = {"model": payload["model"], "messages": messages,
+              "stream": payload.get("stream", True),
+              "max_tokens": options.get("num_predict", ANTHROPIC_MAX_TOKENS)}
+    if system:
+        result["system"] = "\n\n".join(system)
+    for key in ("temperature", "top_p", "top_k"):
+        if key in options:
+            result[key] = options[key]
+    if payload.get("tools"):
+        result["tools"] = []
+        for tool in payload["tools"]:
+            fn = tool.get("function", tool)
+            result["tools"].append({"name": fn["name"], "description": fn.get("description", ""),
+                                    "input_schema": fn.get("parameters", {"type": "object"})})
+    if payload.get("format"):
+        warnings.warn("Anthropic: json_schema / json_mode は未対応のため通常生成します",
+                      UserWarning, stacklevel=2)
+    return result
+
+
+async def _anthropic_events(info, payload, timeout):
+    """Messages APIのSSEと非ストリーム応答を同じ内部形式へ正規化する。"""
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key or not key.strip():
+        raise OllamaFatal("ANTHROPIC_API_KEY がありません。環境変数に設定してください "
+                          "(bash: export ANTHROPIC_API_KEY=... / PowerShell: $env:ANTHROPIC_API_KEY=...) ")
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    msg = {"role": "assistant", "content": ""}
+    blocks, fragments, usage = {}, {}, {}
+    started, first, reason, complete = time.monotonic(), None, None, False
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", f"{ANTHROPIC_BASE}/messages", headers=headers,
+                                     json=_anthropic_payload(payload)) as resp:
+                if resp.status_code != 200:
+                    # 応答本文に認証情報が含まれていても例外・ログへ出さない。
+                    error = OllamaFatal if 400 <= resp.status_code < 500 else OllamaError
+                    raise error(f"Anthropic HTTP {resp.status_code}")
+                if "application/json" in resp.headers.get("content-type", ""):
+                    data = json.loads(await resp.aread())
+                    events = [{"type": "message_start", "message": data}]
+                    events += [{"type": "content_block_start", "index": i, "content_block": b}
+                               for i, b in enumerate(data.get("content", []))]
+                    events += [{"type": "message_stop"}]
+                    async def source():
+                        for event in events:
+                            yield event
+                else:
+                    async def source():
+                        # SSEの複数data行もイベント境界で結合する。
+                        data = []
+                        async for line in resp.aiter_lines():
+                            if not line.strip():
+                                if data:
+                                    yield json.loads("\n".join(data))
+                                    data = []
+                            elif line.startswith("data:"):
+                                data.append(line[5:].lstrip())
+                        if data:
+                            yield json.loads("\n".join(data))
+                async for event in source():
+                    typ = event.get("type")
+                    piece, target = None, None
+                    if typ == "error":
+                        raise OllamaError("Anthropic: ストリームエラーを受信しました")
+                    if typ == "message_start":
+                        data = event.get("message", {})
+                        usage.update(data.get("usage") or {})
+                        reason = data.get("stop_reason") or reason
+                    elif typ == "content_block_start":
+                        block = dict(event["content_block"])
+                        blocks[event["index"]] = block
+                        if block["type"] == "text":
+                            piece, target = block.get("text"), "content"
+                        elif block["type"] == "thinking":
+                            piece, target = block.get("thinking"), "thinking"
+                    elif typ == "content_block_delta":
+                        delta = event["delta"]
+                        if delta["type"] == "input_json_delta":
+                            index = event["index"]
+                            fragments[index] = fragments.get(index, "") + delta.get("partial_json", "")
+                        elif delta["type"] == "text_delta":
+                            piece, target = delta.get("text"), "content"
+                        elif delta["type"] == "thinking_delta":
+                            piece, target = delta.get("thinking"), "thinking"
+                    elif typ == "content_block_stop":
+                        index = event["index"]
+                        if index in fragments:
+                            blocks[index]["input"] = json.loads(fragments.pop(index))
+                    elif typ == "message_delta":
+                        usage.update(event.get("usage") or {})
+                        reason = event.get("delta", {}).get("stop_reason") or reason
+                    elif typ == "message_stop":
+                        complete = True
+                        break
+                    if piece:
+                        if first is None:
+                            first = time.monotonic()
+                        field = "content" if target == "content" else "_thinking"
+                        msg[field] = msg.get(field, "") + piece
+                        yield {target: piece}
+    except (httpx.TransportError, json.JSONDecodeError) as e:
+        raise OllamaError(f"Anthropic 応答の受信に失敗: {type(e).__name__}") from None
+    if not complete:
+        raise OllamaError("Anthropic: message_stop 前にストリームが切断されました")
+    calls = []
+    for index, block in sorted(blocks.items()):
+        if block["type"] == "tool_use":
+            if index in fragments:
+                raise OllamaError("Anthropic: ツール引数の受信が完了していません")
+            calls.append({"id": block["id"], "type": "function", "function": {
+                "name": block["name"], "arguments": block.get("input", {})}})
+    if calls:
+        msg["tool_calls"] = calls
+    msg["_done_reason"] = {"end_turn": "stop", "stop_sequence": "stop",
+                           "tool_use": "tool_calls", "max_tokens": "length"}.get(reason, reason or "unknown")
+    msg["_timing"] = {
+        "ttft_ms": round((first - started) * 1000, 1) if first is not None else None,
+        "wall_ms": round((time.monotonic() - started) * 1000, 1),
+        "load_ms": None, "prompt_eval_ms": None, "eval_ms": None,
+        "total_ms": None, "tok_per_s": None,
+        "prompt_tokens": usage.get("input_tokens"), "eval_tokens": usage.get("output_tokens")}
+    for source, target in (("input_tokens", "_prompt_tokens"), ("output_tokens", "_usage")):
+        if source in usage:
+            msg[target] = usage[source]
+    yield {"message": msg}
+
+
+async def _anthropic_collect(info, payload, timeout, on_delta):
+    async for event in _anthropic_events(info, payload, timeout):
+        if "message" in event:
+            return event["message"]
+        if on_delta:
+            for kind, piece in event.items():
+                try:
+                    on_delta(kind, piece)
+                except Exception:
+                    pass  # 表示通知の失敗で生成を止めない
+
+
 def _classify_http(status, body):
     if 400 <= status < 500:
         return OllamaFatal(f"Ollama HTTP {status}: {body[:500]}")
@@ -383,6 +698,10 @@ async def chat(cfg, key, messages, tools=None, temperature=None,
     async with _gate(info):
         for attempt in range(max(1, retries)):
             try:
+                if info.get("backend") == "anthropic":
+                    return await _anthropic_collect(info, payload, t, on_delta)
+                if info.get("backend") == "openai":
+                    return await _openai_collect(info, payload, t, on_delta)
                 return await _stream_collect(payload, t, on_delta)
             except OllamaFatal:
                 raise    # 4xx はリトライしても無駄。即時失敗
@@ -410,6 +729,20 @@ async def chat_stream(cfg, key, messages, temperature=None,
     payload = _payload(info, messages, None, temperature, num_ctx, json_mode,
                        True, json_schema, think, num_predict)
     t = httpx.Timeout(IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
+    if info.get("backend") in ("openai", "anthropic"):
+        events = _anthropic_events if info["backend"] == "anthropic" else _openai_events
+        async with _gate(info):
+            async for event in events(info, payload, t):
+                if "message" not in event:
+                    yield event
+                    continue
+                msg = event["message"]
+                meta = {target: msg[source] for source, target in (
+                    ("_usage", "eval_count"), ("_prompt_tokens", "prompt_tokens"),
+                    ("_done_reason", "done_reason"), ("_timing", "timing")) if source in msg}
+                if "_done_reason" in msg:
+                    yield {"done": True, "meta": meta}
+        return
     async with _gate(info):
         try:
             async with httpx.AsyncClient(timeout=t) as client:

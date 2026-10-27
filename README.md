@@ -431,9 +431,61 @@ gui.py, web/      【非推奨・v1遺物】
 - `models.yaml` は 16GB VRAM / 64GB RAM(RX 9070 XT)前提の実測値。別環境では
   「モデル戦略」節を参考に `tag` / `placement` / `ram_gb` を各自の GPU・RAM に合わせて調整する。
 
+### OpenAI互換バックエンド（llama-server / Strata）
+
+`models.yaml` のモデルごとにバックエンドを選択できます。省略時は従来どおり
+Ollama を使用します。例えば `models:` 配下に次を追加します。
+
+```yaml
+  local_server:
+    tag: "served-model"
+    backend: openai
+    base_url: "http://localhost:8080/v1"
+    tools: true
+    options: {temperature: 0.7, top_p: 0.95, min_p: 0}
+```
+
+`tag` はサーバー側で公開するモデル名と一致させてください。
+接続先はモデルごとの `base_url`、環境変数 `OPENAI_COMPAT_BASE`、既定値
+`http://localhost:8080/v1` の順に優先されます（Ollama モデルには影響しません）。末尾の `/v1` を含めます。
+`num_ctx` は OpenAI互換APIへ送信しません。コンテキスト長はサーバー起動時に
+設定してください。Strata は対応モデル専用の推論エンジンなので、利用モデルが
+そのサーバーで対応していることを確認してください。サーバーの起動・モデルのロードは
+別途行います。UIの死活・GPU表示は引き続き Ollama 用です。
+
+### Anthropic（Claude API）バックエンド
+
+`models:` 配下に次のように追加し、`tag` に利用可能な Claude のモデルIDを指定します。
+
+```yaml
+  claude_api:
+    backend: anthropic
+    tag: "claude-sonnet-5-5"
+    tools: true
+    options: {temperature: 0.7}
+```
+
+APIキーは環境変数 `ANTHROPIC_API_KEY` からのみ読み取ります。
+bash では `export ANTHROPIC_API_KEY="..."`、PowerShell では
+`$env:ANTHROPIC_API_KEY="..."` で設定してから起動してください。
+キーを models.yaml やコードに保存しないでください。API利用には従量課金が発生します。
+接続先は `https://api.anthropic.com/v1/messages` 固定です。
+
+system メッセージ、ツール呼び出しと結果、テキストの逐次表示、使用トークン数に対応します。
+生成上限は呼び出し側の `num_predict`（または options の同名設定）を使い、
+省略時は 4096 トークンです。`num_ctx` は生成上限には使わず、送信もしません。
+`temperature` / `top_p` / `top_k` を送信し、`min_p` は送信しません。
+サンプリング設定の可否や組み合わせは利用するモデルの制約に従ってください。
+`think` を指定しても拡張思考の有効化は未対応です。受信した thinking は既存の
+`_thinking` に格納します。`json_schema` / `json_mode` による構造化出力の強制も
+未対応で、指定時は警告を出して通常生成するため、JSON準拠は保証しません。
+終了理由は既存の `stop` / `tool_calls` / `length` に正規化します。
+時間メタは実測の待ち時間と全体時間を記録し、APIから取得できない内部時間・生成速度は
+`None` とします。UIの死活・GPU表示は Ollama 用です。
+
 ## 将来拡張
 
-- llama-server(Vulkan)バックエンド: llm.py の `OLLAMA_BASE` 差し替え+`/v1`変換の薄い層で対応可能
+- llama-server(Vulkan) / Strata バックエンドは実装済み（上記「OpenAI互換バックエンド」を参照）。
 - Muse Glimmer の3-bit量子化(unsloth UD-Q3_K_XL 13.4GB)をimportすればVRAM全載りで
   大幅高速化の余地(SWE-bench 76.0級がvram枠に入る)。品質劣化は要実測
 - PyInstaller化: `pyinstaller --noconfirm --windowed --name AgentLab --add-data "static;static" --collect-all uvicorn app.py`
