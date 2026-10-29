@@ -32,7 +32,7 @@ export const RUN_STATUS = {
 
 // 内部のモード名・成果物形式は出さず、「何をするか」が分かる日本語で見せる。
 export const MODE_LABEL = {
-  code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲",
+  code: "制作", "swarm-code": "並列制作", orchestra: "調査・考察", critique: "推敲", direct: "直接回答", cascade: "カスケード",
   bench: "ベンチ",
 };
 export const DELIVERABLE_LABEL = { html: "HTMLアプリ", exe: "exe", script: "スクリプト" };
@@ -283,19 +283,23 @@ export function groupByBackend(models) {
   const ollama = models.filter((m) => (m.backend ?? "ollama") === "ollama");
   if (ollama.length > 0)
     groups.push({ key: "ollama", backend: "ollama", label: BACKEND_META.ollama.label, models: ollama });
+  // Group by display server name (server_name, else the port-derived name):
+  // one product split across several ports/engines (e.g. Strata's Qwen engine
+  // on 8080 and its DeepSeek engine on 8082) stays in a single card, while
+  // each model keeps its own base_url for requests and reachability.
   const byServer = new Map();
   for (const m of models.filter((m) => m.backend === "openai")) {
-    const base = m.base_url || "";
-    if (!byServer.has(base)) byServer.set(base, []);
-    byServer.get(base).push(m);
+    const label = serverDisplayName(m.server_name, m.base_url || "");
+    if (!byServer.has(label)) byServer.set(label, []);
+    byServer.get(label).push(m);
   }
-  for (const [base, ms] of byServer) {
-    const name = ms.find((m) => m.server_name)?.server_name;
+  for (const [label, ms] of byServer) {
+    const bases = [...new Set(ms.map((m) => m.base_url || ""))];
     groups.push({
-      key: `openai:${base}`,
+      key: `openai:${label}`,
       backend: "openai",
-      label: serverDisplayName(name, base),
-      base_url: base,
+      label,
+      base_url: bases.length === 1 ? bases[0] : "",
       models: ms,
     });
   }

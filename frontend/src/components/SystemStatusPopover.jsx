@@ -11,7 +11,10 @@ export default function SystemStatusPopover({ open, onClose, gpu, health, active
   const used = gpu?.used_bytes ?? 0;
   const total = gpu?.total_bytes ?? 16 * 1024 ** 3;
   const ratio = total ? used / total : 0;
-  const oom = ratio > 0.9;
+  // Header と同じ判定: 赤色の警告は ai-agent-lab 自身(Ollama分)が圧迫に
+  // 寄与しているときだけ。大半が外部プロセスならバーは黄色どまりにする。
+  const ownBytes = gpu?.ollama_bytes ?? used;
+  const oom = ratio > 0.9 && ownBytes >= 1024 ** 3;
 
   return (
     <Popover open={open} onClose={onClose} align="right" labelledBy="system-status-title"

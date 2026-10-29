@@ -28,7 +28,14 @@ function Header({
 
   const used = gpu?.used_bytes ?? 0;
   const total = gpu?.total_bytes ?? 16 * 1024 ** 3;
-  const oom = total ? used / total > 0.9 : false;
+  const ratio = total ? used / total : 0;
+  // 実測化で Ollama 外(Strata 等)の使用も used に入るようになったため、
+  // 「残りわずか」の赤い警告は ai-agent-lab 自身(Ollama分)が圧迫に寄与して
+  // いるときだけ出す。大半が外部プロセスのときは常時鳴るアラームにせず、
+  // 落ち着いた通知チップに切り替える。
+  const ownBytes = gpu?.ollama_bytes ?? used;
+  const oom = ratio > 0.9 && ownBytes >= 1024 ** 3;
+  const externalFull = ratio > 0.9 && !oom;
 
   return (
     <header className="z-30 flex min-h-14 shrink-0 flex-nowrap items-center gap-2 overflow-hidden border-b border-slate-800 bg-slate-900 px-3">
@@ -67,6 +74,14 @@ function Header({
       {oom && (
         <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-xs font-bold text-red-400">
           <AlertTriangle size={11} /> VRAM残りわずか
+        </span>
+      )}
+      {externalFull && (
+        <span
+          className="flex items-center gap-1 rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-400"
+          title="Ollama 以外のプロセス(Strata 等)が VRAM の大半を使用しています"
+        >
+          外部プロセスでVRAM使用中
         </span>
       )}
       {health && !health.ollama && (

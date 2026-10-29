@@ -15,7 +15,7 @@ import { RUN_STATUS, MODE_LABEL, DELIVERABLE_LABEL, fmtElapsed } from "../derive
  */
 export default function RunHeader({
   run, plan, progress, running, artifactCount, hasAnswer, now, aborting,
-  onAbort, onRerun, onEditRerun, onOpenArtifacts,
+  onAbort, onRerun, onEditRerun, onOpenArtifacts, liveSpeed,
 }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const infoBtnRef = useRef(null);
@@ -78,6 +78,14 @@ export default function RunHeader({
       </button>
 
       <span className="rounded-full border border-slate-700 px-2 py-1 text-xs text-slate-300">経過 {fmtElapsed(elapsed)}</span>
+
+      {live && liveSpeed && (
+        <span className="rounded-full border border-blue-500/50 bg-blue-500/10 px-2 py-1 text-xs font-semibold tabular-nums text-blue-300">
+          {liveSpeed.tokens > 0
+            ? `生成 ${liveSpeed.tps.toFixed(1)} tok/s`
+            : `応答待ち${liveSpeed.sinceMs != null ? ` ${Math.floor(liveSpeed.sinceMs / 1000)}s` : ""}`}
+        </span>
+      )}
 
       {/* 進捗(実行中のみ。code=iter/max、orchestra/swarm=完了サブタスク数) */}
       {total > 0 && (
