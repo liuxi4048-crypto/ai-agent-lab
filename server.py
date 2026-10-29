@@ -22,18 +22,23 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import answer_cache
 import bench
+import openai_api
 import claude_review
 import api_review
 import llm
 import router
 from artifacts import WORKSPACE as ARTIFACT_DIR
-from orchestrator import (CodeOrchestrator, CritiqueOrchestrator, Orchestrator,
-                          SwarmCodeOrchestrator)
+from orchestrator import (CascadeOrchestrator, CodeOrchestrator, CritiqueOrchestrator,
+                          DirectOrchestrator, Orchestrator, SwarmCodeOrchestrator)
 from runs import manager, normalize_snapshot
 from tools import WORKSPACE as PROJECTS_DIR
 
 app = FastAPI(title="AI Agent Lab")
+
+# OpenAI互換API (/v1/models, /v1/chat/completions) — openai_api.py 参照
+openai_api.register(app)
 
 
 @app.on_event("startup")
@@ -82,7 +87,7 @@ INSIGHT_CC = Path(__file__).parent / "runs" / "insight-cache" / "cc"
 INSIGHT_CC.mkdir(parents=True, exist_ok=True)
 app.mount("/insight-cc", StaticFiles(directory=INSIGHT_CC), name="insight-cc")
 
-MODES = ("orchestra", "critique", "code", "swarm-code")
+MODES = ("orchestra", "critique", "code", "swarm-code", "direct")
 DELIVERABLES = ("auto", "html", "exe", "script")
 # 仕分けに使う高速モデル(VRAM常駐・tools対応)。無ければ default にフォールバック
 TRIAGE_PREFERRED = ("worker", "coder", "smart")
@@ -272,6 +277,13 @@ async def start_run(req: RunRequest) -> dict:
     if mode in ("code", "swarm-code") and not info["tools"]:
         raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {mode} で使えません")
 
+    # direct 適格でも実行モデルが遅い高性能モデルのときは、高速モデル先行の
+    # カスケードへ格上げする (cascade_fast_model が有効で実行モデルと違う場合)
+    cascade_fast = cfg.get("cascade_fast_model")
+    if (mode == "direct" and cascade_fast in cfg.get("models", {})
+            and cascade_fast != model):
+        mode = "cascade"
+
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     # Claudeレビューは成果物ファイルを直接直す工程なので、ファイルを作るモードのみ
     claude_on = req.claude_review and mode in ("code", "swarm-code")
@@ -283,14 +295,34 @@ async def start_run(req: RunRequest) -> dict:
                          api_review=req.api_review and mode in ("code", "swarm-code"))
 
     def factory():
-        if run.mode == "critique":
-            return CritiqueOrchestrator(run.bus, cfg, run.model, run.reviewer_model).run(task, run.id)
-        if run.mode == "code":
-            return CodeOrchestrator(run, cfg, critique=req.critique,
+        if run.mode == "cascade":
+            fast = cfg.get("cascade_fast_model")
+            if fast not in cfg.get("models", {}):
+                fast = None
+            if fast and fast != run.model:
+                coro = CascadeOrchestrator(run.bus, cfg, run.model,
+                                           fast).run(task, run.id)
+            else:
+                coro = DirectOrchestrator(run.bus, cfg, run.model).run(task, run.id)
+        elif run.mode == "direct":
+            coro = DirectOrchestrator(run.bus, cfg, run.model).run(task, run.id)
+        elif run.mode == "critique":
+            coro = CritiqueOrchestrator(run.bus, cfg, run.model, run.reviewer_model).run(task, run.id)
+        elif run.mode == "code":
+            coro = CodeOrchestrator(run, cfg, critique=req.critique,
                                     reviewer_model=run.reviewer_model).run_task(task)
-        if run.mode == "swarm-code":
-            return SwarmCodeOrchestrator(run, cfg, worker_model=run.model).run_task(task)
-        return Orchestrator(run.bus, cfg, run.model).run(task, run.id)
+        elif run.mode == "swarm-code":
+            coro = SwarmCodeOrchestrator(run, cfg, worker_model=run.model).run_task(task)
+        else:
+            # orchestra の分解だけ小型高速モデルへ振り分ける(第4弾)。models.yaml の
+            # orchestra_planner_model が未設定/未知キーなら実行モデルが分解も行う
+            planner_model = cfg.get("orchestra_planner_model")
+            if planner_model not in cfg.get("models", {}):
+                planner_model = None
+            coro = Orchestrator(run.bus, cfg, run.model,
+                                planner_model=planner_model).run(task, run.id)
+        # 同一タスクの再実行キャッシュ (文章系モードのみ、answer_cache 参照)
+        return answer_cache.wrap(run, task, coro)
 
     manager.start(run, factory)
     return {"status": "started", "run_id": run.id, "model": model,
@@ -590,4 +622,5 @@ async def events(run_id: str) -> StreamingResponse:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    # バインド先は AAL_HOST / api_settings.json で変更可 (既定は従来どおり 127.0.0.1)
+    uvicorn.run(app, host=openai_api.bind_host(), port=8765, log_level="warning")

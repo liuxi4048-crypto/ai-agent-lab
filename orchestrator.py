@@ -17,6 +17,7 @@ import re
 
 import claude_review
 import api_review
+import lang_guard
 import llm
 import router
 from agent import run_agent
@@ -63,7 +64,17 @@ CRITIQUE_SCHEMA = {
     "required": ["approved", "score", "issues", "suggestions"],
 }
 
-PLANNER_SYSTEM = """あなたはタスクを分解するプランナーです。
+# 役割をまたいで完全一致させる system の共通接頭辞(2026-10-28 第3弾)。
+# Strata 等の接頭辞キャッシュは会話の先頭から完全一致した範囲だけを再利用する。
+# 役割ごとに system が頭から違うと再利用がゼロになるため、全役割の system の
+# 先頭をこの文字列で揃え、役割差分は後ろに置く。
+COMMON_SYSTEM_PREFIX = (
+    "あなたは ai-agent-lab のエージェントです。日本語で、正確に、"
+    "根拠を示しながら答えてください。"
+    "中国語(簡体字)や中国語の言い回しは混ぜないでください。\n\n"
+)
+
+PLANNER_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたはタスクを分解するプランナーです。
 ユーザーのタスクを、互いに独立して並列実行できる1〜3個のサブタスクに分解してください。
 分割が有益でない単純なタスクは、無理に分けず1個のサブタスクにしてください
 (不要な分割は文脈の分断と統合誤差で品質を下げます)。
@@ -73,12 +84,28 @@ PLANNER_SYSTEM = """あなたはタスクを分解するプランナーです。
 "creates_code" は、ユーザーのタスクが実際にアプリ・スクリプト・プログラムの作成を求めている場合だけ true にしてください。
 企画・分析・要約・リスト作成・アイデア出しなど、コードを書く必要がないタスクでは必ず false にしてください。"""
 
-SUBAGENT_SYSTEM_BASE = """あなたは割り当てられたサブタスクだけに集中する専門サブエージェントです。
+SUBAGENT_SYSTEM_BASE = COMMON_SYSTEM_PREFIX + """あなたは割り当てられたサブタスクだけに集中する専門サブエージェントです。
 簡潔かつ具体的に、日本語で回答してください。"""
 SUBAGENT_SYSTEM_CODE = """
 このタスクはコードの作成が求められています。必ず言語名付きのコードブロック(```python など)で完全なコードを出力してください。"""
 
-AGGREGATOR_SYSTEM = """あなたは統合エージェントです。
+# 非コードのサブタスクは完成文でなく「証拠カード」で返す (2026-10-28 追加)。
+# 散文より短く、統合側の入力も減り、主張と根拠が分離されて統合の
+# 捏造が起きにくい。書式は見出しベースで、パースには依存しない
+# (守られなくても統合は従来どおり読める)。
+SUBAGENT_SYSTEM_CARDS = """
+回答は「証拠カード」形式で返してください。完成した文章(散文)は書かず、次の見出しで短く列挙してください:
+【主張】このサブタスクの結論(1〜3点)
+【根拠】主張を支える理由・仕組み
+【数値・固有名詞】重要な数値・計算・固有名詞(計算は結果まで書く)
+【注意】例外・反論・不確かな点
+全体で600字以内を目安に、簡潔に書いてください。"""
+
+AGGREGATOR_CARDS_NOTE = """
+各サブエージェントの成果は「証拠カード」形式(主張・根拠・数値・注意)で届きます。
+カードにある主張と数値だけを使って最終回答を組み立て、カードに無い数値や固有名詞を作らないでください。"""
+
+AGGREGATOR_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは統合エージェントです。
 各サブエージェントの成果を統合し、ユーザーの元のタスクに対する最終回答を日本語で作成してください。"""
 
 FILE_MARK_RULE = """
@@ -127,14 +154,23 @@ MERGER_SYSTEM = """あなたは統合エージェントです。並列開発さ�
 を日本語で簡潔にまとめてください。"""
 
 
+class _LangAborted(Exception):
+    """言語ガードの早期打ち切り (生成途中で混入見込みが確定した)。"""
+
+
 async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                       json_mode: bool = False, json_schema: dict | None = None,
-                      temperature: float | None = None, think=None) -> str:
+                      temperature: float | None = None, think=None,
+                      num_predict: int | None = None,
+                      early_abort=None) -> str:
     """LLMをストリーミング実行しつつイベントバスへ進捗を流す。
 
     json_schema を渡すと structured outputs で構造を強制する(判定・分解用)。
     その場合 temperature は明示的に低く渡すこと(判定タスクに高温は無用のブレ)。
     thinking はノードの思考ストリームとして別枠で流す(出力本文を汚さない)。
+    num_predict は生成上限(トークン)。役割ごとの指定は呼び出し側の定数を見よ。
+    early_abort は蓄積テキストを受ける述語で、True を返したら _LangAborted
+    を送出して生成を打ち切る (言語ガード用)。
     """
     bus.set_prompt(node_id, "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages))
     # このノードで実際に使うモデルをUIへ通知(orchestra/critique/レビュー系は単一モデル・
@@ -144,12 +180,15 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     out: list[str] = []
     async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
                                        json_schema=json_schema,
-                                       temperature=temperature, think=think):
+                                       temperature=temperature, think=think,
+                                       num_predict=num_predict):
         if chunk.get("thinking"):
             bus.think_progress(node_id, chunk["thinking"])
         if chunk.get("content"):
             out.append(chunk["content"])
             bus.token_progress(node_id, chunk["content"])
+            if early_abort is not None and early_abort("".join(out)):
+                raise _LangAborted()
         if chunk.get("done"):
             meta = chunk.get("meta") or {}
             if meta.get("eval_count"):
@@ -161,9 +200,74 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     return "".join(out)
 
 
+async def _guard_lang(bus, node_id: str, messages: list[dict], gen) -> str:
+    """最終回答の生成を簡体字混入ガード付きで実行する。
+
+    gen は (messages, early_abort: bool) を受け取り本文を返す async
+    callable。1 回目は生成途中の早期打ち切り付きで実行し、混入見込みが
+    確定したら最後まで生成せずに打ち切る。完成後に混入スコアが閾値
+    以上だった場合も含め、「日本語のみ」の強い指示を system に足して
+    1 回だけ再生成し、スコアの低い方を採用する (再生成が高くつく
+    モデルでも生成は最大 2 回で打ち切る)。判定は lang_guard の
+    決定的スコアで行う。
+    """
+    log = getattr(bus, "emit_log", None)
+    aborted = False
+    text = ""
+    try:
+        text = await gen(messages, True)
+    except _LangAborted:
+        aborted = True
+    if not aborted:
+        score = lang_guard.contamination_score(text)
+        if score < lang_guard.CONTAMINATION_THRESHOLD:
+            return text
+        if log is not None:
+            log(node_id, f"[言語ガード] 簡体字の混入を検出 (score={score})。"
+                         "日本語のみで再生成します")
+    elif log is not None:
+        log(node_id, "[言語ガード] 生成途中で簡体字の混入を検出したため"
+                     "打ち切りました。日本語のみで再生成します")
+    retry_messages = [dict(m) for m in messages]
+    retry_messages[0] = {
+        **retry_messages[0],
+        "content": retry_messages[0]["content"] + lang_guard.RETRY_CLAUSE,
+    }
+    retry = await gen(retry_messages, False)
+    retry_score = lang_guard.contamination_score(retry)
+    if aborted:
+        # 打ち切った側には完成文がないので再生成を採用する
+        if log is not None:
+            log(node_id, f"[言語ガード] 再生成が完了しました "
+                         f"(score={retry_score})")
+        return retry
+    if retry_score < score:
+        if log is not None:
+            log(node_id, f"[言語ガード] 再生成で混入が減りました "
+                         f"(score {score} → {retry_score})")
+        return retry
+    if log is not None:
+        log(node_id, f"[言語ガード] 再生成でも改善しませんでした "
+                     f"(score {score} → {retry_score})。最初の回答を採用します")
+    return text
+
+
+# 証拠カード形式のサブエージェント上限 (散文より短い前提)
+_CARD_NUM_PREDICT = 1024
+
 # チャット系呼び出し(統合・レビュー)の入力予算。num_ctx 16384 tokens ≒ 日本語混在で
 # 約32K字。system+指示のヘッドルームを引いた値を本文に割り当てる。
 _CHAT_INPUT_BUDGET = 20000
+
+# orchestra の役割ごとの生成上限(トークン)。
+# ベースライン実測(2026-10-28, DeepSeek orchestra: 38分 / 9,546 tok)では
+# 生成の約2/3が中間役割の「思考」だった(サブエージェントは本文の2〜4倍思考し、
+# planner は出力JSONの数倍を思考に費やした)。中間役割は思考を切り
+# (think=False)、上限は通常の本文量を切らない範囲で暴走防止に置く。
+# 最終回答を書く aggregator は思考を残し、上限も緩める(通常生成 約2.7K tok)。
+_PLAN_NUM_PREDICT = 512
+_SUBAGENT_NUM_PREDICT = 1536
+_AGGREGATE_NUM_PREDICT = 4096
 
 
 def _fit_parts(parts: list[str], total_chars: int = _CHAT_INPUT_BUDGET) -> list[str]:
@@ -342,13 +446,20 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
 
 # ============================================================ orchestra ----
 class Orchestrator:
-    def __init__(self, bus: EventBus, cfg, model: str):
+    def __init__(self, bus: EventBus, cfg, model: str, planner_model: str | None = None):
         self.bus = bus
         self.cfg = cfg
         self.model = model
+        # 分解(planner)だけ速い小型モデルに任せる振り分け(2026-10-28 第4弾)。
+        # 未指定なら実行モデル自身が分解も行う(従来動作)。
+        self.planner_model = planner_model or model
 
-    async def _run_llm(self, node_id: str, messages: list[dict], json_mode: bool = False) -> str:
-        return await _stream_llm(self.bus, node_id, messages, self.cfg, self.model, json_mode)
+    async def _run_llm(self, node_id: str, messages: list[dict], json_mode: bool = False,
+                       think=None, num_predict: int | None = None,
+                       early_abort=None) -> str:
+        return await _stream_llm(self.bus, node_id, messages, self.cfg, self.model,
+                                 json_mode, think=think, num_predict=num_predict,
+                                 early_abort=early_abort)
 
     async def _plan(self, task: str, root_id: str) -> tuple[list[dict], bool]:
         bus = self.bus
@@ -363,11 +474,11 @@ class Orchestrator:
             for attempt in range(2):
                 try:
                     # スキーマ強制+低温度: 分解JSONのパース失敗と判定ブレを抑える
-                    # think は medium(2026-10-27監査: 分解は浅い構造化タスクで、
-                    # 分類系 triage の low と最大級 high の不整合を中間に寄せた)
-                    raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.model,
+                    # think は切る(2026-10-28 第1弾: 実測では planner の生成638tokの
+                    # 大半が思考で、分解JSON自体は約300tok。スキーマ+低温で構造は保つ)
+                    raw = await _stream_llm(bus, planner_id, messages, self.cfg, self.planner_model,
                                             json_schema=PLAN_SCHEMA, temperature=0.1,
-                                            think=llm.effort(llm.resolve(self.cfg, self.model), "medium"))
+                                            think=False, num_predict=_PLAN_NUM_PREDICT)
                     subtasks, creates_code = _parse_plan(raw)
                     titles = " / ".join(s["title"] for s in subtasks)
                     kind = "コード作成タスク" if creates_code else "通常タスク"
@@ -390,7 +501,8 @@ class Orchestrator:
                             creates_code: bool) -> tuple[str, str]:
         bus = self.bus
         node_id = bus.create_node("subagent", f"サブエージェント: {sub['title']}", sub["instruction"], parent_id)
-        system = SUBAGENT_SYSTEM_BASE + (SUBAGENT_SYSTEM_CODE if creates_code else "")
+        system = SUBAGENT_SYSTEM_BASE + (
+            SUBAGENT_SYSTEM_CODE if creates_code else SUBAGENT_SYSTEM_CARDS)
         # 元タスク全文を渡す: プランナーの instruction が省略的でも目的を見失わない
         messages = [
             {"role": "system", "content": system},
@@ -398,7 +510,13 @@ class Orchestrator:
              "content": f"元のタスク全体:\n{task}\n\nあなたの担当サブタスク:\n{sub['instruction']}"},
         ]
         try:
-            result = await self._run_llm(node_id, messages)
+            # 思考は切る(実測: サブの生成1.2K〜2.8K tok の過半が思考で本文は
+            # 0.8K〜1.9K字)。上限は本文の通常量を切らない範囲に置く。
+            # 非コードは証拠カード形式で短くなるため上限も下げる
+            result = await self._run_llm(
+                node_id, messages, think=False,
+                num_predict=(_SUBAGENT_NUM_PREDICT if creates_code
+                             else _CARD_NUM_PREDICT))
             bus.complete(node_id, result)
             return sub["title"], result
         except asyncio.CancelledError:
@@ -411,7 +529,9 @@ class Orchestrator:
         bus = self.bus
         agg_id = bus.create_node("aggregator", "統合エージェント",
                                  "サブエージェントの成果を統合して最終回答を作成", root_id)
-        system = AGGREGATOR_SYSTEM + (SUBAGENT_SYSTEM_CODE + FILE_MARK_RULE if creates_code else "")
+        system = AGGREGATOR_SYSTEM + (
+            SUBAGENT_SYSTEM_CODE + FILE_MARK_RULE if creates_code
+            else AGGREGATOR_CARDS_NOTE)
         fitted = _fit_parts([r for _, r in results])
         body = "\n\n".join(f"## {title}\n{result}"
                            for (title, _), result in zip(results, fitted))
@@ -420,7 +540,16 @@ class Orchestrator:
             {"role": "user", "content": f"元のタスク: {task}\n\n各サブエージェントの成果:\n\n{body}"},
         ]
         try:
-            final = await self._run_llm(agg_id, messages)
+            # 最終回答そのものなので思考は残す。上限は通常生成(実測 約2.7K tok)
+            # を切らない暴走防止ラインに置く。簡体字混入時は言語ガードが
+            # 1 回だけ再生成する
+            async def gen(msgs, early_abort):
+                return await self._run_llm(
+                    agg_id, msgs, num_predict=_AGGREGATE_NUM_PREDICT,
+                    early_abort=(lang_guard.partial_is_contaminated
+                                 if early_abort else None))
+
+            final = await _guard_lang(bus, agg_id, messages, gen)
             bus.complete(agg_id, final)
             return final
         except asyncio.CancelledError:
@@ -462,6 +591,279 @@ class Orchestrator:
                 except OSError as e:
                     bus.set_artifacts([{"name": f"保存に失敗しました: {e}", "path": ""}])
 
+            bus.complete(root_id, "全工程が完了しました")
+            bus.run_finished()
+        except asyncio.CancelledError:
+            bus.cancel_all("ユーザーによって中断されました")
+            raise
+        except Exception as e:
+            bus.complete(root_id, error=f"実行エラー: {e}")
+            bus.run_finished(error=str(e))
+            raise
+
+
+DIRECT_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは有能なアシスタントです。ユーザーの依頼に、過不足なく、わかりやすく日本語で答えてください。"""
+
+
+class DirectOrchestrator:
+    """単一呼び出しで完結させる軽量モード(2026-10-28 第2弾)。
+
+    説明・質問などの単発タスクを planner/サブエージェント/統合の多段構成に
+    せず、1回の生成で最終回答を出す。思考はモデル既定のまま(最終回答の質を
+    優先し、第1弾で aggregator に残した判断と揃える)。生成上限は aggregator
+    と同じ暴走防止ライン。
+    """
+
+    def __init__(self, bus: EventBus, cfg, model: str):
+        self.bus = bus
+        self.cfg = cfg
+        self.model = model
+
+    async def run(self, task: str, run_id: str = "") -> None:
+        bus = self.bus
+        bus.reset()
+        root_id = bus.create_node("task", "ユーザータスク", task)
+        bus.set_status(root_id, "running")
+        try:
+            answer_id = bus.create_node("answer", "最終回答", "", root_id)
+            messages = [
+                {"role": "system", "content": DIRECT_SYSTEM},
+                {"role": "user", "content": task},
+            ]
+            async def gen(msgs, early_abort):
+                return await _stream_llm(
+                    bus, answer_id, msgs, self.cfg, self.model,
+                    num_predict=_AGGREGATE_NUM_PREDICT,
+                    early_abort=(lang_guard.partial_is_contaminated
+                                 if early_abort else None))
+
+            final = await _guard_lang(bus, answer_id, messages, gen)
+            bus.complete(answer_id, final)
+            bus.complete(root_id, "全工程が完了しました")
+            bus.run_finished()
+        except asyncio.CancelledError:
+            bus.cancel_all("ユーザーによって中断されました")
+            raise
+        except Exception as e:
+            bus.complete(root_id, error=f"実行エラー: {e}")
+            bus.run_finished(error=str(e))
+            raise
+
+
+CASCADE_SKELETON_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは回答の設計者です。
+ユーザーの依頼に対する最終回答の「骨格」だけを作成してください。本文は書かず、
+見出しと要点の箇条書きだけを、答えるべき内容・具体例・数値が漏れないように列挙してください。"""
+
+CASCADE_EXPAND_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは有能なアシスタントです。
+与えられた骨格に沿って、ユーザーの依頼への最終回答を日本語で書いてください。
+骨格の要点をすべて含め、具体例や数値も骨格どおりに使ってください。"""
+
+# カスケードの下書き・展開の生成上限。本文の通常量を切らない範囲の暴走防止。
+_CASCADE_DRAFT_NUM_PREDICT = 2048
+_CASCADE_SKELETON_NUM_PREDICT = 768
+
+_ANSWER_ENDINGS = "。.!！?？」』）)]|0123456789"
+
+_FRAC_RE = r"\\frac\{(\d+)\}\{(\d+)\}"
+
+
+def _parse_rhs(s: str):
+    """等号の右辺の先頭から数値を読む (分数・帯分数・整数・小数)。"""
+    from fractions import Fraction
+
+    s = (s or "").strip()
+    if s.startswith("\\boxed{"):
+        s = s[len("\\boxed{"):]
+    s = s.lstrip("$ ")
+    m = re.match(r"(\d+)\s*" + _FRAC_RE, s)
+    if m:  # 帯分数 1\frac{1}{5}
+        return Fraction(int(m.group(1))) + Fraction(int(m.group(2)), int(m.group(3)))
+    m = re.match(_FRAC_RE, s)
+    if m:
+        return Fraction(int(m.group(1)), int(m.group(2)))
+    m = re.match(r"(\d+\.\d+|\d+)", s)
+    if m:
+        return Fraction(m.group(1))
+    return None
+
+
+def _arith_errors(text: str) -> list[str]:
+    """\\frac の ÷ と × の計算主張を検算し、誤っているものを返す。
+
+    小型モデルの下書きは計算ミスをし得る (実測: 1/2 ÷ 1/4 = 8 と主張)。
+    検算できる形の主張だけを対象にし、検証できない文には口を出さない。
+    右辺が「逆数を掛ける形」などの変形ステップ (= が続く式) のときは
+    結果の主張ではないので対象外にする。
+    """
+    from fractions import Fraction
+
+    errors: list[str] = []
+    pat = re.compile(
+        _FRAC_RE + r"\s*(\\div|÷|\\times|×)\s*(?:" + _FRAC_RE + r"|(\d+))"
+        r"\s*=\s*([^\n$=]{0,24})")
+    for m in pat.finditer(text or ""):
+        a, b, op = int(m.group(1)), int(m.group(2)), m.group(3)
+        if m.group(4) is not None:
+            c, d = int(m.group(4)), int(m.group(5))
+        else:
+            c, d = int(m.group(6)), 1
+        rhs_text = m.group(7)
+        if b == 0 or d == 0:
+            continue
+        if "\\times" in rhs_text or "\\div" in rhs_text or "×" in rhs_text or "÷" in rhs_text:
+            continue  # 変形ステップ (結果の主張ではない)
+        lhs = Fraction(a, b) / Fraction(c, d) if op in ("\\div", "÷") \
+            else Fraction(a, b) * Fraction(c, d)
+        rhs = _parse_rhs(rhs_text)
+        if rhs is not None and rhs != lhs:
+            errors.append(f"{a}/{b} {op} {c}/{d} = {rhs} (正しくは {lhs})")
+    return errors
+
+
+def _draft_gate(task: str, text: str) -> list[str]:
+    """高速モデルの下書きを決定的に検査し、不合格理由のリストを返す。
+
+    空リストなら合格。LLM 判定は使わない (速さと再現性のため)。
+    検査は「壊れている」ことの検出に絞り、内容の良し悪しは問わない。
+    """
+    reasons: list[str] = []
+    t = (text or "").strip()
+    if len(t) < 80:
+        reasons.append("短すぎる")
+    if lang_guard.contamination_score(t) >= lang_guard.CONTAMINATION_THRESHOLD:
+        reasons.append("簡体字が混入している")
+    m = re.search(r"例題\s*(\d+)\s*つ", task or "")
+    if m and t.count("例題") < int(m.group(1)):
+        reasons.append("例題の数が足りない")
+    if t.count("```") % 2 == 1:
+        reasons.append("コードブロックが閉じていない")
+    arith = _arith_errors(t)
+    if arith:
+        reasons.append("計算の誤り: " + "、".join(arith[:2]))
+    if t and t[-1] not in _ANSWER_ENDINGS:
+        reasons.append("文が途中で終わっている可能性がある")
+    return reasons
+
+
+class CascadeOrchestrator:
+    """小型モデル先行カスケード (2026-10-28 追加)。
+
+    単発タスク (direct 適格) で実行モデルが高性能だが遅いモデル
+    (DeepSeek 等) のときの高速経路:
+      1. 高速モデルが全文の下書きを書く → 決定的品質ゲートを通れば採用
+      2. 落ちたら不合格理由を添えて高速モデル自身に直させる (自己修正)
+      3. それでも落ちたら高性能モデルが「骨格」だけを書き、高速モデルが展開
+      4. それも落ちたら従来の direct (高性能モデルの全文生成＋言語ガード)
+    高速モデルの生成は数十秒級で、高性能モデルの生成量を骨格分だけに
+    抑えられるのが利得。ゲートは _draft_gate (決定的検査のみ)。
+    実測 (分数タスク): 下書きの不合格は計算ミスが主因で、理由を添えた
+    自己修正で直せる見込みが高いため 2 を挟む。
+    """
+
+    def __init__(self, bus: EventBus, cfg, model: str, fast_model: str):
+        self.bus = bus
+        self.cfg = cfg
+        self.model = model
+        self.fast_model = fast_model
+
+    async def run(self, task: str, run_id: str = "") -> None:
+        bus = self.bus
+        bus.reset()
+        root_id = bus.create_node("task", "ユーザータスク", task)
+        bus.set_status(root_id, "running")
+        try:
+            # 1) 高速モデルの下書き
+            draft_id = bus.create_node("draft", "下書き (高速モデル)",
+                                       "高速モデルが全文を先に書く", root_id)
+            draft = await _stream_llm(
+                bus, draft_id,
+                [{"role": "system", "content": DIRECT_SYSTEM},
+                 {"role": "user", "content": task}],
+                self.cfg, self.fast_model, think=False,
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+            bus.complete(draft_id, draft)
+            reasons = _draft_gate(task, draft)
+            if not reasons:
+                bus.emit_log(draft_id, "[カスケード] 下書きが品質ゲートを通過しました")
+                answer_id = bus.create_node("answer", "最終回答", "", root_id)
+                bus.complete(answer_id, draft)
+                bus.complete(root_id, "全工程が完了しました")
+                bus.run_finished()
+                return
+            bus.emit_log(draft_id, "[カスケード] 品質ゲート不合格: "
+                                   + "、".join(reasons))
+
+            # 2) 不合格理由を添えて高速モデル自身に直させる
+            repair_id = bus.create_node("repair", "自己修正 (高速モデル)",
+                                        "不合格理由を直して書き直す", root_id)
+            repaired = await _stream_llm(
+                bus, repair_id,
+                [{"role": "system", "content": DIRECT_SYSTEM},
+                 {"role": "user",
+                  "content": f"元の依頼: {task}\n\n下書き:\n{draft}\n\n"
+                             "この下書きには次の問題があります: "
+                             + "、".join(reasons)
+                             + "。問題をすべて直して、最終回答の全文を"
+                               "日本語で書き直してください。"}],
+                self.cfg, self.fast_model, think=False,
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+            bus.complete(repair_id, repaired)
+            reasons_r = _draft_gate(task, repaired)
+            if not reasons_r:
+                bus.emit_log(repair_id, "[カスケード] 自己修正が品質ゲートを通過しました")
+                answer_id = bus.create_node("answer", "最終回答", "", root_id)
+                bus.complete(answer_id, repaired)
+                bus.complete(root_id, "全工程が完了しました")
+                bus.run_finished()
+                return
+            bus.emit_log(repair_id, "[カスケード] 自己修正も不合格: "
+                                    + "、".join(reasons_r))
+
+            # 3) 高性能モデルは骨格だけ、高速モデルが展開する
+            skeleton_id = bus.create_node("skeleton", "骨格 (高性能モデル)",
+                                          "要点と構成だけを作成", root_id)
+            skeleton = await _stream_llm(
+                bus, skeleton_id,
+                [{"role": "system", "content": CASCADE_SKELETON_SYSTEM},
+                 {"role": "user", "content": task}],
+                self.cfg, self.model, think=False,
+                num_predict=_CASCADE_SKELETON_NUM_PREDICT)
+            bus.complete(skeleton_id, skeleton)
+
+            expand_id = bus.create_node("expand", "展開 (高速モデル)",
+                                        "骨格に沿って全文を書く", root_id)
+            expanded = await _stream_llm(
+                bus, expand_id,
+                [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
+                 {"role": "user",
+                  "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
+                self.cfg, self.fast_model, think=False,
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+            bus.complete(expand_id, expanded)
+            reasons2 = _draft_gate(task, expanded)
+
+            answer_id = bus.create_node("answer", "最終回答", "", root_id)
+            if not reasons2:
+                bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
+                bus.complete(answer_id, expanded)
+            else:
+                # 4) フォールバック: 高性能モデルの全文生成 (言語ガード付き)
+                bus.emit_log(expand_id, "[カスケード] 展開も不合格: "
+                                        + "、".join(reasons2)
+                                        + "。高性能モデルの全文生成へ切り替えます")
+
+                async def gen(msgs, early_abort):
+                    return await _stream_llm(
+                        bus, answer_id, msgs, self.cfg, self.model,
+                        num_predict=_AGGREGATE_NUM_PREDICT,
+                        early_abort=(lang_guard.partial_is_contaminated
+                                     if early_abort else None))
+
+                final = await _guard_lang(
+                    bus, answer_id,
+                    [{"role": "system", "content": DIRECT_SYSTEM},
+                     {"role": "user", "content": task}], gen)
+                bus.complete(answer_id, final)
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
         except asyncio.CancelledError:

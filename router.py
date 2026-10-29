@@ -243,6 +243,13 @@ _THINK_RE = re.compile(
     r"どう思う|まとめて|要約|調査|説明して|教えて|なぜ", re.IGNORECASE)
 _POLISH_RE = re.compile(
     r"推敲|添削|ブラッシュアップ|磨いて|練り直|文章を直して|校正", re.IGNORECASE)
+# 単発の説明・質問(direct モード用)。広がりのある依頼は orchestra に残すため、
+# 比較・調査・要約などの語があるものと長文(素材付き)は direct にしない。
+_DIRECT_RE = re.compile(r"説明して|教えて|なぜ|とは|どういう意味|どういうこと")
+_BREADTH_RE = re.compile(
+    r"比較|分析|調査|レビュー|意見|提案|アイデア|複数|それぞれ|観点|"
+    r"メリット|デメリット|違い|要約|まとめ|長所|短所", re.IGNORECASE)
+_DIRECT_MAX_CHARS = 200
 
 
 def pick_mode(task: str) -> str:
@@ -250,8 +257,13 @@ def pick_mode(task: str) -> str:
     if _POLISH_RE.search(task):
         return "critique"
     # 「このコードがなぜ動かないか説明して」のような質問は、コード系名詞を含んでいても
-    # 調査・考察(orchestra)。制作動詞が無い質問文を build に誤判定しない。
+    # 制作扱いにしない。制作動詞が無い質問文を build に誤判定しないため。
     if _THINK_RE.search(task) and not _BUILD_VERB_RE.search(task):
+        # 単発の説明・質問は多段構成(orchestra)にせず単一呼び出し(direct)で
+        # 完結させる(2026-10-28 第2弾)。広がりのある依頼は従来どおり orchestra。
+        if (_DIRECT_RE.search(task) and not _BREADTH_RE.search(task)
+                and len(task) <= _DIRECT_MAX_CHARS):
+            return "direct"
         return "orchestra"
     build = bool(_BUILD_RE.search(task))
     if build and _BIG_RE.search(task):
@@ -269,7 +281,7 @@ def pick_mode(task: str) -> str:
 TRIAGE_SCHEMA = {
     "type": "object",
     "properties": {
-        "mode": {"type": "string", "enum": ["code", "swarm-code", "orchestra", "critique"]},
+        "mode": {"type": "string", "enum": ["code", "swarm-code", "orchestra", "critique", "direct"]},
         "deliverable": {"type": "string", "enum": ["html", "exe", "script", "none"]},
         "reason": {"type": "string"},
     },
@@ -281,14 +293,15 @@ TRIAGE_SYSTEM = """あなたは依頼を仕分ける司令塔です。ユーザ�
 mode(進め方):
 - "code": 何かを作る/直す。ほとんどの依頼はこれ。
 - "swarm-code": 独立した部品が3つ程度に明確に分かれる大きめの制作物。迷ったら code にする。
-- "orchestra": 物を作らず、調査・比較・考察・要約・説明などの文章で答える依頼。
+- "orchestra": 物を作らず、調査・比較・考察・要約などの文章で答える依頼。複数の観点や素材の読み込みが要るもの。
 - "critique": 文章を練り上げる依頼(企画書・記事などの推敲)。
+- "direct": 単発の説明・質問に1回の生成で答える依頼。短く、観点が1つで完結するもの。
 
 deliverable(成果物の形式):
 - "html": ゲーム・UI・可視化など、ブラウザで開けば動くもの。作る依頼では最優先で検討する。
 - "exe": Windowsの実行ファイルが明示的に求められている場合。
 - "script": CLIツール・ライブラリ・自動化スクリプトなど、コマンドで動かすもの。
-- "none": mode が orchestra / critique のとき(何も作らない)。
+- "none": mode が orchestra / critique / direct のとき(何も作らない)。
 
 判定例:
 - 「ブロック崩しゲームを作って」→ {"mode":"code","deliverable":"html","reason":"ブラウザゲーム制作"}
@@ -296,6 +309,7 @@ deliverable(成果物の形式):
 - 「このコードがなぜ動かないのか説明して」→ {"mode":"orchestra","deliverable":"none","reason":"説明を求める質問"}
 - 「フロントとAPIとDBのTODOアプリ一式を作って」→ {"mode":"swarm-code","deliverable":"script","reason":"独立部品3つの制作"}
 - 「この企画書を推敲して」→ {"mode":"critique","deliverable":"none","reason":"文章の推敲"}
+- 「分数の割り算がなぜ逆数をかけるのか説明して」→ {"mode":"direct","deliverable":"none","reason":"単発の説明"}
 - 「ポモドーロタイマーのデスクトップアプリ(exe)が欲しい」→ {"mode":"code","deliverable":"exe","reason":"exe明示指定"}
 
 必ず {"mode": "...", "deliverable": "...", "reason": "20字以内の理由"} のJSONだけを出力してください。"""
@@ -350,7 +364,7 @@ async def triage(cfg, task: str, model_key: str) -> dict:
         data = json.loads(raw)
         mode = data.get("mode")
         deliverable = data.get("deliverable")
-        if mode not in ("code", "swarm-code", "orchestra", "critique"):
+        if mode not in ("code", "swarm-code", "orchestra", "critique", "direct"):
             return fallback
         if mode in ("code", "swarm-code"):
             if deliverable not in ("html", "exe", "script"):
