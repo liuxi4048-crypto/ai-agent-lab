@@ -379,6 +379,60 @@ async def triage(cfg, task: str, model_key: str) -> dict:
         return fallback
 
 
+# --- 明示モデル固定 (pinned) -------------------------------------------------
+# OpenAI / Anthropic のモデル選択と同じ動きにするための規則一式。
+# モデルを名指ししたら、そのモデル自身が生成する。他モデルの下書き・
+# 振り分け・役割差し替えを挟まない (「最善のモデルを選んだのに別のモデルが
+# 書いた」が起きないようにする)。auto 選択時は従来どおり最適化層が働く。
+
+def is_pinned_model(req_model) -> bool:
+    """リクエストでモデルが明示指定されているか (\"auto\" は指定ではない)。"""
+    return bool(req_model) and req_model != "auto"
+
+
+def pinned_mode(req_mode: str) -> str:
+    """モデル明示時の進め方。auto なら direct (そのモデルの単独実行)。
+
+    進め方まで明示されている場合はそちらを尊重する (呼び出しは固定された
+    モデルだけで行う。maybe_cascade / orchestra_planner / pick_reviewer 参照)。
+    """
+    return "direct" if req_mode == "auto" else req_mode
+
+
+def maybe_cascade(mode: str, model: str, cfg, pinned: bool) -> str:
+    """direct → cascade への格上げ判定。モデル明示時は格上げしない。"""
+    if pinned or mode != "direct":
+        return mode
+    fast = cfg.get("cascade_fast_model")
+    if fast in cfg.get("models", {}) and fast != model:
+        return "cascade"
+    return mode
+
+
+def orchestra_planner(cfg, pinned: bool):
+    """orchestra の分解役のキー。None は「実行モデル自身が分解する」。
+
+    モデル明示時は小型モデルへ差し替えない。
+    """
+    if pinned:
+        return None
+    planner = cfg.get("orchestra_planner_model")
+    return planner if planner in cfg.get("models", {}) else None
+
+
+def pick_reviewer(cfg, author_key: str, req_reviewer, pinned: bool) -> str:
+    """レビュアー選定。レビュアーの明示指定が最優先。
+
+    モデル明示時は作成者自身 (自己批評) に固定し、異ファミリーへの
+    自動選定 (critique_pair) をしない。
+    """
+    if req_reviewer:
+        return req_reviewer
+    if pinned:
+        return author_key
+    return critique_pair(cfg, author_key)
+
+
 def critique_pair(cfg, author_key: str) -> str:
     """作成者キー → レビュアーキー。既定は models.yaml の critique_pairs。
 

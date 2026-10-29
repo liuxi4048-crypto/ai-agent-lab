@@ -237,10 +237,16 @@ async def start_run(req: RunRequest) -> dict:
     installed = set(await llm.list_models())
 
     # --- 進め方と成果物形式をメインエージェントに決めさせる -------------------
+    # モデル明示指定 (pinned) のときは OpenAI / Anthropic のモデル選択と同じく
+    # そのモデルの単独実行にし、他モデルによる仕分け自体をしない。
+    pinned = router.is_pinned_model(req.model)
     decided_by = "user"
     reason = ""
     mode, deliverable = req.mode, req.deliverable
-    if mode == "auto":
+    if pinned and mode == "auto":
+        mode = router.pinned_mode(mode)
+        decided_by, reason = "pinned", "モデル明示指定のため単独実行"
+    elif mode == "auto":
         triage_key = next((k for k in TRIAGE_PREFERRED
                            if k in cfg.get("models", {})
                            and _installed(cfg, k, installed)), cfg.get("default", "coder"))
@@ -282,18 +288,16 @@ async def start_run(req: RunRequest) -> dict:
 
     reviewer = None
     if mode == "critique" or (mode == "code" and req.critique):
-        reviewer = req.reviewer_model or router.critique_pair(cfg, model)
+        reviewer = router.pick_reviewer(cfg, model, req.reviewer_model, pinned)
 
     info = llm.resolve(cfg, model)
     if mode in ("code", "swarm-code") and not info["tools"]:
         raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {mode} で使えません")
 
     # direct 適格でも実行モデルが遅い高性能モデルのときは、高速モデル先行の
-    # カスケードへ格上げする (cascade_fast_model が有効で実行モデルと違う場合)
-    cascade_fast = cfg.get("cascade_fast_model")
-    if (mode == "direct" and cascade_fast in cfg.get("models", {})
-            and cascade_fast != model):
-        mode = "cascade"
+    # カスケードへ格上げする (cascade_fast_model が有効で実行モデルと違う場合)。
+    # ただしモデル明示指定時は格上げしない (選んだモデル自身が書く)。
+    mode = router.maybe_cascade(mode, model, cfg, pinned)
 
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     # Claudeレビューは成果物ファイルを直接直す工程なので、ファイルを作るモードのみ
@@ -304,7 +308,7 @@ async def start_run(req: RunRequest) -> dict:
                          critique=req.critique, deliverable=deliverable,
                          claude_review=claude_on,
                          api_review=req.api_review and mode in ("code", "swarm-code"),
-                         gen_override=gen_override)
+                         gen_override=gen_override, pinned=pinned)
 
     def factory():
         if run.mode == "cascade":
@@ -329,24 +333,24 @@ async def start_run(req: RunRequest) -> dict:
             coro = SwarmCodeOrchestrator(run, cfg, worker_model=run.model).run_task(task)
         else:
             # orchestra の分解だけ小型高速モデルへ振り分ける(第4弾)。models.yaml の
-            # orchestra_planner_model が未設定/未知キーなら実行モデルが分解も行う
-            planner_model = cfg.get("orchestra_planner_model")
-            if planner_model not in cfg.get("models", {}):
-                planner_model = None
+            # orchestra_planner_model が未設定/未知キーなら実行モデルが分解も行う。
+            # モデル明示指定時は差し替えない (router.orchestra_planner)。
+            planner_model = router.orchestra_planner(cfg, run.pinned)
             coro = Orchestrator(run.bus, cfg, run.model,
                                 planner_model=planner_model,
                                 gen_override=run.gen_override).run(task, run.id)
         # 同一タスクの再実行キャッシュ (文章系モードのみ、answer_cache 参照)。
         # 生成パラメータ指定付きの Run はキャッシュ対象外 (キーが task/model/mode のみで、
-        # パラメータ違いの回答が混ざるのを防ぐ)
-        if run.gen_override:
+        # パラメータ違いの回答が混ざるのを防ぐ)。モデル明示指定時も対象外:
+        # 公式のモデル選択と同じく、選んだモデルが毎回その場で生成する。
+        if run.gen_override or run.pinned:
             return coro
         return answer_cache.wrap(run, task, coro)
 
     manager.start(run, factory)
     return {"status": "started", "run_id": run.id, "model": model,
             "model_tag": info["tag"], "mode": mode, "deliverable": deliverable,
-            "reviewer_model": reviewer, "hybrid": hybrid,
+            "reviewer_model": reviewer, "hybrid": hybrid, "pinned": pinned,
             "claude_review": claude_on,
             "api_review": run.api_review,
             "decided_by": decided_by, "reason": reason}

@@ -83,7 +83,7 @@ class Run:
                  reviewer_model: str | None = None, approve: bool = True,
                  max_iter: int = 18, hybrid: bool = False, critique: bool = False,
                  deliverable: str | None = None, claude_review: bool = False, api_review: bool = False,
-                 gen_override: dict | None = None):
+                 gen_override: dict | None = None, pinned: bool = False):
         self.id = uuid.uuid4().hex[:10]
         self.task = task
         self.mode = mode                  # orchestra / critique / code / swarm-code / bench
@@ -101,6 +101,9 @@ class Run:
         # Run 単位の生成パラメータ上書き (temperature / num_predict)。
         # OpenAI互換API の temperature / max_tokens から設定される。空ならモデル既定
         self.gen_override = dict(gen_override or {})
+        # モデル明示指定 (pinned): 公式のモデル選択と同じ単独実行にする印。
+        # カスケード格上げ・planner 差し替え・回答キャッシュを無効化する
+        self.pinned = pinned
         # 表示用の実モデル名(qwen3:30b 等)。キーだけだと何のモデルか分からないため
         try:
             import llm as _llm
@@ -214,9 +217,9 @@ class RunManager:
                reviewer_model: str | None = None, approve: bool = True,
                max_iter: int = 18, hybrid: bool = False, critique: bool = False,
                deliverable: str | None = None, claude_review: bool = False, api_review: bool = False,
-               gen_override: dict | None = None) -> Run:
+               gen_override: dict | None = None, pinned: bool = False) -> Run:
         run = Run(task, mode, model, reviewer_model, approve, max_iter, hybrid,
-                  critique, deliverable, claude_review, api_review, gen_override)
+                  critique, deliverable, claude_review, api_review, gen_override, pinned)
         self.live[run.id] = run
         return run
 
