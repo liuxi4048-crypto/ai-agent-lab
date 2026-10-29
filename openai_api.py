@@ -134,8 +134,8 @@ class ChatRequest(BaseModel):
     messages: list[dict] = []
     stream: bool = False
     aal_mode: str = ""          # 非標準フィールド: ai-agent-lab のモード直接指定
-    temperature: float | None = None   # 受け取るが v1 ではモデル側設定が優先
-    max_tokens: int | None = None      # 同上
+    temperature: float | None = None   # 指定時は最終回答の生成に適用 (モデル既定より優先)
+    max_tokens: int | None = None      # 同上 (生成上限トークン)
 
 
 def register(app) -> None:
@@ -181,7 +181,8 @@ def register(app) -> None:
 
         try:
             started = await server.start_run(server.RunRequest(
-                task=task, mode=mode, model=model))
+                task=task, mode=mode, model=model,
+                temperature=req.temperature, max_tokens=req.max_tokens))
         except HTTPException as e:
             return _error(e.status_code, str(e.detail))
         run_id = started["run_id"]

@@ -162,7 +162,7 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                       json_mode: bool = False, json_schema: dict | None = None,
                       temperature: float | None = None, think=None,
                       num_predict: int | None = None,
-                      early_abort=None) -> str:
+                      early_abort=None, gen_override: dict | None = None) -> str:
     """LLMをストリーミング実行しつつイベントバスへ進捗を流す。
 
     json_schema を渡すと structured outputs で構造を強制する(判定・分解用)。
@@ -177,6 +177,13 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     # カスケードなしなのでここで確定する。coderノードは run_agent の start/escalate で設定)。
     bus.set_model(node_id, key, llm.resolve(cfg, key).get("tag", key))
     bus.set_status(node_id, "thinking")
+    if gen_override:
+        # Run 単位の生成パラメータ指定 (OpenAI互換API の temperature / max_tokens)。
+        # 呼び出し側の役割別既定よりユーザー指定を優先する
+        if gen_override.get("temperature") is not None:
+            temperature = gen_override["temperature"]
+        if gen_override.get("num_predict") is not None:
+            num_predict = gen_override["num_predict"]
     out: list[str] = []
     async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
                                        json_schema=json_schema,
@@ -446,20 +453,22 @@ async def claude_final_review(run, bus, root_id: str, task_desc: str,
 
 # ============================================================ orchestra ----
 class Orchestrator:
-    def __init__(self, bus: EventBus, cfg, model: str, planner_model: str | None = None):
+    def __init__(self, bus: EventBus, cfg, model: str, planner_model: str | None = None,
+                 gen_override: dict | None = None):
         self.bus = bus
         self.cfg = cfg
         self.model = model
+        self.gen_override = gen_override or {}
         # 分解(planner)だけ速い小型モデルに任せる振り分け(2026-10-28 第4弾)。
         # 未指定なら実行モデル自身が分解も行う(従来動作)。
         self.planner_model = planner_model or model
 
     async def _run_llm(self, node_id: str, messages: list[dict], json_mode: bool = False,
                        think=None, num_predict: int | None = None,
-                       early_abort=None) -> str:
+                       early_abort=None, gen_override: dict | None = None) -> str:
         return await _stream_llm(self.bus, node_id, messages, self.cfg, self.model,
                                  json_mode, think=think, num_predict=num_predict,
-                                 early_abort=early_abort)
+                                 early_abort=early_abort, gen_override=gen_override)
 
     async def _plan(self, task: str, root_id: str) -> tuple[list[dict], bool]:
         bus = self.bus
@@ -547,7 +556,8 @@ class Orchestrator:
                 return await self._run_llm(
                     agg_id, msgs, num_predict=_AGGREGATE_NUM_PREDICT,
                     early_abort=(lang_guard.partial_is_contaminated
-                                 if early_abort else None))
+                                 if early_abort else None),
+                    gen_override=self.gen_override)
 
             final = await _guard_lang(bus, agg_id, messages, gen)
             bus.complete(agg_id, final)
@@ -614,10 +624,11 @@ class DirectOrchestrator:
     と同じ暴走防止ライン。
     """
 
-    def __init__(self, bus: EventBus, cfg, model: str):
+    def __init__(self, bus: EventBus, cfg, model: str, gen_override: dict | None = None):
         self.bus = bus
         self.cfg = cfg
         self.model = model
+        self.gen_override = gen_override or {}
 
     async def run(self, task: str, run_id: str = "") -> None:
         bus = self.bus
@@ -635,7 +646,8 @@ class DirectOrchestrator:
                     bus, answer_id, msgs, self.cfg, self.model,
                     num_predict=_AGGREGATE_NUM_PREDICT,
                     early_abort=(lang_guard.partial_is_contaminated
-                                 if early_abort else None))
+                                 if early_abort else None),
+                    gen_override=self.gen_override)
 
             final = await _guard_lang(bus, answer_id, messages, gen)
             bus.complete(answer_id, final)
@@ -760,11 +772,13 @@ class CascadeOrchestrator:
     自己修正で直せる見込みが高いため 2 を挟む。
     """
 
-    def __init__(self, bus: EventBus, cfg, model: str, fast_model: str):
+    def __init__(self, bus: EventBus, cfg, model: str, fast_model: str,
+                 gen_override: dict | None = None):
         self.bus = bus
         self.cfg = cfg
         self.model = model
         self.fast_model = fast_model
+        self.gen_override = gen_override or {}
 
     async def run(self, task: str, run_id: str = "") -> None:
         bus = self.bus
@@ -775,12 +789,15 @@ class CascadeOrchestrator:
             # 1) 高速モデルの下書き
             draft_id = bus.create_node("draft", "下書き (高速モデル)",
                                        "高速モデルが全文を先に書く", root_id)
+            # 下書きはゲート通過時にそのまま最終回答になるため、生成パラメータ
+            # 上書き (API の temperature / max_tokens) はここにも適用する
             draft = await _stream_llm(
                 bus, draft_id,
                 [{"role": "system", "content": DIRECT_SYSTEM},
                  {"role": "user", "content": task}],
                 self.cfg, self.fast_model, think=False,
-                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT,
+                gen_override=self.gen_override)
             bus.complete(draft_id, draft)
             reasons = _draft_gate(task, draft)
             if not reasons:
@@ -806,7 +823,8 @@ class CascadeOrchestrator:
                              + "。問題をすべて直して、最終回答の全文を"
                                "日本語で書き直してください。"}],
                 self.cfg, self.fast_model, think=False,
-                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT,
+                gen_override=self.gen_override)
             bus.complete(repair_id, repaired)
             reasons_r = _draft_gate(task, repaired)
             if not reasons_r:
@@ -838,7 +856,8 @@ class CascadeOrchestrator:
                  {"role": "user",
                   "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
                 self.cfg, self.fast_model, think=False,
-                num_predict=_CASCADE_DRAFT_NUM_PREDICT)
+                num_predict=_CASCADE_DRAFT_NUM_PREDICT,
+                gen_override=self.gen_override)
             bus.complete(expand_id, expanded)
             reasons2 = _draft_gate(task, expanded)
 
@@ -857,7 +876,8 @@ class CascadeOrchestrator:
                         bus, answer_id, msgs, self.cfg, self.model,
                         num_predict=_AGGREGATE_NUM_PREDICT,
                         early_abort=(lang_guard.partial_is_contaminated
-                                     if early_abort else None))
+                                     if early_abort else None),
+                        gen_override=self.gen_override)
 
                 final = await _guard_lang(
                     bus, answer_id,

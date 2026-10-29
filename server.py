@@ -105,6 +105,8 @@ class RunRequest(BaseModel):
     allow_ram: bool = False        # True でRAM併用の大型モデルも使う(既定はVRAMのみ)
     claude_review: bool = False
     api_review: bool = False      # 完了後に環境変数設定済みの任意APIモデルがレビュー
+    temperature: float | None = None   # 生成温度の Run 単位上書き (未指定ならモデル既定)
+    max_tokens: int | None = None      # 生成上限トークンの Run 単位上書き (同上)
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -211,6 +213,15 @@ async def start_run(req: RunRequest) -> dict:
         raise HTTPException(400, f"mode は 'auto' か {MODES} のいずれか")
     if req.deliverable not in DELIVERABLES:
         raise HTTPException(400, f"deliverable は {DELIVERABLES} のいずれか")
+    if req.temperature is not None and not 0.0 <= req.temperature <= 2.0:
+        raise HTTPException(400, "temperature は 0.0〜2.0 の範囲で指定してください")
+    if req.max_tokens is not None and not 1 <= req.max_tokens <= 65536:
+        raise HTTPException(400, "max_tokens は 1〜65536 の範囲で指定してください")
+    gen_override: dict = {}
+    if req.temperature is not None:
+        gen_override["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        gen_override["num_predict"] = req.max_tokens
     if not await llm.is_alive():
         raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
     if req.claude_review:
@@ -292,7 +303,8 @@ async def start_run(req: RunRequest) -> dict:
                          approve=req.approve, max_iter=max_iter, hybrid=hybrid,
                          critique=req.critique, deliverable=deliverable,
                          claude_review=claude_on,
-                         api_review=req.api_review and mode in ("code", "swarm-code"))
+                         api_review=req.api_review and mode in ("code", "swarm-code"),
+                         gen_override=gen_override)
 
     def factory():
         if run.mode == "cascade":
@@ -301,11 +313,13 @@ async def start_run(req: RunRequest) -> dict:
                 fast = None
             if fast and fast != run.model:
                 coro = CascadeOrchestrator(run.bus, cfg, run.model,
-                                           fast).run(task, run.id)
+                                           fast, gen_override=run.gen_override).run(task, run.id)
             else:
-                coro = DirectOrchestrator(run.bus, cfg, run.model).run(task, run.id)
+                coro = DirectOrchestrator(run.bus, cfg, run.model,
+                                          gen_override=run.gen_override).run(task, run.id)
         elif run.mode == "direct":
-            coro = DirectOrchestrator(run.bus, cfg, run.model).run(task, run.id)
+            coro = DirectOrchestrator(run.bus, cfg, run.model,
+                                      gen_override=run.gen_override).run(task, run.id)
         elif run.mode == "critique":
             coro = CritiqueOrchestrator(run.bus, cfg, run.model, run.reviewer_model).run(task, run.id)
         elif run.mode == "code":
@@ -320,8 +334,13 @@ async def start_run(req: RunRequest) -> dict:
             if planner_model not in cfg.get("models", {}):
                 planner_model = None
             coro = Orchestrator(run.bus, cfg, run.model,
-                                planner_model=planner_model).run(task, run.id)
-        # 同一タスクの再実行キャッシュ (文章系モードのみ、answer_cache 参照)
+                                planner_model=planner_model,
+                                gen_override=run.gen_override).run(task, run.id)
+        # 同一タスクの再実行キャッシュ (文章系モードのみ、answer_cache 参照)。
+        # 生成パラメータ指定付きの Run はキャッシュ対象外 (キーが task/model/mode のみで、
+        # パラメータ違いの回答が混ざるのを防ぐ)
+        if run.gen_override:
+            return coro
         return answer_cache.wrap(run, task, coro)
 
     manager.start(run, factory)

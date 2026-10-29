@@ -82,7 +82,8 @@ class Run:
     def __init__(self, task: str, mode: str, model: str,
                  reviewer_model: str | None = None, approve: bool = True,
                  max_iter: int = 18, hybrid: bool = False, critique: bool = False,
-                 deliverable: str | None = None, claude_review: bool = False, api_review: bool = False):
+                 deliverable: str | None = None, claude_review: bool = False, api_review: bool = False,
+                 gen_override: dict | None = None):
         self.id = uuid.uuid4().hex[:10]
         self.task = task
         self.mode = mode                  # orchestra / critique / code / swarm-code / bench
@@ -97,6 +98,9 @@ class Run:
         # ソースを外部送信するため既定OFF・Runごとの明示的なONでのみ有効。
         self.claude_review = claude_review
         self.api_review = api_review
+        # Run 単位の生成パラメータ上書き (temperature / num_predict)。
+        # OpenAI互換API の temperature / max_tokens から設定される。空ならモデル既定
+        self.gen_override = dict(gen_override or {})
         # 表示用の実モデル名(qwen3:30b 等)。キーだけだと何のモデルか分からないため
         try:
             import llm as _llm
@@ -209,9 +213,10 @@ class RunManager:
     def create(self, task: str, mode: str, model: str,
                reviewer_model: str | None = None, approve: bool = True,
                max_iter: int = 18, hybrid: bool = False, critique: bool = False,
-               deliverable: str | None = None, claude_review: bool = False, api_review: bool = False) -> Run:
+               deliverable: str | None = None, claude_review: bool = False, api_review: bool = False,
+               gen_override: dict | None = None) -> Run:
         run = Run(task, mode, model, reviewer_model, approve, max_iter, hybrid,
-                  critique, deliverable, claude_review, api_review)
+                  critique, deliverable, claude_review, api_review, gen_override)
         self.live[run.id] = run
         return run
 
