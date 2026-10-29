@@ -16,3 +16,7 @@ build/
 .venv/
 frontend/node_modules/
 .env
+
+# ローカル秘密・実行時データ（コミットしない）
+api_settings.json
+answer_cache.json
