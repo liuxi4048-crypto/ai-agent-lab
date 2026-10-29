@@ -46,6 +46,65 @@
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
+  deepseek_strata:
+    tag: "deepseek-v4.1-flash"
+    backend: openai
+    base_url: "http://127.0.0.1:8082/v1"
+    server_name: "Strata"
+    family: deepseek
+    tier: external
+    placement: hybrid
+    tools: true
+    num_ctx: 8192
+    think: "low"
+    options: {temperature: 0.3, top_p: 0.95}
+    for: "DeepSeek V4.1 Flash, 8K"
+  deepseek_strata_q:
+    tag: "deepseek-v4.1-flash"
+    backend: openai
+    base_url: "http://127.0.0.1:8083/v1"
+    server_name: "Strata"
+    family: deepseek
+    tier: external
+    placement: hybrid
+    tools: true
+    num_ctx: 8192
+    think: "low"
+    options: {temperature: 0.3, top_p: 0.95}
+    for: "DeepSeek V4.1 Flash UD-Q2 quality pack, 8K"
+  claude-opus:
+    tag: "claude-opus-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  claude-haiku:
+    tag: "claude-haiku-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  claude-sonnet:
+    tag: "claude-sonnet-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  llama-local:
+    tag: "served-model"
+    backend: openai
+    base_url: "http://127.0.0.1:8081/v1"
+    tier: external
+    tools: true
+    options: {temperature: 0.7, top_p: 0.95, min_p: 0}
+  strata-qwen:
+    tag: "qwen3.8-flash-next-iq2_xs"
+    backend: openai
+    base_url: "http://127.0.0.1:8080/v1"
+    server_name: "Strata"
+    tier: external
+    tools: true
+    options: {temperature: 0.7, top_p: 0.95, min_p: 0}
   impl-plan-review:
     tag: "qwen3.8:27b"
     family: qwen35
@@ -419,6 +478,8 @@ models:
   #   for: "超大型MoE(552B)。Strata経由・低速・8K文脈"
 
 default: coder
+orchestra_planner_model: distill4b
+cascade_fast_model: distill4b
 
 # カスケード(安価な一次受け → 本命 → 上位のエスカレーション)。
 # router.escalation_ladder が参照する。false にすると従来どおり pick_model の
