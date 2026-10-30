@@ -112,6 +112,7 @@ class RunRequest(BaseModel):
     api_review: bool = False      # 完了後に環境変数設定済みの任意APIモデルがレビュー
     temperature: float | None = None   # 生成温度の Run 単位上書き (未指定ならモデル既定)
     max_tokens: int | None = None      # 生成上限トークンの Run 単位上書き (同上)
+    think: bool | None = None          # 思考生成の Run 単位指定 (None=モデル既定, True=あり, False=なし)
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -227,6 +228,8 @@ async def start_run(req: RunRequest) -> dict:
         gen_override["temperature"] = req.temperature
     if req.max_tokens is not None:
         gen_override["num_predict"] = req.max_tokens
+    if req.think is not None:
+        gen_override["think"] = req.think
     if not await llm.is_alive():
         raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
     if req.claude_review:

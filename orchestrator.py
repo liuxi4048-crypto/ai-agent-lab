@@ -178,12 +178,16 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     bus.set_model(node_id, key, llm.resolve(cfg, key).get("tag", key))
     bus.set_status(node_id, "thinking")
     if gen_override:
-        # Run 単位の生成パラメータ指定 (OpenAI互換API の temperature / max_tokens)。
-        # 呼び出し側の役割別既定よりユーザー指定を優先する
+        # Run 単位の生成パラメータ指定 (OpenAI互換API の temperature / max_tokens、
+        # GUI の think 指定)。呼び出し側の役割別既定よりユーザー指定を優先する。
+        # think は「呼び出し側が明示していない場合」だけ効く: cascade の下書き・
+        # 骨格など役割上 think=False が決まっている呼び出しはそちらを守る
         if gen_override.get("temperature") is not None:
             temperature = gen_override["temperature"]
         if gen_override.get("num_predict") is not None:
             num_predict = gen_override["num_predict"]
+        if think is None and gen_override.get("think") is not None:
+            think = gen_override["think"]
     out: list[str] = []
     async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
                                        json_schema=json_schema,

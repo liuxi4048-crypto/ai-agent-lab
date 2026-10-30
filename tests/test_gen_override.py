@@ -79,6 +79,40 @@ GOOD = (
 )
 
 
+def test_stream_llm_think_override_applies_when_unset(monkeypatch):
+    # GUI / API の think 指定: 呼び出し側が think を明示していない生成に届く
+    captured = {}
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", _fake_stream(captured))
+    bus = EventBus()
+    node = bus.create_node("answer", "最終回答", "")
+    asyncio.run(_stream_llm(
+        bus, node, [{"role": "user", "content": "hi"}], {}, "worker",
+        gen_override={"think": False}))
+    assert captured["think"] is False
+
+
+def test_stream_llm_explicit_think_wins_over_override(monkeypatch):
+    # cascade の下書き・骨格など役割上 think=False が決まっている呼び出しは、
+    # Run 単位の think 指定 (True) があってもそちらを守る
+    captured = {}
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", _fake_stream(captured))
+    bus = EventBus()
+    node = bus.create_node("draft", "下書き", "")
+    asyncio.run(_stream_llm(
+        bus, node, [{"role": "user", "content": "hi"}], {}, "worker",
+        think=False, gen_override={"think": True}))
+    assert captured["think"] is False
+
+
+def test_direct_orchestrator_forwards_think(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", _fake_stream(captured))
+    bus = EventBus()
+    orch = DirectOrchestrator(bus, {}, "worker", gen_override={"think": False})
+    asyncio.run(orch.run("短く答えて"))
+    assert captured["think"] is False
+
+
 def test_cascade_draft_also_gets_override(monkeypatch):
     # 下書きがゲートを通過するとそれが最終回答になるため、下書き生成にも
     # override が届くこと (API の max_tokens がカスケード経由でも効く担保)

@@ -169,6 +169,7 @@ class ChatRequest(BaseModel):
     aal_mode: str = ""          # 非標準フィールド: ai-agent-lab のモード直接指定
     temperature: float | None = None   # 指定時は最終回答の生成に適用 (モデル既定より優先)
     max_tokens: int | None = None      # 同上 (生成上限トークン)
+    reasoning_effort: str | None = None  # "none" で思考生成を切る (それ以外はモデル既定)
 
 
 def register(app) -> None:
@@ -227,7 +228,8 @@ def register(app) -> None:
         try:
             started = await server.start_run(server.RunRequest(
                 task=task, mode=mode, model=model,
-                temperature=req.temperature, max_tokens=req.max_tokens))
+                temperature=req.temperature, max_tokens=req.max_tokens,
+                think=(False if req.reasoning_effort == "none" else None)))
         except HTTPException as e:
             return _error(e.status_code, str(e.detail))
         run_id = started["run_id"]

@@ -7,7 +7,7 @@ import ModelPicker from "./ModelPicker.jsx";
 // UIには枠を置かない。ユーザーはタスクとモデルだけ決めればよい。
 
 // 詳細設定の既定値。「既定と異なる件数」の算出と[クリア]の戻し先に使う
-const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, allowRam: false, claudeReview: false, apiReview: false };
+const DEFAULTS = { model: "auto", critique: false, approve: true, maxIter: 18, allowRam: false, claudeReview: false, apiReview: false, think: "auto" };
 
 /**
  * 新しいタスクの Composer(下書きビュー = 右ペイン全面)。
@@ -30,6 +30,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
   const [allowRam, setAllowRam] = useState(DEFAULTS.allowRam);   // 既定はVRAMのみ
   const [claudeReview, setClaudeReview] = useState(DEFAULTS.claudeReview);  // 既定OFF(外部送信のため)
   const [apiReview, setApiReview] = useState(DEFAULTS.apiReview);
+  const [think, setThink] = useState(DEFAULTS.think);   // "auto"(モデル既定) / "on" / "off"
   const [inherited, setInherited] = useState(false);  // 設定変更して再実行から来たか
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -43,6 +44,9 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
     setAllowRam(!!(src.allow_ram ?? src.allowRam));
     setClaudeReview(!!(src.claude_review ?? src.claudeReview));
     setApiReview(!!(src.api_review ?? src.apiReview));
+    // think は Run 記録では gen_override.think (bool)、フォーム内では "auto"/"on"/"off"
+    const th = src.think ?? src.gen_override?.think;
+    setThink(th === true ? "on" : th === false ? "off" : (typeof th === "string" ? th : DEFAULTS.think));
   };
 
   useEffect(() => {
@@ -69,7 +73,8 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
       // mode / deliverable は送らない(auto = メインエージェントが決める)
       await onStart({ task: task.trim(), model, critique, approve,
                       max_iter: maxIter, allow_ram: allowRam,
-                      claude_review: claudeReview, api_review: apiReview });
+                      claude_review: claudeReview, api_review: apiReview,
+                      think: think === "auto" ? null : think === "on" });
       setTask("");   // 実行を開始したら入力を空に戻す(ビュー切替は App 側)
       setInherited(false);
     } catch (e) {
@@ -111,7 +116,8 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
     claudeReview !== DEFAULTS.claudeReview,
     apiReview !== DEFAULTS.apiReview,
     maxIter !== DEFAULTS.maxIter,
-  ].filter(Boolean).length, [critique, approve, allowRam, claudeReview, apiReview, maxIter]);
+    think !== DEFAULTS.think,
+  ].filter(Boolean).length, [critique, approve, allowRam, claudeReview, apiReview, maxIter, think]);
 
   return (
     <div className="flex h-full flex-col items-center overflow-y-auto px-4 py-8">
@@ -204,6 +210,16 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
               🤖 Claudeレビュー
             </span>
           )}
+          {think === "off" && (
+            <span className="rounded-full border border-sky-500/60 bg-sky-500/10 px-2 py-0.5 text-[11.5px] font-semibold text-sky-300">
+              ⚡ 思考なし（高速）
+            </span>
+          )}
+          {think === "on" && (
+            <span className="rounded-full border border-violet-500/60 bg-violet-500/10 px-2 py-0.5 text-[11.5px] font-semibold text-violet-300">
+              🧠 思考あり
+            </span>
+          )}
 
           <button
             onClick={submit}
@@ -262,6 +278,24 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
 
             <p className="mt-4 border-t border-slate-800 pt-3 text-xs font-semibold text-slate-300">モデルと仕上げのレビュー</p>
             <div className="mt-2 space-y-2.5">
+              <label className="flex items-start gap-2">
+                <span className="mt-0.5 inline-block w-4 shrink-0" />
+                <span>
+                  <span className="flex items-center gap-2 text-[13px] text-slate-200">
+                    思考（think）
+                    <select
+                      value={think}
+                      onChange={(e) => setThink(e.target.value)}
+                      className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-slate-200 outline-none focus:border-blue-500"
+                    >
+                      <option value="auto">自動（モデル既定）</option>
+                      <option value="on">あり（しっかり考える）</option>
+                      <option value="off">なし（高速）</option>
+                    </select>
+                  </span>
+                  <span className="block text-xs text-slate-500">答える前に裏側で考える工程です。「なし」は大幅に速くなります（実測では通常タスクの正しさは同等で約3倍速）。難しい推論が要るタスクでは「あり」が効く場合があります。cascadeの下書き・骨格など、役割上決まっている箇所には影響しません</span>
+                </span>
+              </label>
               <label className="flex cursor-pointer items-start gap-2">
                 <input type="checkbox" checked={allowRam} onChange={(e) => setAllowRam(e.target.checked)}
                        className="mt-0.5 accent-blue-500" />
