@@ -314,6 +314,7 @@ models:
     tools: true
     mtp: false
     num_ctx: 16384
+    keep_alive: "12h"             # cascade の高速側: 期限切れで下書きが再ロード待ちにならないよう長め (既定30m。追い出し対策は server の keep-warm)
     options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
     options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
     think: "low"

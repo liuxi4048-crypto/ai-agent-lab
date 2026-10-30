@@ -1105,6 +1105,60 @@ async def prewarm(cfg, key, timeout=600.0):
         return False
 
 
+async def loaded_model_tags():
+    """Ollama に現在ロード済みのモデル tag 一覧 (/api/ps)。失敗時は空リスト。"""
+    try:
+        async with _client_ctx("ollama", httpx.Timeout(10.0,
+                                                       connect=CONNECT_TIMEOUT)) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/ps")
+            if resp.status_code != 200:
+                return []
+            return [m.get("name", "") for m in resp.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def keepwarm_should_load(loaded_tags, fast_tag, running):
+    """cascade 高速モデルを裏で温め直すべきかの決定的判定。
+
+    2026-10-30 の実測: 高速モデル (distill4b) 自身のロードは約5秒だが、
+    Ollama 内の他モデルや Strata と VRAM を奪い合って追い出されると、
+    次の cascade の下書きが再ロード待ちで最大約120秒止まった。
+    対策は「空いているときだけ温め直す」こと: 他人のモデルが載っている
+    ときに温めると、今度はそちらを追い出してしまう (奪い合いの連鎖)。
+    実行中の Run があるときも触らない。
+    """
+    if running or not fast_tag:
+        return False
+    return len(loaded_tags) == 0
+
+
+async def keepwarm_fast_model(running_count, interval_sec=600.0):
+    """cascade 高速モデルの keep-warm ループ (サーバ起動時に create_task)。
+
+    interval ごとに様子を見て、keepwarm_should_load の条件を満たすとき
+    だけ prewarm する。例外では死なない (ループ継続が本体機能より大事
+    ではないが、落ちて静かに無効化されるより続く方がよい)。
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval_sec)
+            cfg = load_config()
+            key = cfg.get("cascade_fast_model") or ""
+            if not key or key not in cfg.get("models", {}):
+                continue
+            info = resolve(cfg, key)
+            if info.get("backend") != "ollama":
+                continue
+            tags = await loaded_model_tags()
+            if keepwarm_should_load(tags, info["tag"], running_count() > 0):
+                await prewarm(cfg, key)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            continue
+
+
 # ダッシュボードのVRAMメーター用。物理VRAM総量はOllama APIから取れないため環境変数で設定
 VRAM_TOTAL_BYTES = int(float(os.environ.get("VRAM_TOTAL_GB", "16")) * 1024**3)
 

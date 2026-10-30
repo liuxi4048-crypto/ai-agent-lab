@@ -49,6 +49,11 @@ async def _startup_prewarm():
     if os.environ.get("AAL_NO_PREWARM"):
         return
     asyncio.create_task(llm.prewarm_default())
+    # cascade 高速モデルの keep-warm: 期限切れ・追い出しで Ollama が
+    # 空になったときだけ温め直し、次の cascade の下書きが再ロード待ち
+    # (実測最大約120秒) で止まらないようにする。他モデルが載っている
+    # ときは追い出さない (llm.keepwarm_should_load)。
+    asyncio.create_task(llm.keepwarm_fast_model(manager.running_count))
 
 
 # 起動時: 前回プロセス死で実行中のまま残ったRun記録を interrupted として確定
