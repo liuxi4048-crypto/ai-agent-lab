@@ -672,7 +672,10 @@ CASCADE_EXPAND_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは有能なアシス
 
 # カスケードの下書き・展開の生成上限。本文の通常量を切らない範囲の暴走防止。
 _CASCADE_DRAFT_NUM_PREDICT = 2048
-_CASCADE_SKELETON_NUM_PREDICT = 768
+# 骨格の上限: DeepSeek の実測では自然な骨格は 66〜133 トークンに収まる一方、
+# coder は散文を書き続けて 768 上限まで膨らんだ (2026-10-30)。384 なら
+# 自然な骨格の 3〜5 倍の余裕を残しつつ、暴走時の無駄を半減できる。
+_CASCADE_SKELETON_NUM_PREDICT = 384
 
 _ANSWER_ENDINGS = "。.!！?？」』）)]|0123456789"
 
