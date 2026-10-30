@@ -14,14 +14,19 @@
   (127.0.0.1 バインド前提)。
 - バインド先: 環境変数 AAL_HOST か api_settings.json の host (既定 127.0.0.1)。
   0.0.0.0 にすると LAN / Tailscale から届く。その場合は api_key 設定を強く推奨。
+- キー発行: GUI (接続状態画面) から POST /api-key/generate で api_settings.json に
+  生成・保存する。発行系はこのPC (ループバック) からの要求だけ受け付ける。
 """
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
+import secrets
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -31,6 +36,7 @@ SETTINGS_FILE = Path(__file__).parent / "api_settings.json"
 TERMINAL = ("done", "error", "cancelled", "interrupted")
 WAIT_TIMEOUT_S = 3600
 POLL_S = 0.25
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
 
 
 def _settings() -> dict:
@@ -49,12 +55,39 @@ def bind_host() -> str:
     return os.environ.get("AAL_HOST") or str(_settings().get("host") or "127.0.0.1")
 
 
+def key_source() -> str:
+    if os.environ.get("AAL_API_KEY"):
+        return "env"
+    return "file" if _settings().get("api_key") else "none"
+
+
+def generate_api_key() -> str:
+    """新しいキーを api_settings.json に保存して返す (host など他の項目は保持)。"""
+    key = secrets.token_urlsafe(32)
+    data = _settings()
+    data["api_key"] = key
+    SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+    return key
+
+
+def _require_local(request: Request) -> None:
+    # 0.0.0.0 バインド時に LAN から発行されるとキー認証が無意味になるため
+    client = request.client.host if request.client else ""
+    if client not in LOOPBACK:
+        raise HTTPException(403, "APIキーの発行はこのPCからのみ行えます")
+    # 別サイトのページからのPOST (CSRF) も接続元はループバックになるため Origin で弾く
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).hostname not in LOOPBACK:
+        raise HTTPException(403, "このページからはAPIキーを発行できません")
+
+
 def _check_auth(request: Request) -> None:
     key = api_key()
     if not key:
         return
     auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {key}":
+    if not hmac.compare_digest(auth.encode(), f"Bearer {key}".encode()):
         raise HTTPException(401, "APIキーが不正です (Authorization: Bearer <key>)")
 
 
@@ -141,6 +174,18 @@ class ChatRequest(BaseModel):
 def register(app) -> None:
     import llm
     from runs import manager
+
+    @app.get("/api-key")
+    async def api_key_status(request: Request):
+        _require_local(request)
+        return {"source": key_source(), "host": bind_host(), "port": request.url.port}
+
+    @app.post("/api-key/generate")
+    async def api_key_generate(request: Request):
+        _require_local(request)
+        if key_source() == "env":
+            raise HTTPException(409, "環境変数 AAL_API_KEY が優先されるため、画面からは発行できません")
+        return {"key": generate_api_key()}
 
     @app.get("/v1/models")
     async def v1_models(request: Request):
