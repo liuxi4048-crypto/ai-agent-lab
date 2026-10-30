@@ -47,6 +47,18 @@ OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
 OPENAI_COMPAT_BASE = os.environ.get("OPENAI_COMPAT_BASE", "http://localhost:8080/v1")
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_MAX_TOKENS = 4096  # コンテキスト長とは独立した生成上限
+
+
+def _anthropic_no_sampling(model: str) -> bool:
+    """サンプリングパラメータを受け付けない Claude 世代か。
+
+    Claude 5.5 系 (opus/sonnet/haiku の *-5-5) は temperature / top_p /
+    top_k を送ると 400 ("`temperature` is deprecated for this model.")
+    になる (2026-10-30 に3モデルとも API 実測で確認)。この世代では
+    パラメータ自体を送らない (モデル既定のサンプリングになる)。
+    """
+    m = model or ""
+    return m.endswith("-5-5") or "-5-5-" in m
 DEFAULT_NUM_CTX = 16384
 RETRIES = 3
 CONNECT_TIMEOUT = 10.0
@@ -530,9 +542,10 @@ def _anthropic_payload(payload):
               "max_tokens": options.get("num_predict", ANTHROPIC_MAX_TOKENS)}
     if system:
         result["system"] = "\n\n".join(system)
-    for key in ("temperature", "top_p", "top_k"):
-        if key in options:
-            result[key] = options[key]
+    if not _anthropic_no_sampling(payload["model"]):
+        for key in ("temperature", "top_p", "top_k"):
+            if key in options:
+                result[key] = options[key]
     if payload.get("tools"):
         result["tools"] = []
         for tool in payload["tools"]:

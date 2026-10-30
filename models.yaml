@@ -2,6 +2,8 @@
 # anthropic: tag は Claude のモデルID。キーは環境変数 ANTHROPIC_API_KEY のみ。従量課金あり。
 #   接続先は https://api.anthropic.com/v1/messages。base_url は適用しない。
 #   拡張思考の有効化・構造化出力の強制は未対応。num_ctx / min_p は送信しない。
+#   5.5系は temperature / top_p / top_k を送ると 400 (deprecated) になるため、
+#   llm._anthropic_payload がその世代では送信しない (2026-10-30 実測)。
 # base_url: openai の接続先(/v1 を含む)。モデル設定、環境変数 OPENAI_COMPAT_BASE、既定値 http://localhost:8080/v1 の順に優先。
 # server_name: openai の接続先サーバーの表示名(任意。例: llama-server / Strata)。
 #   UIのモデル選択は接続先サーバーごとにグループ表示する。付けるとその名前で表示され、

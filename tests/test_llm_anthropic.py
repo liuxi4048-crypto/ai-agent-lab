@@ -57,6 +57,24 @@ def test_payload():
     assert llm.resolve(CFG, "claude")["base_url"] == llm.ANTHROPIC_BASE
 
 
+def test_payload_drops_sampling_params_for_55_family():
+    # Claude 5.5 系は temperature/top_p/top_k を送ると API が 400 を返す
+    # (2026-10-30 実測)。世代判定で落とし、他の項目は従来どおり送る。
+    cfg55 = {"models": {"opus": {"tag": "claude-opus-5-5", "backend": "anthropic",
+             "tools": True, "num_ctx": 100000,
+             "options": {"temperature": 0.6, "top_p": 0.9, "top_k": 20, "min_p": 0}}}}
+    p = llm._payload(llm.resolve(cfg55, "opus"),
+                     [{"role": "user", "content": "a"}], None, 0.2, None,
+                     False, True, None, None, 30)
+    result = llm._anthropic_payload(p)
+    assert not {"temperature", "top_p", "top_k"} & result.keys()
+    assert result["max_tokens"] == 30 and result["model"] == "claude-opus-5-5"
+    for tag in ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5-20261001"):
+        assert llm._anthropic_no_sampling(tag) is True
+    for tag in ("claude-opus-5", "claude-sonnet-4-5-20250929", "claude-test"):
+        assert llm._anthropic_no_sampling(tag) is False
+
+
 @pytest.mark.parametrize("kwargs", [{"json_mode": True}, {"schema": {"type": "object"}}])
 def test_json_warning(kwargs):
     with pytest.warns(UserWarning, match="未対応"):
