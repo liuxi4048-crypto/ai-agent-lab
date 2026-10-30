@@ -491,6 +491,14 @@ cascade_fast_model: distill4b
 # 3反復で完了し、hybrid のロードもスピルも一切払わずに済む(実測)。
 cascade: true
 
+# 依頼の仕分け(mode/deliverable)を Kev(TypeSafe System One 互換の判断モデル)で行う。
+# 起動: C:\project\kev で python -m kev.serve --run jaredpalmer/kev-4b --port 8009 --device cpu
+# 未起動・確率 min_prob 未満なら従来の LLM 判定へ回る。使わないならこの節を消す。
+kev_triage:
+  base_url: "http://127.0.0.1:8009"
+  min_prob: 0.5
+  timeout: 30
+
 # 批評ループの異ファミリーペア既定(router.pyが参照)。
 # レビュアーは原則 vram 常駐の reasoner に寄せる: hybrid 同士のペア(旧 heavy→smart 等)は
 # 批評ラウンド毎に大型モデルの交互ロード(25〜65秒×2/ラウンド)が発生していた。
