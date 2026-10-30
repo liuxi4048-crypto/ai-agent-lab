@@ -500,6 +500,12 @@ kev_triage:
   min_prob: 0.5
   timeout: 30
 
+# cascade 下書きの意味ゲート (シャドウ)。Kev にも判定させて
+# kev_gate_shadow.jsonl へ記録するだけ。合否は _draft_gate が決める。
+kev_gate:
+  shadow: true
+  timeout: 15
+
 # 批評ループの異ファミリーペア既定(router.pyが参照)。
 # レビュアーは原則 vram 常駐の reasoner に寄せる: hybrid 同士のペア(旧 heavy→smart 等)は
 # 批評ラウンド毎に大型モデルの交互ロード(25〜65秒×2/ラウンド)が発生していた。
