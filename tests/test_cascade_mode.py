@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import orchestrator
-from orchestrator import CascadeOrchestrator, _draft_gate
+from orchestrator import CascadeOrchestrator, _draft_gate, _skip_skeleton
 
 TASK = "中学生向けに、分数の割り算がなぜ逆数をかけるのかを、例題2つ付きで説明して"
 
@@ -115,7 +115,7 @@ class FakeBus:
         self.error = error
 
 
-def _run_cascade(monkeypatch, responder):
+def _run_cascade(monkeypatch, responder, task=TASK):
     calls = []
 
     async def fake_stream(bus, node_id, messages, cfg, key, **kwargs):
@@ -126,7 +126,7 @@ def _run_cascade(monkeypatch, responder):
     bus = FakeBus()
     orc = CascadeOrchestrator(bus, cfg={}, model="deepseek_strata",
                               fast_model="distill4b")
-    asyncio.run(orc.run(TASK))
+    asyncio.run(orc.run(task))
     answers = [n for n in bus.nodes.values() if n["kind"] == "answer"]
     return bus, calls, answers
 
@@ -176,4 +176,46 @@ def test_cascade_fallback_to_main_full(monkeypatch):
     assert calls == ["distill4b", "distill4b", "deepseek_strata",
                      "distill4b", "deepseek_strata"]
     assert answers[0]["output"] == GOOD
+    assert bus.finished and bus.error is None
+
+
+def test_skip_skeleton_judgment():
+    # 簡潔さの明示があれば、下書きの長さに関係なく骨格を飛ばす
+    assert _skip_skeleton("1+1はいくつですか。数字だけで答えて", GOOD, GOOD) is True
+    assert _skip_skeleton("Answer in one short sentence: what is 2+2?", "", "") is True
+    # 説明系のタスクは短い下書きでも骨格を使う (従来経路を守る)
+    assert _skip_skeleton(TASK, SHORT, SHORT) is False
+    # 手がかり無し: 下書き・自己修正とも極端に短ければ短答タスクとみなす
+    assert _skip_skeleton("フランスの首都は?", "パリ。", "パリです。") is True
+    # 片方でも長く書けていれば骨格経路に進む
+    assert _skip_skeleton("フランスの首都は?", "説" * 50, "パリ。") is False
+
+
+def test_cascade_skips_skeleton_for_brevity_task(monkeypatch):
+    task = "1+1はいくつですか。数字だけで答えて"
+
+    def responder(key, messages, n):
+        if key == "deepseek_strata":
+            return "2"                                # フォールバックの全文
+        return "2"                                    # 高速側は短くて不合格
+
+    bus, calls, answers = _run_cascade(monkeypatch, responder, task=task)
+    # 骨格 (3回目の deepseek) と展開 (4回目の distill) が無く、重い呼び出しは1回だけ
+    assert calls == ["distill4b", "distill4b", "deepseek_strata"]
+    assert answers[0]["output"] == "2"
+    assert bus.finished and bus.error is None
+    assert any("骨格を省略" in line for line in bus.logs)
+
+
+def test_cascade_skips_skeleton_for_short_answers(monkeypatch):
+    task = "What is the capital of France?"
+
+    def responder(key, messages, n):
+        if key == "deepseek_strata":
+            return "Paris."
+        return "Paris."
+
+    bus, calls, answers = _run_cascade(monkeypatch, responder, task=task)
+    assert calls == ["distill4b", "distill4b", "deepseek_strata"]
+    assert answers[0]["output"] == "Paris."
     assert bus.finished and bus.error is None

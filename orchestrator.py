@@ -757,6 +757,42 @@ def _draft_gate(task: str, text: str) -> list[str]:
     return reasons
 
 
+# 簡潔な回答を明示する依頼 (骨格が無駄になるタスク) の手がかり
+_BREVITY_RE = re.compile(
+    r"一言|ひとことで|数字だけ|数値だけ|単語だけ|短く|簡潔に|短めに|"
+    r"一行で|1行で|はいかいいえ|"
+    r"one word|one sentence|one short sentence|just the number|briefly|in a word",
+    re.IGNORECASE)
+# 説明・長文を求める依頼の手がかり (骨格が効くタスク)
+_EXPLAIN_RE = re.compile(
+    r"説明|解説|理由|なぜ|どうして|例題|詳しく|仕組み|手順|書いて|まとめ|比較|分析|"
+    r"essay|explain|describe|why|how does|in detail",
+    re.IGNORECASE)
+
+# 下書き・自己修正がこれ未満なら「短い回答のタスク」とみなす候補にする長さ
+_SHORT_DRAFT_CHARS = 40
+
+
+def _skip_skeleton(task: str, draft: str, repaired: str) -> bool:
+    """骨格経路を飛ばして直接フォールバックするかの決定的判定。
+
+    短い回答が正解のタスクでは、高性能モデルの骨格生成が丸ごと無駄になる
+    (2026-10-30 実測: 「1+1は?」に骨格31トークン/30秒を払い、最終回答は
+    1文字。首都タスクでは骨格が上限768トークンまで膨らんだ例もある)。
+    重いモデルの呼び出しは固定費 (30〜80秒/回) が支配的なので、骨格を
+    飛ばせば最悪経路がほぼ direct 並みになる。
+    - 依頼に簡潔さの明示がある → 飛ばす
+    - 説明系の依頼 → 飛ばさない (骨格が効く)
+    - 下書き・自己修正とも極端に短い → 飛ばす (短答タスクとみなす)
+    """
+    if _BREVITY_RE.search(task or ""):
+        return True
+    if _EXPLAIN_RE.search(task or ""):
+        return False
+    return (len((draft or "").strip()) < _SHORT_DRAFT_CHARS
+            and len((repaired or "").strip()) < _SHORT_DRAFT_CHARS)
+
+
 class CascadeOrchestrator:
     """小型モデル先行カスケード (2026-10-28 追加)。
 
@@ -765,6 +801,7 @@ class CascadeOrchestrator:
       1. 高速モデルが全文の下書きを書く → 決定的品質ゲートを通れば採用
       2. 落ちたら不合格理由を添えて高速モデル自身に直させる (自己修正)
       3. それでも落ちたら高性能モデルが「骨格」だけを書き、高速モデルが展開
+         (短いタスクでは骨格を飛ばして 4 へ直行する。_skip_skeleton 参照)
       4. それも落ちたら従来の direct (高性能モデルの全文生成＋言語ガード)
     高速モデルの生成は数十秒級で、高性能モデルの生成量を骨格分だけに
     抑えられるのが利得。ゲートは _draft_gate (決定的検査のみ)。
@@ -837,40 +874,50 @@ class CascadeOrchestrator:
             bus.emit_log(repair_id, "[カスケード] 自己修正も不合格: "
                                     + "、".join(reasons_r))
 
-            # 3) 高性能モデルは骨格だけ、高速モデルが展開する
-            skeleton_id = bus.create_node("skeleton", "骨格 (高性能モデル)",
-                                          "要点と構成だけを作成", root_id)
-            skeleton = await _stream_llm(
-                bus, skeleton_id,
-                [{"role": "system", "content": CASCADE_SKELETON_SYSTEM},
-                 {"role": "user", "content": task}],
-                self.cfg, self.model, think=False,
-                num_predict=_CASCADE_SKELETON_NUM_PREDICT)
-            bus.complete(skeleton_id, skeleton)
+            # 3) 高性能モデルは骨格だけ、高速モデルが展開する。
+            #    短いタスクでは骨格を飛ばして 4) へ直行し、重い呼び出しを
+            #    1回減らす (_skip_skeleton: 固定費が支配的という実測に基づく)
+            expanded = ""
+            expanded_ok = False
+            if _skip_skeleton(task, draft, repaired):
+                bus.emit_log(repair_id, "[カスケード] 短いタスクのため骨格を省略し、"
+                                        "高性能モデルの全文生成へ切り替えます")
+            else:
+                skeleton_id = bus.create_node("skeleton", "骨格 (高性能モデル)",
+                                              "要点と構成だけを作成", root_id)
+                skeleton = await _stream_llm(
+                    bus, skeleton_id,
+                    [{"role": "system", "content": CASCADE_SKELETON_SYSTEM},
+                     {"role": "user", "content": task}],
+                    self.cfg, self.model, think=False,
+                    num_predict=_CASCADE_SKELETON_NUM_PREDICT)
+                bus.complete(skeleton_id, skeleton)
 
-            expand_id = bus.create_node("expand", "展開 (高速モデル)",
-                                        "骨格に沿って全文を書く", root_id)
-            expanded = await _stream_llm(
-                bus, expand_id,
-                [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
-                 {"role": "user",
-                  "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
-                self.cfg, self.fast_model, think=False,
-                num_predict=_CASCADE_DRAFT_NUM_PREDICT,
-                gen_override=self.gen_override)
-            bus.complete(expand_id, expanded)
-            reasons2 = _draft_gate(task, expanded)
+                expand_id = bus.create_node("expand", "展開 (高速モデル)",
+                                            "骨格に沿って全文を書く", root_id)
+                expanded = await _stream_llm(
+                    bus, expand_id,
+                    [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
+                     {"role": "user",
+                      "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
+                    self.cfg, self.fast_model, think=False,
+                    num_predict=_CASCADE_DRAFT_NUM_PREDICT,
+                    gen_override=self.gen_override)
+                bus.complete(expand_id, expanded)
+                reasons2 = _draft_gate(task, expanded)
+                if not reasons2:
+                    bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
+                    expanded_ok = True
+                else:
+                    bus.emit_log(expand_id, "[カスケード] 展開も不合格: "
+                                            + "、".join(reasons2)
+                                            + "。高性能モデルの全文生成へ切り替えます")
 
             answer_id = bus.create_node("answer", "最終回答", "", root_id)
-            if not reasons2:
-                bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
+            if expanded_ok:
                 bus.complete(answer_id, expanded)
             else:
                 # 4) フォールバック: 高性能モデルの全文生成 (言語ガード付き)
-                bus.emit_log(expand_id, "[カスケード] 展開も不合格: "
-                                        + "、".join(reasons2)
-                                        + "。高性能モデルの全文生成へ切り替えます")
-
                 async def gen(msgs, early_abort):
                     return await _stream_llm(
                         bus, answer_id, msgs, self.cfg, self.model,
