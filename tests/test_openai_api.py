@@ -85,3 +85,60 @@ def test_bind_host_default_and_env(monkeypatch):
 class _FakeRequest:
     def __init__(self, headers):
         self.headers = headers
+
+
+class _FakeClient:
+    def __init__(self, host):
+        self.host = host
+
+
+def test_generate_api_key_saves_and_keeps_other_settings(monkeypatch, tmp_path):
+    f = tmp_path / "api_settings.json"
+    f.write_text('{"host": "0.0.0.0", "api_key": "old"}', encoding="utf-8")
+    monkeypatch.setattr(openai_api, "SETTINGS_FILE", f)
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    key = openai_api.generate_api_key()
+    assert len(key) >= 40 and key != "old"
+    assert openai_api.api_key() == key
+    assert openai_api.bind_host() == "0.0.0.0"
+    assert openai_api.key_source() == "file"
+    assert openai_api.generate_api_key() != key
+
+
+def test_key_source(monkeypatch):
+    monkeypatch.setattr(openai_api, "_settings", lambda: {})
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    assert openai_api.key_source() == "none"
+    monkeypatch.setenv("AAL_API_KEY", "x")
+    assert openai_api.key_source() == "env"
+
+
+def test_key_issuance_only_from_loopback():
+    for host in ("127.0.0.1", "::1"):
+        req = _FakeRequest({})
+        req.client = _FakeClient(host)
+        openai_api._require_local(req)
+    for client in (_FakeClient("192.168.1.20"), None):
+        req = _FakeRequest({})
+        req.client = client
+        try:
+            openai_api._require_local(req)
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 403
+        else:
+            raise AssertionError("non-loopback must be rejected")
+
+
+def test_key_issuance_rejects_cross_site_origin():
+    for origin in ("http://127.0.0.1:8765", "http://localhost:5173"):
+        req = _FakeRequest({"origin": origin})
+        req.client = _FakeClient("127.0.0.1")
+        openai_api._require_local(req)
+    req = _FakeRequest({"origin": "https://evil.example"})
+    req.client = _FakeClient("127.0.0.1")
+    try:
+        openai_api._require_local(req)
+    except Exception as e:
+        assert getattr(e, "status_code", None) == 403
+    else:
+        raise AssertionError("cross-site origin must be rejected")
