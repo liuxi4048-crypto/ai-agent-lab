@@ -91,6 +91,8 @@ models:
     num_ctx: 16384
     ram_gb: 10
     options: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, repeat_penalty: 1.05}
+    think: true              # 明示する。省略すると think 未指定(auto)の Run で実効 think を有効と
+                             # 判定できず、生成上限の底上げ(floor)が発動しない (2026-11-01)
     strengths: [coding, reasoning]
     for: "高品質コーディング。難しい実装向け"
     use: "上位MoE(SWE-bench 73.4%) / 難しい実装・レビュアー"
