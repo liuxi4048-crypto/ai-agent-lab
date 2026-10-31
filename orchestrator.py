@@ -158,12 +158,32 @@ class _LangAborted(Exception):
     """言語ガードの早期打ち切り (生成途中で混入見込みが確定した)。"""
 
 
+class _ThinkRescueAborted(Exception):
+    """思考暴走の救済中断 (言語ガードの _LangAborted とは別系統)。
+
+    実効 think が有効な生成で思考の累積が閾値を超えたら _stream_llm が
+    送出する。蓄積した思考テキスト全文を運び、呼び出し側 (direct の
+    最終回答段) が第2段 (think なし再生成) へ切り替えるために使う。
+    _guard_lang は _LangAborted だけを捕捉するため、この例外は素通りし、
+    言語ガードの再生成と誤認されることはない。
+    """
+
+    def __init__(self, thinking: str, est_tokens: int, threshold: int):
+        super().__init__(
+            f"思考が閾値 {threshold} トークン相当を超えました "
+            f"(概算 {est_tokens} トークン / {len(thinking)} 字)")
+        self.thinking = thinking
+        self.est_tokens = est_tokens
+        self.threshold = threshold
+
+
 async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                       json_mode: bool = False, json_schema: dict | None = None,
                       temperature: float | None = None, think=None,
                       num_predict: int | None = None,
                       early_abort=None, gen_override: dict | None = None,
-                      think_floor: bool = False) -> str:
+                      think_floor: bool = False,
+                      think_rescue: bool = False) -> str:
     """LLMをストリーミング実行しつつイベントバスへ進捗を流す。
 
     json_schema を渡すと structured outputs で構造を強制する(判定・分解用)。
@@ -175,6 +195,11 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     think_floor は最終回答・統合段専用: 実効 think が有効なら生成上限を
     _THINK_NUM_PREDICT_FLOOR まで底上げする (思考による本文切断の対策。
     _apply_think_floor 参照)。下書き・骨格等の役割では渡さない。
+    think_rescue は direct の最終回答段専用: 実効 think が有効な場合に
+    限り思考チャンクの累積を監視し、閾値 (_think_rescue_threshold) を
+    超えたら _ThinkRescueAborted を送出して生成を中断する。ストリームを
+    閉じる = 接続切断でエンジン側の生成は即座に止まる (実証済み)。
+    閾値未満では監視カウンタ以外の介入は一切無い。
     """
     bus.set_prompt(node_id, "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages))
     # このノードで実際に使うモデルをUIへ通知(orchestra/critique/レビュー系は単一モデル・
@@ -192,12 +217,17 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
             num_predict = gen_override["num_predict"]
         if think is None and gen_override.get("think") is not None:
             think = gen_override["think"]
-    if think_floor:
+    rescue_threshold = None
+    if think_floor or think_rescue:
         # 実効 think の解決は llm._payload と同じ順序 (呼び出し側 → モデル既定)。
         # gen_override の解決を終えた後でのみ判定する (Run 単位の think 指定や
         # max_tokens 指定にも底上げ・クランプが正しく連動するように)。
         info = llm.resolve(cfg, key)
         tk = think if think is not None else info.get("think")
+        if think_rescue and _think_enabled(tk):
+            # 思考救済の監視は実効 think が有効な呼び出しでだけ武装する。
+            rescue_threshold = _think_rescue_threshold(cfg, key)
+    if think_floor:
         prompt_chars = sum(len(m["content"]) for m in messages
                            if isinstance(m.get("content"), str))
         new_predict, _floored, clamped = _apply_think_floor(
@@ -216,13 +246,29 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                          f"(num_ctx={info.get('num_ctx')}) のため底上げを"
                          "適用できませんでした")
     out: list[str] = []
+    think_parts: list[str] = []
+    think_chars = 0
+    content_started = False
     async for chunk in llm.chat_stream(cfg, key, messages, json_mode=json_mode,
                                        json_schema=json_schema,
                                        temperature=temperature, think=think,
                                        num_predict=num_predict):
         if chunk.get("thinking"):
             bus.think_progress(node_id, chunk["thinking"])
+            if rescue_threshold is not None and not content_started:
+                # 思考フェーズの間だけ累積を監視する。本文が始まったら
+                # 思考は終わっているので監視を外す (部分本文を破棄しない)。
+                think_parts.append(chunk["thinking"])
+                think_chars += len(chunk["thinking"])
+                if _estimate_think_tokens(think_chars) > rescue_threshold:
+                    # 例外でストリームを抜ける = 接続が切れてエンジン側の
+                    # 生成が即座に止まる (実証済み)。蓄積した思考全文を
+                    # 例外に載せ、呼び出し側の第2段へ引き継ぐ。
+                    raise _ThinkRescueAborted(
+                        "".join(think_parts),
+                        _estimate_think_tokens(think_chars), rescue_threshold)
         if chunk.get("content"):
+            content_started = True
             out.append(chunk["content"])
             bus.token_progress(node_id, chunk["content"])
             if early_abort is not None and early_abort("".join(out)):
@@ -361,6 +407,66 @@ def _apply_think_floor(num_predict, tk, num_ctx, prompt_chars):
             result = max(base, room)
             clamped = result < raised
     return result, result > base, clamped
+
+
+# ---- 思考暴走の救済型自動発動 (2026-11-01) ----
+# 根拠: think-large-design-20261031/report-thinking-budget-variants.md の
+# 最終判断。通常は単発 think で走らせ、思考が暴走した引きだけを
+# ストリーム内で中断し、第2段 (think なし・思考メモ引き継ぎ) へ
+# 切り替える。pro へ二段を定期適用すると質が落ちるため (同レポート)、
+# 救済は「発動しない限り介入ゼロ」が前提で、対象は direct の最終回答段
+# のみ (orchestra 統合段への展開はしない)。
+#
+# 閾値の既定 3,072 トークンの根拠: pro の健全な引きの思考は実測最大
+# 約1,900 トークン (5,260 字・直接測定)、lab 経由の auto でも最大
+# 6,101 字で、これを切らない水準に置く。一方 smart の病的引きは
+# 12,430 字 (実測。本文 82 字で生成上限到達) に達し、思考を
+# 1,536 トークンで切る二段方式で質・速度とも改善した実績がある
+# (report-thinking-budget.md の E2)。
+_THINK_RESCUE_DEFAULT_TOKENS = 3072
+
+# 思考テキストの字数→トークン概算の換算。実測の字/トークンは
+# pro (qwen3.8) で約2.4〜2.8、smart (qwen3.6) で約3.9 とモデルで
+# 違うため、中間の 3 字 = 1 トークンで概算する。この換算では既定
+# 閾値 3,072 の発動点は約9,216 字となり、pro の健全な引きの実測最大
+# (6,101 字) を誤って切らず、smart の病的引き (12,430 字) を捉える
+# 位置になる。発動の失敗方向の非対称性 (健全な pro を切ると質が
+# 落ちる／smart を見逃すと現状維持) からも、早めに倒れない側の
+# 換算を選んでいる。
+_THINK_CHARS_PER_TOKEN = 3
+
+
+def _estimate_think_tokens(chars: int) -> int:
+    """思考テキストの字数から概算トークン数を返す (純関数・テスト対象)。"""
+    return -(-int(chars or 0) // _THINK_CHARS_PER_TOKEN)
+
+
+def _think_rescue_threshold(cfg, key: str) -> int | None:
+    """思考救済の閾値 (概算トークン) を解決する (純関数・テスト対象)。
+
+    返り値 None は無効。優先順:
+    1. モデル別: models.yaml の各エントリの think_rescue_tokens
+       (0 以下でそのモデルだけ無効)。llm.resolve は未知キーを落とす
+       ため、cfg の生エントリから直接読む。
+    2. 全体: models.yaml トップレベルの think_rescue.tokens。
+       think_rescue: false、または enabled: false で全体を無効化できる。
+    3. 既定 _THINK_RESCUE_DEFAULT_TOKENS。
+    """
+    g = (cfg or {}).get("think_rescue")
+    if g is False:
+        return None
+    default = _THINK_RESCUE_DEFAULT_TOKENS
+    if isinstance(g, dict):
+        if g.get("enabled") is False:
+            return None
+        v = g.get("tokens")
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            default = int(v)
+    entry = ((cfg or {}).get("models") or {}).get(key) or {}
+    v = entry.get("think_rescue_tokens")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v) if v > 0 else None
+    return default
 
 
 def _fit_parts(parts: list[str], total_chars: int = _CHAT_INPUT_BUDGET) -> list[str]:
@@ -702,6 +808,16 @@ class Orchestrator:
 
 DIRECT_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは有能なアシスタントです。ユーザーの依頼に、過不足なく、わかりやすく日本語で答えてください。"""
 
+# 救済の第2段でユーザーメッセージ末尾に足す引き継ぎ文。二段方式の実験
+# (report-thinking-budget.md の E2 / thinking-budget A/B) で使った
+# 作成メモ形式を汎用化したもの。実験では思考メモの引き継ぎで本文が
+# 完結し、smart では質・速度とも単発 think を上回った。
+_RESCUE_MEMO_TEMPLATE = (
+    "\n\n【作成メモ】以下は、この依頼について事前に検討した思考メモです"
+    "（長くなりすぎたため途中で打ち切られています）。"
+    "このメモの検討結果を踏まえて、回答の本文だけを完結させて書いてください。"
+    "思考メモの文章をそのまま転記する必要はありません。\n\n")
+
 
 class DirectOrchestrator:
     """単一呼び出しで完結させる軽量モード(2026-10-28 第2弾)。
@@ -735,9 +851,23 @@ class DirectOrchestrator:
                     num_predict=_AGGREGATE_NUM_PREDICT,
                     early_abort=(lang_guard.partial_is_contaminated
                                  if early_abort else None),
-                    gen_override=self.gen_override, think_floor=True)
+                    gen_override=self.gen_override, think_floor=True,
+                    think_rescue=True)
 
-            final = await _guard_lang(bus, answer_id, messages, gen)
+            try:
+                final = await _guard_lang(bus, answer_id, messages, gen)
+            except _ThinkRescueAborted as rescue:
+                # 思考の暴走を中断した。蓄積した思考全文をメモとして
+                # 引き継ぎ、think なしで本文だけを再生成する (第2段)。
+                bus.emit_log(
+                    answer_id,
+                    f"[思考救済] 思考が閾値 {rescue.threshold} トークン相当"
+                    f"(概算 {rescue.est_tokens} トークン / "
+                    f"{len(rescue.thinking)} 字)に達したため生成を中断しました。"
+                    "思考メモを引き継ぎ、think なしで本文を再生成します")
+                final = await self._rescue_answer(answer_id, messages, rescue)
+                bus.emit_log(answer_id,
+                             "[思考救済] 第2段 (think なし) の生成が完了しました")
             bus.complete(answer_id, final)
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
@@ -748,6 +878,40 @@ class DirectOrchestrator:
             bus.complete(root_id, error=f"実行エラー: {e}")
             bus.run_finished(error=str(e))
             raise
+
+    async def _rescue_answer(self, answer_id: str, messages: list[dict],
+                             rescue: _ThinkRescueAborted) -> str:
+        """救済の第2段: 思考メモを引き継ぎ、think なしで本文を生成する。
+
+        生成上限は第1段と同水準 (think 有効時の底上げ後の値) を、メモを
+        足した後のプロンプト長で再計算して使う。本文の予算が保証される
+        ことが二段方式の要点のため。言語ガードも第1段と同じく
+        _guard_lang 経由で効かせる。第2段は think=False なので救済の
+        監視は武装しない (再帰的に発動することはない)。
+        """
+        bus = self.bus
+        info = llm.resolve(self.cfg, self.model)
+        stage2 = [dict(m) for m in messages]
+        for i in range(len(stage2) - 1, -1, -1):
+            if stage2[i].get("role") == "user":
+                stage2[i] = {**stage2[i],
+                             "content": stage2[i]["content"]
+                             + _RESCUE_MEMO_TEMPLATE + rescue.thinking}
+                break
+        prompt_chars = sum(len(m["content"]) for m in stage2
+                           if isinstance(m.get("content"), str))
+        num_predict, _, _ = _apply_think_floor(
+            _AGGREGATE_NUM_PREDICT, True, info.get("num_ctx"), prompt_chars)
+
+        async def gen2(msgs, early_abort):
+            return await _stream_llm(
+                bus, answer_id, msgs, self.cfg, self.model,
+                num_predict=num_predict, think=False,
+                early_abort=(lang_guard.partial_is_contaminated
+                             if early_abort else None),
+                gen_override=self.gen_override)
+
+        return await _guard_lang(bus, answer_id, stage2, gen2)
 
 
 CASCADE_SKELETON_SYSTEM = COMMON_SYSTEM_PREFIX + """あなたは回答の設計者です。
