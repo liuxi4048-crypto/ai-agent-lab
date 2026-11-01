@@ -184,7 +184,8 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                       num_predict: int | None = None,
                       early_abort=None, gen_override: dict | None = None,
                       think_floor: bool = False,
-                      think_rescue: bool = False) -> str:
+                      think_rescue: bool = False,
+                      meta_out: dict | None = None) -> str:
     """LLMをストリーミング実行しつつイベントバスへ進捗を流す。
 
     json_schema を渡すと structured outputs で構造を強制する(判定・分解用)。
@@ -203,6 +204,12 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     超えたら _ThinkRescueAborted を送出して生成を中断する。ストリームを
     閉じる = 接続切断でエンジン側の生成は即座に止まる (実証済み)。
     閾値未満では監視カウンタ以外の介入は一切無い。
+    meta_out を渡すと、完了時に done メタ (done_reason と、長さ上限で
+    打ち切られたかを示す truncated) を書き出す。戻り値は本文のまま
+    変えないため、既存の呼び出しには影響しない。打ち切りの事実は
+    従来ログにしか出ず、cascade の決定的ゲート (_draft_gate) が
+    受け取れなかった (打ち切られた自己修正が末尾文字の都合でゲートを
+    通過した実測 2026-11-01) ため、ゲート判定へ渡す経路として追加した。
     """
     bus.set_prompt(node_id, "\n\n".join(f"[{m['role']}]\n{m['content']}" for m in messages))
     # このノードで実際に使うモデルをUIへ通知(orchestra/critique/レビュー系は単一モデル・
@@ -278,6 +285,9 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
                 raise _LangAborted()
         if chunk.get("done"):
             meta = chunk.get("meta") or {}
+            if meta_out is not None:
+                meta_out["done_reason"] = meta.get("done_reason")
+                meta_out["truncated"] = meta.get("done_reason") == "length"
             if meta.get("eval_count"):
                 # token_progress のチャンク数カウントを実測(thinking含む)で置き換える。
                 # add_tokens(加算)だと二重計上になる
@@ -854,6 +864,8 @@ class Orchestrator:
 
             final = await self._aggregate(task, list(results), root_id, creates_code)
 
+            # 空の最終回答を done にしない (direct/cascade と同じ防波堤)
+            _require_final_answer(final)
             answer_id = bus.create_node("answer", "最終回答", "", root_id)
             bus.complete(answer_id, final)
 
@@ -946,7 +958,9 @@ class DirectOrchestrator:
                 final = await self._rescue_answer(answer_id, messages, rescue)
                 bus.emit_log(answer_id,
                              "[思考救済] 第2段 (think なし) の生成が完了しました")
-            bus.complete(answer_id, final)
+            # 空の最終回答を done にしない (実績: 思考暴走・出力上限で
+            # 本文 0 字のまま done になった Run が 3 件)
+            bus.complete(answer_id, _require_final_answer(final))
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
         except asyncio.CancelledError:
@@ -1065,13 +1079,38 @@ def _arith_errors(text: str) -> list[str]:
     return errors
 
 
-def _draft_gate(task: str, text: str) -> list[str]:
+def _require_final_answer(text: str) -> str:
+    """最終回答が空なら例外にし、Run を失敗に倒す (空のまま done にしない)。
+
+    実績 (Run ストア 146 件中 4 件): エンジン側の異常で全段が打ち切りに
+    なった cascade (2026-10-29)、思考が生成上限を使い切って本文 0 字に
+    なった direct (2026-10-30)、Anthropic の出力上限で本文が返らなかった
+    direct (2026-10-31 x2) が、いずれも回答 0 字のまま done になっていた。
+    個別原因 (思考救済・上限底上げ・Anthropic 上限引き上げ) は対策済み
+    だが、原因によらず「回答が無いのに完了」は利用者に最も誤解を与える
+    ため、完了直前に一律の防波堤を置く。1 字以上の正常な回答の経路は
+    完全に不変 (そのまま返す)。
+    """
+    if not (text or "").strip():
+        raise RuntimeError(
+            "最終回答が空でした (生成が上限到達などで本文を返しませんでした)")
+    return text
+
+
+def _draft_gate(task: str, text: str, truncated: bool = False) -> list[str]:
     """高速モデルの下書きを決定的に検査し、不合格理由のリストを返す。
 
     空リストなら合格。LLM 判定は使わない (速さと再現性のため)。
     検査は「壊れている」ことの検出に絞り、内容の良し悪しは問わない。
+    truncated は生成が長さ上限で打ち切られた事実 (_stream_llm の
+    meta_out 経由)。打ち切られた出力は本文が完結していないのが確定
+    しているため、末尾文字だけに拠る「文が途中で終わっている」判定の
+    すり抜け (打ち切られた自己修正が末尾文字の都合で通過した実測
+    2026-11-01) を防ぐべく、無条件に不合格理由へ加える。
     """
     reasons: list[str] = []
+    if truncated:
+        reasons.append("生成が長さ上限で打ち切られた")
     t = (text or "").strip()
     if len(t) < 80:
         reasons.append("短すぎる")
@@ -1161,15 +1200,17 @@ class CascadeOrchestrator:
                                        "高速モデルが全文を先に書く", root_id)
             # 下書きはゲート通過時にそのまま最終回答になるため、生成パラメータ
             # 上書き (API の temperature / max_tokens) はここにも適用する
+            draft_meta: dict = {}
             draft = await _stream_llm(
                 bus, draft_id,
                 [{"role": "system", "content": DIRECT_SYSTEM},
                  {"role": "user", "content": task}],
                 self.cfg, self.fast_model, think=False,
                 num_predict=_CASCADE_DRAFT_NUM_PREDICT,
-                gen_override=self.gen_override)
+                gen_override=self.gen_override, meta_out=draft_meta)
             bus.complete(draft_id, draft)
-            reasons = _draft_gate(task, draft)
+            reasons = _draft_gate(task, draft,
+                                  truncated=bool(draft_meta.get("truncated")))
             if not reasons:
                 bus.emit_log(draft_id, "[カスケード] 下書きが品質ゲートを通過しました")
                 answer_id = bus.create_node("answer", "最終回答", "", root_id)
@@ -1183,6 +1224,7 @@ class CascadeOrchestrator:
             # 2) 不合格理由を添えて高速モデル自身に直させる
             repair_id = bus.create_node("repair", "自己修正 (高速モデル)",
                                         "不合格理由を直して書き直す", root_id)
+            repair_meta: dict = {}
             repaired = await _stream_llm(
                 bus, repair_id,
                 [{"role": "system", "content": DIRECT_SYSTEM},
@@ -1194,9 +1236,10 @@ class CascadeOrchestrator:
                                "日本語で書き直してください。"}],
                 self.cfg, self.fast_model, think=False,
                 num_predict=_CASCADE_DRAFT_NUM_PREDICT,
-                gen_override=self.gen_override)
+                gen_override=self.gen_override, meta_out=repair_meta)
             bus.complete(repair_id, repaired)
-            reasons_r = _draft_gate(task, repaired)
+            reasons_r = _draft_gate(task, repaired,
+                                    truncated=bool(repair_meta.get("truncated")))
             if not reasons_r:
                 bus.emit_log(repair_id, "[カスケード] 自己修正が品質ゲートを通過しました")
                 answer_id = bus.create_node("answer", "最終回答", "", root_id)
@@ -1241,6 +1284,7 @@ class CascadeOrchestrator:
                 else:
                     expand_id = bus.create_node("expand", "展開 (高速モデル)",
                                                 "骨格に沿って全文を書く", root_id)
+                    expand_meta: dict = {}
                     expanded = await _stream_llm(
                         bus, expand_id,
                         [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
@@ -1248,9 +1292,10 @@ class CascadeOrchestrator:
                           "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
                         self.cfg, self.fast_model, think=False,
                         num_predict=_CASCADE_DRAFT_NUM_PREDICT,
-                        gen_override=self.gen_override)
+                        gen_override=self.gen_override, meta_out=expand_meta)
                     bus.complete(expand_id, expanded)
-                    reasons2 = _draft_gate(task, expanded)
+                    reasons2 = _draft_gate(task, expanded,
+                                           truncated=bool(expand_meta.get("truncated")))
                     if not reasons2:
                         bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
                         expanded_ok = True
@@ -1295,7 +1340,9 @@ class CascadeOrchestrator:
                     final = await self._rescue_answer(answer_id, messages, rescue)
                     bus.emit_log(answer_id,
                                  "[思考救済] 第2段 (think なし) の生成が完了しました")
-                bus.complete(answer_id, final)
+                # 空の最終回答を done にしない (実績 3991f92d28: 全段の
+                # 打ち切りで answer 0 字のまま完了扱いになっていた)
+                bus.complete(answer_id, _require_final_answer(final))
             bus.complete(root_id, "全工程が完了しました")
             bus.run_finished()
         except asyncio.CancelledError:
@@ -1527,6 +1574,8 @@ class CritiqueOrchestrator:
                 reason = f"上限到達 — 最高スコアのラウンド{best_round}版(スコア{best_score})を採用"
             else:
                 reason = "上限ラウンドに到達しました"
+            # 空の最終回答を done にしない (direct/cascade と同じ防波堤)
+            _require_final_answer(draft)
             answer_id = bus.create_node("answer", f"⭐ 最終回答({reason})", "", root_id)
             bus.complete(answer_id, draft)
 
