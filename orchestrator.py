@@ -1226,25 +1226,38 @@ class CascadeOrchestrator:
                     num_predict=_CASCADE_SKELETON_NUM_PREDICT)
                 bus.complete(skeleton_id, skeleton)
 
-                expand_id = bus.create_node("expand", "展開 (高速モデル)",
-                                            "骨格に沿って全文を書く", root_id)
-                expanded = await _stream_llm(
-                    bus, expand_id,
-                    [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
-                     {"role": "user",
-                      "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
-                    self.cfg, self.fast_model, think=False,
-                    num_predict=_CASCADE_DRAFT_NUM_PREDICT,
-                    gen_override=self.gen_override)
-                bus.complete(expand_id, expanded)
-                reasons2 = _draft_gate(task, expanded)
-                if not reasons2:
-                    bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
-                    expanded_ok = True
+                # 骨格が空 (本文 0 字) なら展開は情報ゼロの骨格から書くことに
+                # なり、生成 1 回分が無駄になる (実績: 空骨格 3 件すべてで
+                # 展開が実行されゲート不合格になった。think=False 明示でも
+                # ネイティブ推論モデルが思考だけで上限に達し本文 0 字に
+                # なる引きがある)。空のときだけ展開を飛ばして 4) へ直行
+                # する (_skip_skeleton と同じ「無駄な段を飛ばす」判断)。
+                # 短いが中身のある骨格は正当でありうるため、対象は 0 字
+                # のみとし、長さでの一律判定はしない。
+                if not skeleton.strip():
+                    bus.emit_log(skeleton_id,
+                                 "[カスケード] 骨格が空のため展開を省略し、"
+                                 "高性能モデルの全文生成へ切り替えます")
                 else:
-                    bus.emit_log(expand_id, "[カスケード] 展開も不合格: "
-                                            + "、".join(reasons2)
-                                            + "。高性能モデルの全文生成へ切り替えます")
+                    expand_id = bus.create_node("expand", "展開 (高速モデル)",
+                                                "骨格に沿って全文を書く", root_id)
+                    expanded = await _stream_llm(
+                        bus, expand_id,
+                        [{"role": "system", "content": CASCADE_EXPAND_SYSTEM},
+                         {"role": "user",
+                          "content": f"元の依頼: {task}\n\n骨格:\n{skeleton}"}],
+                        self.cfg, self.fast_model, think=False,
+                        num_predict=_CASCADE_DRAFT_NUM_PREDICT,
+                        gen_override=self.gen_override)
+                    bus.complete(expand_id, expanded)
+                    reasons2 = _draft_gate(task, expanded)
+                    if not reasons2:
+                        bus.emit_log(expand_id, "[カスケード] 展開が品質ゲートを通過しました")
+                        expanded_ok = True
+                    else:
+                        bus.emit_log(expand_id, "[カスケード] 展開も不合格: "
+                                                + "、".join(reasons2)
+                                                + "。高性能モデルの全文生成へ切り替えます")
 
             answer_id = bus.create_node("answer", "最終回答", "", root_id)
             if expanded_ok:
