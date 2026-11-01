@@ -12,8 +12,9 @@ import pytest
 
 import orchestrator
 from orchestrator import (
-    DirectOrchestrator, Orchestrator, _ThinkRescueAborted,
-    _estimate_think_tokens, _stream_llm, _think_rescue_threshold)
+    CascadeOrchestrator, CritiqueOrchestrator, DirectOrchestrator,
+    Orchestrator, _ThinkRescueAborted, _estimate_think_tokens, _stream_llm,
+    _think_rescue_threshold)
 
 
 class FakeBus:
@@ -341,3 +342,210 @@ def test_aggregate_disarmed_when_think_unknown(monkeypatch):
         "元の課題", [("現状分析", "結果A")], "node-task", False))
     assert final == "そのまま完結"
     assert not any("思考救済" in line for line in bus.logs)
+
+
+# ---- カスケード最終段への展開 (2026-11-01) ----
+
+class CascadeBus(RunBus):
+    def set_title(self, node_id, title):
+        pass
+
+    def set_progress(self, node_id, done, total):
+        pass
+
+    def cancel_all(self, message):
+        pass
+
+
+def _cascade_cfg(**extra):
+    cfg = {"models": {
+        "m1": {"tag": "fake:1", "think": True, "num_ctx": 16384},
+        "fast": {"tag": "fake-fast:1", "think": False, "num_ctx": 16384},
+    }}
+    cfg.update(extra)
+    return cfg
+
+
+def test_cascade_rescue_answer_builds_stage2(monkeypatch):
+    captured = {}
+
+    async def fake_stream_llm(bus, node_id, messages, cfg, key, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "完成した本文"
+
+    monkeypatch.setattr(orchestrator, "_stream_llm", fake_stream_llm)
+    bus = CascadeBus()
+    orch = CascadeOrchestrator(bus, _cascade_cfg(), "m1", "fast")
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "元のタスク"}]
+    rescue = _ThinkRescueAborted("考えたこと" * 10, 999, 3072)
+    result = asyncio.run(orch._rescue_answer("a1", messages, rescue))
+    assert result == "完成した本文"
+    # 第2段は think=False、上限は底上げ後の 8192 (num_ctx 16384・短い入力)
+    assert captured["kwargs"]["think"] is False
+    assert captured["kwargs"]["num_predict"] == 8192
+    user = captured["messages"][-1]["content"]
+    assert user.startswith("元のタスク")
+    assert "【作成メモ】" in user
+    assert user.endswith("考えたこと" * 10)
+    # 元の messages は書き換えない
+    assert messages[-1]["content"] == "元のタスク"
+
+
+def test_cascade_fallback_rescues_runaway_thinking(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        if key == "fast":
+            # 下書き・自己修正・展開はすべて短すぎてゲート不合格になる
+            yield {"content": "短い"}
+            yield {"done": True, "meta": {"eval_count": 3}}
+            return
+        if kwargs.get("think") is False:
+            if any("【作成メモ】" in (m.get("content") or "") for m in messages):
+                # 第2段: think なしで本文を返す
+                yield {"content": "救済された最終回答"}
+                yield {"done": True, "meta": {"eval_count": 10}}
+            else:
+                # 骨格 (高性能モデル・think=False) は通常生成
+                yield {"content": "骨格の要点"}
+                yield {"done": True, "meta": {"eval_count": 5}}
+            return
+        # 第1段 (フォールバック全文生成): 思考が暴走する (5 × 100 字)
+        for _ in range(5):
+            yield {"thinking": "あ" * 100}
+        yield {"done": True, "meta": {}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = CascadeBus()
+    cfg = _cascade_cfg(think_rescue={"tokens": 100})  # 発動点は 301 字超
+    orch = CascadeOrchestrator(bus, cfg, "m1", "fast")
+    asyncio.run(orch.run("分数の割り算を説明してください"))
+    # 救済が answer ノードのログに残り、最終回答は第2段の本文になる
+    assert bus.completed.get("node-answer") == "救済された最終回答"
+    assert any("思考救済" in line and "中断" in line for line in bus.logs)
+    assert any("第2段" in line for line in bus.logs)
+    assert bus.finished is None
+
+
+def test_cascade_fallback_normal_no_rescue(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        if key == "fast":
+            yield {"content": "短い"}
+            yield {"done": True, "meta": {"eval_count": 3}}
+            return
+        if kwargs.get("think") is False:
+            yield {"content": "骨格の要点"}
+            yield {"done": True, "meta": {"eval_count": 5}}
+            return
+        yield {"thinking": "短い検討" * 5}
+        yield {"content": "通常の最終回答"}
+        yield {"done": True, "meta": {"eval_count": 42}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = CascadeBus()
+    cfg = _cascade_cfg(think_rescue={"tokens": 100})
+    orch = CascadeOrchestrator(bus, cfg, "m1", "fast")
+    asyncio.run(orch.run("分数の割り算を説明してください"))
+    assert bus.completed.get("node-answer") == "通常の最終回答"
+    assert not any("思考救済" in line for line in bus.logs)
+    assert bus.finished is None
+
+
+# ---- 批評ループの作成者ドラフトへの展開 (2026-11-01) ----
+
+class CritiqueBus(RunBus):
+    def set_title(self, node_id, title):
+        pass
+
+    def set_progress(self, node_id, done, total):
+        pass
+
+    def cancel_all(self, message):
+        pass
+
+
+def _critique_cfg(**extra):
+    cfg = {"models": {
+        "m1": {"tag": "fake:1", "think": True, "num_ctx": 16384},
+        "rev": {"tag": "fake-rev:1", "think": False, "num_ctx": 16384},
+    }}
+    cfg.update(extra)
+    return cfg
+
+
+def test_critique_rescue_draft_builds_stage2(monkeypatch):
+    captured = {}
+
+    async def fake_stream_llm(bus, node_id, messages, cfg, key, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "書き直したドラフト"
+
+    monkeypatch.setattr(orchestrator, "_stream_llm", fake_stream_llm)
+    bus = CritiqueBus()
+    orch = CritiqueOrchestrator(bus, _critique_cfg(), "m1", "rev")
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "元のタスク"}]
+    rescue = _ThinkRescueAborted("考えたこと" * 10, 999, 3072)
+    result = asyncio.run(orch._rescue_draft("a1", messages, rescue))
+    assert result == "書き直したドラフト"
+    # 第2段は think=False、上限は底上げ後の 8192 (num_ctx 16384・短い入力)
+    assert captured["kwargs"]["think"] is False
+    assert captured["kwargs"]["num_predict"] == 8192
+    user = captured["messages"][-1]["content"]
+    assert user.startswith("元のタスク")
+    assert "【作成メモ】" in user
+    assert user.endswith("考えたこと" * 10)
+    # 元の messages は書き換えない
+    assert messages[-1]["content"] == "元のタスク"
+
+
+def test_critique_draft_rescues_runaway_thinking(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        if key == "rev":
+            yield {"content": '{"approved": true, "score": 9, '
+                              '"issues": [], "suggestions": []}'}
+            yield {"done": True, "meta": {"eval_count": 20}}
+            return
+        if kwargs.get("think") is False:
+            # 第2段: think なしでドラフト本文を返す
+            yield {"content": "救済されたドラフト本文"}
+            yield {"done": True, "meta": {"eval_count": 10}}
+            return
+        # 第1段 (作成者ドラフト): 思考が暴走する (5 × 100 字)
+        for _ in range(5):
+            yield {"thinking": "あ" * 100}
+        yield {"done": True, "meta": {}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = CritiqueBus()
+    cfg = _critique_cfg(think_rescue={"tokens": 100})  # 発動点は 301 字超
+    orch = CritiqueOrchestrator(bus, cfg, "m1", "rev")
+    asyncio.run(orch.run("タスク本文"))
+    # 救済が作成者ノードのログに残り、最終回答は第2段のドラフトになる。
+    # 中断例外が Run 全体を失敗させていないことも併せて確認する
+    assert any("思考救済" in line and "中断" in line for line in bus.logs)
+    assert any("第2段" in line for line in bus.logs)
+    assert bus.completed.get("node-answer") == "救済されたドラフト本文"
+    assert bus.finished is None
+
+
+def test_critique_draft_normal_no_rescue(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        if key == "rev":
+            yield {"content": '{"approved": true, "score": 9, '
+                              '"issues": [], "suggestions": []}'}
+            yield {"done": True, "meta": {"eval_count": 20}}
+            return
+        yield {"thinking": "短い検討" * 5}
+        yield {"content": "通常のドラフト"}
+        yield {"done": True, "meta": {"eval_count": 42}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = CritiqueBus()
+    cfg = _critique_cfg(think_rescue={"tokens": 100})
+    orch = CritiqueOrchestrator(bus, cfg, "m1", "rev")
+    asyncio.run(orch.run("タスク本文"))
+    assert bus.completed.get("node-answer") == "通常のドラフト"
+    assert not any("思考救済" in line for line in bus.logs)
+    assert bus.finished is None
