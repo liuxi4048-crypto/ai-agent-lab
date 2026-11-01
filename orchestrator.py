@@ -163,7 +163,8 @@ class _ThinkRescueAborted(Exception):
 
     実効 think が有効な生成で思考の累積が閾値を超えたら _stream_llm が
     送出する。蓄積した思考テキスト全文を運び、呼び出し側 (direct の
-    最終回答段) が第2段 (think なし再生成) へ切り替えるために使う。
+    最終回答段・orchestra の統合段) が第2段 (think なし再生成) へ
+    切り替えるために使う。
     _guard_lang は _LangAborted だけを捕捉するため、この例外は素通りし、
     言語ガードの再生成と誤認されることはない。
     """
@@ -195,7 +196,8 @@ async def _stream_llm(bus, node_id: str, messages: list[dict], cfg, key: str,
     think_floor は最終回答・統合段専用: 実効 think が有効なら生成上限を
     _THINK_NUM_PREDICT_FLOOR まで底上げする (思考による本文切断の対策。
     _apply_think_floor 参照)。下書き・骨格等の役割では渡さない。
-    think_rescue は direct の最終回答段専用: 実効 think が有効な場合に
+    think_rescue は最終回答を書く段 (direct の最終回答段と orchestra の
+    統合段) 専用: 実効 think が有効な場合に
     限り思考チャンクの累積を監視し、閾値 (_think_rescue_threshold) を
     超えたら _ThinkRescueAborted を送出して生成を中断する。ストリームを
     閉じる = 接続切断でエンジン側の生成は即座に止まる (実証済み)。
@@ -415,7 +417,12 @@ def _apply_think_floor(num_predict, tk, num_ctx, prompt_chars):
 # ストリーム内で中断し、第2段 (think なし・思考メモ引き継ぎ) へ
 # 切り替える。pro へ二段を定期適用すると質が落ちるため (同レポート)、
 # 救済は「発動しない限り介入ゼロ」が前提で、対象は direct の最終回答段
-# のみ (orchestra 統合段への展開はしない)。
+# と orchestra の統合段。統合段も think を明示しないためモデル既定の
+# think が効いて思考が生成される (Run 記録の aggregator ノードでも
+# 思考テキストを確認済み) うえ、サブエージェントの計算を終えた後の
+# 最終段のため、暴走して本文が切断された場合の被害が direct より
+# 大きい。観測された統合段の思考は最大 2,744 字で発動点 (約9,216 字)
+# から十分に離れており、誤発動の余地は小さい (2026-11-01 展開)。
 #
 # 閾値の既定 3,072 トークンの根拠: pro の健全な引きの思考は実測最大
 # 約1,900 トークン (5,260 字・直接測定)、lab 経由の auto でも最大
@@ -658,11 +665,12 @@ class Orchestrator:
     async def _run_llm(self, node_id: str, messages: list[dict], json_mode: bool = False,
                        think=None, num_predict: int | None = None,
                        early_abort=None, gen_override: dict | None = None,
-                       think_floor: bool = False) -> str:
+                       think_floor: bool = False,
+                       think_rescue: bool = False) -> str:
         return await _stream_llm(self.bus, node_id, messages, self.cfg, self.model,
                                  json_mode, think=think, num_predict=num_predict,
                                  early_abort=early_abort, gen_override=gen_override,
-                                 think_floor=think_floor)
+                                 think_floor=think_floor, think_rescue=think_rescue)
 
     async def _plan(self, task: str, root_id: str) -> tuple[list[dict], bool]:
         bus = self.bus
@@ -745,15 +753,31 @@ class Orchestrator:
         try:
             # 最終回答そのものなので思考は残す。上限は通常生成(実測 約2.7K tok)
             # を切らない暴走防止ラインに置く。簡体字混入時は言語ガードが
-            # 1 回だけ再生成する
+            # 1 回だけ再生成する。思考が暴走した引きでは思考救済が発動し、
+            # 思考メモを引き継ぐ第2段 (think なし) へ切り替える (direct の
+            # 最終回答段と同じ仕組み・同じ閾値)
             async def gen(msgs, early_abort):
                 return await self._run_llm(
                     agg_id, msgs, num_predict=_AGGREGATE_NUM_PREDICT,
                     early_abort=(lang_guard.partial_is_contaminated
                                  if early_abort else None),
-                    gen_override=self.gen_override, think_floor=True)
+                    gen_override=self.gen_override, think_floor=True,
+                    think_rescue=True)
 
-            final = await _guard_lang(bus, agg_id, messages, gen)
+            try:
+                final = await _guard_lang(bus, agg_id, messages, gen)
+            except _ThinkRescueAborted as rescue:
+                # 思考の暴走を中断した。蓄積した思考全文をメモとして
+                # 引き継ぎ、think なしで統合本文を再生成する (第2段)。
+                bus.emit_log(
+                    agg_id,
+                    f"[思考救済] 思考が閾値 {rescue.threshold} トークン相当"
+                    f"(概算 {rescue.est_tokens} トークン / "
+                    f"{len(rescue.thinking)} 字)に達したため生成を中断しました。"
+                    "思考メモを引き継ぎ、think なしで本文を再生成します")
+                final = await self._rescue_aggregate(agg_id, messages, rescue)
+                bus.emit_log(agg_id,
+                             "[思考救済] 第2段 (think なし) の生成が完了しました")
             bus.complete(agg_id, final)
             return final
         except asyncio.CancelledError:
@@ -761,6 +785,42 @@ class Orchestrator:
         except Exception as e:
             bus.complete(agg_id, error=f"失敗: {e}")
             raise
+
+    async def _rescue_aggregate(self, agg_id: str, messages: list[dict],
+                                rescue: _ThinkRescueAborted) -> str:
+        """統合段の救済第2段: 思考メモを引き継ぎ、think なしで統合する。
+
+        direct の _rescue_answer と同型。統合段の user メッセージには
+        元のタスクと各サブエージェントの成果が既に入っているため、その
+        末尾に【作成メモ】+思考全文を足し、system (統合エージェントの
+        役割) はそのまま維持する。生成上限は第1段と同水準 (think 有効時
+        の底上げ後の値) を、メモを足した後のプロンプト長で再計算する。
+        本文の予算が保証されることが二段方式の要点のため。言語ガードも
+        第1段と同じく _guard_lang 経由で効かせる。第2段は think=False
+        なので救済の監視は武装しない (再帰的に発動することはない)。
+        """
+        bus = self.bus
+        info = llm.resolve(self.cfg, self.model)
+        stage2 = [dict(m) for m in messages]
+        for i in range(len(stage2) - 1, -1, -1):
+            if stage2[i].get("role") == "user":
+                stage2[i] = {**stage2[i],
+                             "content": stage2[i]["content"]
+                             + _RESCUE_MEMO_TEMPLATE_AGG + rescue.thinking}
+                break
+        prompt_chars = sum(len(m["content"]) for m in stage2
+                           if isinstance(m.get("content"), str))
+        num_predict, _, _ = _apply_think_floor(
+            _AGGREGATE_NUM_PREDICT, True, info.get("num_ctx"), prompt_chars)
+
+        async def gen2(msgs, early_abort):
+            return await self._run_llm(
+                agg_id, msgs, num_predict=num_predict, think=False,
+                early_abort=(lang_guard.partial_is_contaminated
+                             if early_abort else None),
+                gen_override=self.gen_override)
+
+        return await _guard_lang(bus, agg_id, stage2, gen2)
 
     async def run(self, task: str, run_id: str = "") -> None:
         """メインエントリ: 1回のタスク実行の全工程。"""
@@ -816,6 +876,15 @@ _RESCUE_MEMO_TEMPLATE = (
     "\n\n【作成メモ】以下は、この依頼について事前に検討した思考メモです"
     "（長くなりすぎたため途中で打ち切られています）。"
     "このメモの検討結果を踏まえて、回答の本文だけを完結させて書いてください。"
+    "思考メモの文章をそのまま転記する必要はありません。\n\n")
+
+# orchestra 統合段の救済で使う引き継ぎ文。direct 用と同型だが、材料に
+# 各サブエージェントの成果が含まれることを踏まえた文言にする。
+_RESCUE_MEMO_TEMPLATE_AGG = (
+    "\n\n【作成メモ】以下は、この統合にあたって事前に検討した思考メモです"
+    "（長くなりすぎたため途中で打ち切られています）。"
+    "各サブエージェントの成果と、このメモの検討結果を踏まえて、最終回答の"
+    "本文だけを完結させて書いてください。"
     "思考メモの文章をそのまま転記する必要はありません。\n\n")
 
 

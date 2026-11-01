@@ -12,8 +12,8 @@ import pytest
 
 import orchestrator
 from orchestrator import (
-    DirectOrchestrator, _ThinkRescueAborted, _estimate_think_tokens,
-    _stream_llm, _think_rescue_threshold)
+    DirectOrchestrator, Orchestrator, _ThinkRescueAborted,
+    _estimate_think_tokens, _stream_llm, _think_rescue_threshold)
 
 
 class FakeBus:
@@ -149,7 +149,7 @@ def test_monitor_disarmed_after_content_starts(monkeypatch):
 
 
 def test_monitor_not_armed_without_optin(monkeypatch):
-    # think_rescue を渡さない呼び出し (orchestra 等) は従来どおり無介入
+    # think_rescue を渡さない呼び出し (planner・サブエージェント等) は無介入
     chunks = [{"thinking": "あ" * 10000}, {"content": "本文"},
               {"done": True, "meta": {}}]
     result, _ = call_stream(monkeypatch, chunks, cfg=make_cfg())
@@ -229,3 +229,115 @@ def test_direct_run_rescues_runaway_thinking(monkeypatch):
     assert bus.completed.get("node-answer") == "救済された本文"
     assert calls[1].get("think") is False
     assert bus.finished is None
+
+
+# ---- orchestra 統合段への展開 (2026-11-01) ----
+
+class AggBus(FakeBus):
+    def __init__(self):
+        super().__init__()
+        self.completed = {}
+
+    def create_node(self, kind, title, detail="", parent_id=None):
+        return f"node-{kind}"
+
+    def complete(self, node_id, output=None, error=None):
+        self.completed[node_id] = output if error is None else f"ERROR: {error}"
+
+
+def test_rescue_aggregate_builds_stage2(monkeypatch):
+    captured = {}
+
+    async def fake_stream_llm(bus, node_id, messages, cfg, key,
+                              json_mode=False, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "完成した統合文"
+
+    monkeypatch.setattr(orchestrator, "_stream_llm", fake_stream_llm)
+    bus = AggBus()
+    orch = Orchestrator(bus, make_cfg(), "m1")
+    messages = [{"role": "system", "content": "統合エージェントの役割"},
+                {"role": "user",
+                 "content": "元のタスク: 課題\n\n各サブエージェントの成果:\n\n## A\n結果A"}]
+    rescue = _ThinkRescueAborted("統合の検討" * 10, 999, 3072)
+    result = asyncio.run(orch._rescue_aggregate("node-aggregator", messages, rescue))
+    assert result == "完成した統合文"
+    # 第2段は think=False、上限は底上げ後の 8192 (num_ctx 16384・短い入力)
+    assert captured["kwargs"]["think"] is False
+    assert captured["kwargs"]["num_predict"] == 8192
+    user = captured["messages"][-1]["content"]
+    # サブエージェントの成果を含む元の材料を保ったまま、末尾にメモが付く
+    assert "結果A" in user
+    assert "【作成メモ】" in user
+    assert user.endswith("統合の検討" * 10)
+    # system (統合の役割) はそのまま、元の messages は書き換えない
+    assert captured["messages"][0]["content"] == "統合エージェントの役割"
+    assert "【作成メモ】" not in messages[-1]["content"]
+
+
+def test_aggregate_rescues_runaway_thinking(monkeypatch):
+    calls = []
+
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        calls.append({"messages": messages, "kwargs": kwargs})
+        if len(calls) == 1:
+            # 第1段 (統合): 思考が暴走する (5 × 100 字)
+            for _ in range(5):
+                yield {"thinking": "あ" * 100}
+            yield {"done": True, "meta": {}}
+        else:
+            # 第2段: think なしで統合本文を返す
+            yield {"content": "統合された最終回答"}
+            yield {"done": True, "meta": {"eval_count": 10}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = AggBus()
+    cfg = make_cfg(think_rescue={"tokens": 100})  # 発動点は 301 字超
+    orch = Orchestrator(bus, cfg, "m1")
+    results = [("現状分析", "結果A"), ("アイデア", "結果B")]
+    final = asyncio.run(orch._aggregate("元の課題", results, "node-task", False))
+    assert final == "統合された最終回答"
+    assert bus.completed.get("node-aggregator") == "統合された最終回答"
+    # 救済が aggregator ノードのログに direct と同じ形式で残る
+    assert any("思考救済" in line and "中断" in line for line in bus.logs)
+    assert any("第2段" in line for line in bus.logs)
+    # 第2段は think=False で、材料 (サブ結果) と思考メモの両方を引き継ぐ
+    assert calls[1]["kwargs"].get("think") is False
+    user2 = calls[1]["messages"][-1]["content"]
+    assert "結果A" in user2 and "結果B" in user2
+    assert "【作成メモ】" in user2
+
+
+def test_aggregate_normal_no_rescue(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        yield {"thinking": "短い検討" * 5}
+        yield {"content": "通常の統合結果"}
+        yield {"done": True, "meta": {"eval_count": 42}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = AggBus()
+    cfg = make_cfg(think_rescue={"tokens": 100})
+    orch = Orchestrator(bus, cfg, "m1")
+    final = asyncio.run(orch._aggregate(
+        "元の課題", [("現状分析", "結果A")], "node-task", False))
+    assert final == "通常の統合結果"
+    assert not any("思考救済" in line for line in bus.logs)
+
+
+def test_aggregate_disarmed_when_think_unknown(monkeypatch):
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        yield {"thinking": "あ" * 10000}
+        yield {"content": "そのまま完結"}
+        yield {"done": True, "meta": {}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    bus = AggBus()
+    # モデル既定の think が判断不能 (未指定) なモデルでは監視は武装しない
+    cfg = {"models": {"m1": {"tag": "fake:1", "num_ctx": 16384}},
+           "think_rescue": {"tokens": 1}}
+    orch = Orchestrator(bus, cfg, "m1")
+    final = asyncio.run(orch._aggregate(
+        "元の課題", [("現状分析", "結果A")], "node-task", False))
+    assert final == "そのまま完結"
+    assert not any("思考救済" in line for line in bus.logs)
