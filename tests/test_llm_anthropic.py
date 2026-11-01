@@ -49,12 +49,23 @@ def test_payload():
     assert calls[0]["input"] == {"q": "日本語"}
     assert [b["tool_use_id"] for b in results] == [b["id"] for b in calls]
     assert result["tools"] == [{"name": "one", "description": "検索", "input_schema": {"type": "object"}}]
-    assert result["max_tokens"] == 30 and result["temperature"] == 0.2
+    assert result["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS and result["temperature"] == 0.2
     assert result["top_k"] == 20 and result["top_p"] == 0.9
     assert not {"think", "thinking", "num_ctx", "min_p", "tool_choice", "options"} & result.keys()
     assert messages == original
     assert llm._anthropic_payload(payload([]))["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS
     assert llm.resolve(CFG, "claude")["base_url"] == llm.ANTHROPIC_BASE
+
+
+def test_max_tokens_floor():
+    # 役割別上限 (Ollama 前提) が小さくても Anthropic では下限を保証する
+    assert llm._anthropic_payload(payload([]))["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS
+    assert llm._anthropic_payload(payload([], num_predict=512))["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS
+    # 下限より大きい明示指定はそのまま通す
+    big = llm.ANTHROPIC_MAX_TOKENS + 4096
+    assert llm._anthropic_payload(payload([], num_predict=big))["max_tokens"] == big
+    assert llm._anthropic_max_tokens({}) == llm.ANTHROPIC_MAX_TOKENS
+    assert llm._anthropic_max_tokens({"num_predict": 4096}) == llm.ANTHROPIC_MAX_TOKENS
 
 
 @pytest.mark.parametrize("kwargs", [{"json_mode": True}, {"schema": {"type": "object"}}])

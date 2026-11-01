@@ -45,7 +45,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "models.yaml")
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
 OPENAI_COMPAT_BASE = os.environ.get("OPENAI_COMPAT_BASE", "http://localhost:8080/v1")
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
-ANTHROPIC_MAX_TOKENS = 4096  # コンテキスト長とは独立した生成上限
+ANTHROPIC_MAX_TOKENS = 16384  # Anthropic 経路の生成上限の下限 (_anthropic_max_tokens 参照)
 DEFAULT_NUM_CTX = 16384
 RETRIES = 3
 CONNECT_TIMEOUT = 10.0
@@ -493,6 +493,24 @@ async def _openai_collect(info, payload, timeout, on_delta):
                     pass  # 表示通知の失敗で生成を止めない
 
 
+def _anthropic_max_tokens(options):
+    """Anthropic 経路へ送る max_tokens を決める。
+
+    呼び出し側の num_predict は Ollama 前提の役割別上限 (最終回答 4096 /
+    計画 512 / カード 1024 等) で、そのまま Anthropic の生成上限にすると
+    Claude の長文出力 (審判の根拠・長い設計書) が途中で切断される
+    (2026-11-01 の審判 Run で tokens=4096 の切断を実測)。
+    Anthropic では ANTHROPIC_MAX_TOKENS を下限として保証し、それより
+    大きい明示指定だけをそのまま通す。API 側は 5.5 系3モデルとも
+    max_tokens=65536 を受理することを 2026-11-01 に実測済みで、
+    16384 はその範囲内 (旧上限の4倍) に置いた。lab の Anthropic 呼び出しは
+    全てストリーミング受信のため、大きな上限でも非ストリーミングの
+    タイムアウト制約は受けない。
+    """
+    requested = options.get("num_predict") or 0
+    return max(requested, ANTHROPIC_MAX_TOKENS)
+
+
 def _anthropic_payload(payload):
     """内部履歴をコンテンツブロックへ変換し、同じロールを結合する。"""
     messages, system = [], []
@@ -526,7 +544,7 @@ def _anthropic_payload(payload):
     options = payload["options"]
     result = {"model": payload["model"], "messages": messages,
               "stream": payload.get("stream", True),
-              "max_tokens": options.get("num_predict", ANTHROPIC_MAX_TOKENS)}
+              "max_tokens": _anthropic_max_tokens(options)}
     if system:
         result["system"] = "\n\n".join(system)
     for key in ("temperature", "top_p", "top_k"):
