@@ -87,6 +87,12 @@ export default function AgentCard({
         {agentState.key === "active" && tps != null && tps > 0 && (
           <span className="tabular-nums font-semibold text-blue-400">{tps.toFixed(1)} t/s</span>
         )}
+        {agentState.key === "active" && (tps == null || tps <= 0) && node.tokens > 0 && (
+          <span className="tabular-nums text-slate-500">0.0 t/s</span>
+        )}
+        {agentState.key === "active" && node.tokens === 0 && sinceMs != null && (
+          <span className="tabular-nums text-slate-500">初回トークン待ち {Math.floor(sinceMs / 1000)}s</span>
+        )}
         {/* 前段依存は「何を待っているか」が意味を持つ待機系状態のときだけ表示する
             (完了後まで出し続けると全カードに常設チップが並び雑音になる) */}
         {dep && ["waiting", "queued"].includes(agentState.key) ? (

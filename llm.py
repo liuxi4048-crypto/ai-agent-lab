@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import time
 import warnings
@@ -46,6 +47,18 @@ OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434")
 OPENAI_COMPAT_BASE = os.environ.get("OPENAI_COMPAT_BASE", "http://localhost:8080/v1")
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_MAX_TOKENS = 16384  # Anthropic 経路の生成上限の下限 (_anthropic_max_tokens 参照)
+
+
+def _anthropic_no_sampling(model: str) -> bool:
+    """サンプリングパラメータを受け付けない Claude 世代か。
+
+    Claude 5.5 系 (opus/sonnet/haiku の *-5-5) は temperature / top_p /
+    top_k を送ると 400 ("`temperature` is deprecated for this model.")
+    になる (2026-10-30 に3モデルとも API 実測で確認)。この世代では
+    パラメータ自体を送らない (モデル既定のサンプリングになる)。
+    """
+    m = model or ""
+    return m.endswith("-5-5") or "-5-5-" in m
 DEFAULT_NUM_CTX = 16384
 RETRIES = 3
 CONNECT_TIMEOUT = 10.0
@@ -547,9 +560,10 @@ def _anthropic_payload(payload):
               "max_tokens": _anthropic_max_tokens(options)}
     if system:
         result["system"] = "\n\n".join(system)
-    for key in ("temperature", "top_p", "top_k"):
-        if key in options:
-            result[key] = options[key]
+    if not _anthropic_no_sampling(payload["model"]):
+        for key in ("temperature", "top_p", "top_k"):
+            if key in options:
+                result[key] = options[key]
     if payload.get("tools"):
         result["tools"] = []
         for tool in payload["tools"]:
@@ -1109,6 +1123,60 @@ async def prewarm(cfg, key, timeout=600.0):
         return False
 
 
+async def loaded_model_tags():
+    """Ollama に現在ロード済みのモデル tag 一覧 (/api/ps)。失敗時は空リスト。"""
+    try:
+        async with _client_ctx("ollama", httpx.Timeout(10.0,
+                                                       connect=CONNECT_TIMEOUT)) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/ps")
+            if resp.status_code != 200:
+                return []
+            return [m.get("name", "") for m in resp.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def keepwarm_should_load(loaded_tags, fast_tag, running):
+    """cascade 高速モデルを裏で温め直すべきかの決定的判定。
+
+    2026-10-30 の実測: 高速モデル (distill4b) 自身のロードは約5秒だが、
+    Ollama 内の他モデルや Strata と VRAM を奪い合って追い出されると、
+    次の cascade の下書きが再ロード待ちで最大約120秒止まった。
+    対策は「空いているときだけ温め直す」こと: 他人のモデルが載っている
+    ときに温めると、今度はそちらを追い出してしまう (奪い合いの連鎖)。
+    実行中の Run があるときも触らない。
+    """
+    if running or not fast_tag:
+        return False
+    return len(loaded_tags) == 0
+
+
+async def keepwarm_fast_model(running_count, interval_sec=600.0):
+    """cascade 高速モデルの keep-warm ループ (サーバ起動時に create_task)。
+
+    interval ごとに様子を見て、keepwarm_should_load の条件を満たすとき
+    だけ prewarm する。例外では死なない (ループ継続が本体機能より大事
+    ではないが、落ちて静かに無効化されるより続く方がよい)。
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval_sec)
+            cfg = load_config()
+            key = cfg.get("cascade_fast_model") or ""
+            if not key or key not in cfg.get("models", {}):
+                continue
+            info = resolve(cfg, key)
+            if info.get("backend") != "ollama":
+                continue
+            tags = await loaded_model_tags()
+            if keepwarm_should_load(tags, info["tag"], running_count() > 0):
+                await prewarm(cfg, key)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            continue
+
+
 # ダッシュボードのVRAMメーター用。物理VRAM総量はOllama APIから取れないため環境変数で設定
 VRAM_TOTAL_BYTES = int(float(os.environ.get("VRAM_TOTAL_GB", "16")) * 1024**3)
 
@@ -1139,18 +1207,84 @@ def free_ram_gb():
         return None
 
 
-async def gpu_status():
-    """Ollama /api/ps からロード中モデルのVRAM使用量を集計する(GET /gpu 用)。"""
+async def _ollama_loaded_models():
+    """Ollama /api/ps のロード中モデル一覧。取得できなければ None。"""
     try:
         async with _client_ctx("ollama", httpx.Timeout(3.0)) as client:
             resp = await client.get(f"{OLLAMA_BASE}/api/ps", timeout=3.0)
             resp.raise_for_status()
-            models = resp.json().get("models", [])
+            return resp.json().get("models", [])
     except (httpx.HTTPError, ValueError):
-        return {"available": False, "total_bytes": VRAM_TOTAL_BYTES, "used_bytes": 0, "models": []}
-    return {
-        "available": True,
-        "total_bytes": VRAM_TOTAL_BYTES,
-        "used_bytes": sum(m.get("size_vram", 0) for m in models),
-        "models": [{"name": m.get("name", ""), "size_vram": m.get("size_vram", 0)} for m in models],
-    }
+        return None
+
+
+# GPU全体の実使用量は Ollama API からは分からないため、Windows ではパフォーマンス
+# カウンタ (GPU Adapter Memory の Dedicated Usage) を typeperf で読む。取得に
+# 約1秒かかるので結果は10秒キャッシュし、実作業はスレッドへ逃がす。
+_DRIVER_VRAM_TTL = 10.0
+_driver_vram_cache = {"ts": 0.0, "used": None}
+
+
+def _read_driver_vram_used():
+    """GPUアダプタの専用メモリ使用量(バイト)。最も使用量の大きいアダプタの値。
+    Windows 以外・取得失敗時は None。"""
+    if os.name != "nt":
+        return None
+    try:
+        proc = subprocess.run(
+            ["typeperf", r"\GPU Adapter Memory(*)\Dedicated Usage", "-sc", "1"],
+            capture_output=True, timeout=15)
+        text = proc.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    best = None
+    for line in text.splitlines():
+        fields = line.replace('"', "").split(",")
+        if len(fields) < 2 or "/" not in fields[0] or ":" not in fields[0]:
+            continue  # ヘッダ行や完了メッセージ行を除き、データ行(日時で始まる)だけ見る
+        for raw in fields[1:]:
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            if best is None or value > best:
+                best = value
+    return int(best) if best is not None else None
+
+
+async def _driver_vram_used_bytes():
+    now = time.monotonic()
+    if now - _driver_vram_cache["ts"] < _DRIVER_VRAM_TTL:
+        return _driver_vram_cache["used"]
+    used = await asyncio.to_thread(_read_driver_vram_used)
+    _driver_vram_cache.update(ts=now, used=used)
+    return used
+
+
+async def gpu_status():
+    """GET /gpu 用の VRAM 使用状況。
+
+    Ollama のロード中モデルに加え、ドライバ側の実使用量が取れる環境では
+    used_bytes を GPU 全体の実測にする。従来は Ollama 分だけだったため、
+    Strata 等の Ollama 外エンジンが使う VRAM が表示に一切反映されなかった。
+    差分は「Ollama 以外のプロセス」として models に含める。
+    """
+    models = await _ollama_loaded_models()
+    ollama_used = sum(m.get("size_vram", 0) for m in models or [])
+    entries = [{"name": m.get("name", ""), "size_vram": m.get("size_vram", 0)}
+               for m in models or []]
+    driver_used = await _driver_vram_used_bytes()
+    if driver_used is not None:
+        used = max(driver_used, ollama_used)
+        external = used - ollama_used
+        if external > 256 * 1024 ** 2:
+            entries.append({"name": "Ollama 以外のプロセス", "size_vram": external})
+        return {"available": True, "total_bytes": VRAM_TOTAL_BYTES,
+                "used_bytes": used, "ollama_bytes": ollama_used,
+                "external_bytes": external, "models": entries}
+    if models is None:
+        return {"available": False, "total_bytes": VRAM_TOTAL_BYTES,
+                "used_bytes": 0, "models": []}
+    return {"available": True, "total_bytes": VRAM_TOTAL_BYTES,
+            "used_bytes": ollama_used, "ollama_bytes": ollama_used,
+            "external_bytes": 0, "models": entries}

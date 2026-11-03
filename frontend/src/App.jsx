@@ -573,6 +573,7 @@ export default function App() {
                 onRerun={handleRerun}
                 onEditRerun={handleEditRerun}
                 onOpenArtifacts={() => setArtifactOpen(true)}
+                liveSpeed={activeNode ? { tps: speeds[activeNode.id]?.tps ?? 0, tokens: activeNode.tokens ?? 0, sinceMs: speeds[activeNode.id]?.sinceMs ?? null } : null}
               />
 
               {/* AttentionSlot: 要対応を1スロットに絞る(承認 > バナー)。無ければ高さ0 */}

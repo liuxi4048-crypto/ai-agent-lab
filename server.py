@@ -22,18 +22,23 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import answer_cache
 import bench
+import openai_api
 import claude_review
 import api_review
 import llm
 import router
 from artifacts import WORKSPACE as ARTIFACT_DIR
-from orchestrator import (CodeOrchestrator, CritiqueOrchestrator, Orchestrator,
-                          SwarmCodeOrchestrator)
+from orchestrator import (CascadeOrchestrator, CodeOrchestrator, CritiqueOrchestrator,
+                          DirectOrchestrator, Orchestrator, SwarmCodeOrchestrator)
 from runs import manager, normalize_snapshot
 from tools import WORKSPACE as PROJECTS_DIR
 
 app = FastAPI(title="AI Agent Lab")
+
+# OpenAI互換API (/v1/models, /v1/chat/completions) — openai_api.py 参照
+openai_api.register(app)
 
 
 @app.on_event("startup")
@@ -44,6 +49,11 @@ async def _startup_prewarm():
     if os.environ.get("AAL_NO_PREWARM"):
         return
     asyncio.create_task(llm.prewarm_default())
+    # cascade 高速モデルの keep-warm: 期限切れ・追い出しで Ollama が
+    # 空になったときだけ温め直し、次の cascade の下書きが再ロード待ち
+    # (実測最大約120秒) で止まらないようにする。他モデルが載っている
+    # ときは追い出さない (llm.keepwarm_should_load)。
+    asyncio.create_task(llm.keepwarm_fast_model(manager.running_count))
 
 
 # 起動時: 前回プロセス死で実行中のまま残ったRun記録を interrupted として確定
@@ -82,7 +92,7 @@ INSIGHT_CC = Path(__file__).parent / "runs" / "insight-cache" / "cc"
 INSIGHT_CC.mkdir(parents=True, exist_ok=True)
 app.mount("/insight-cc", StaticFiles(directory=INSIGHT_CC), name="insight-cc")
 
-MODES = ("orchestra", "critique", "code", "swarm-code")
+MODES = ("orchestra", "critique", "code", "swarm-code", "direct")
 DELIVERABLES = ("auto", "html", "exe", "script")
 # 仕分けに使う高速モデル(VRAM常駐・tools対応)。無ければ default にフォールバック
 TRIAGE_PREFERRED = ("worker", "coder", "smart")
@@ -100,6 +110,9 @@ class RunRequest(BaseModel):
     allow_ram: bool = False        # True でRAM併用の大型モデルも使う(既定はVRAMのみ)
     claude_review: bool = False
     api_review: bool = False      # 完了後に環境変数設定済みの任意APIモデルがレビュー
+    temperature: float | None = None   # 生成温度の Run 単位上書き (未指定ならモデル既定)
+    max_tokens: int | None = None      # 生成上限トークンの Run 単位上書き (同上)
+    think: bool | None = None          # 思考生成の Run 単位指定 (None=モデル既定, True=あり, False=なし)
 
 
 def _is_hybrid(cfg, *keys: str) -> bool:
@@ -206,6 +219,17 @@ async def start_run(req: RunRequest) -> dict:
         raise HTTPException(400, f"mode は 'auto' か {MODES} のいずれか")
     if req.deliverable not in DELIVERABLES:
         raise HTTPException(400, f"deliverable は {DELIVERABLES} のいずれか")
+    if req.temperature is not None and not 0.0 <= req.temperature <= 2.0:
+        raise HTTPException(400, "temperature は 0.0〜2.0 の範囲で指定してください")
+    if req.max_tokens is not None and not 1 <= req.max_tokens <= 65536:
+        raise HTTPException(400, "max_tokens は 1〜65536 の範囲で指定してください")
+    gen_override: dict = {}
+    if req.temperature is not None:
+        gen_override["temperature"] = req.temperature
+    if req.max_tokens is not None:
+        gen_override["num_predict"] = req.max_tokens
+    if req.think is not None:
+        gen_override["think"] = req.think
     if not await llm.is_alive():
         raise HTTPException(503, "Ollamaが起動していません(ollama serve を実行してください)")
     if req.claude_review:
@@ -221,10 +245,16 @@ async def start_run(req: RunRequest) -> dict:
     installed = set(await llm.list_models())
 
     # --- 進め方と成果物形式をメインエージェントに決めさせる -------------------
+    # モデル明示指定 (pinned) のときは OpenAI / Anthropic のモデル選択と同じく
+    # そのモデルの単独実行にし、他モデルによる仕分け自体をしない。
+    pinned = router.is_pinned_model(req.model)
     decided_by = "user"
     reason = ""
     mode, deliverable = req.mode, req.deliverable
-    if mode == "auto":
+    if pinned and mode == "auto":
+        mode = router.pinned_mode(mode)
+        decided_by, reason = "pinned", "モデル明示指定のため単独実行"
+    elif mode == "auto":
         triage_key = next((k for k in TRIAGE_PREFERRED
                            if k in cfg.get("models", {})
                            and _installed(cfg, k, installed)), cfg.get("default", "coder"))
@@ -266,11 +296,16 @@ async def start_run(req: RunRequest) -> dict:
 
     reviewer = None
     if mode == "critique" or (mode == "code" and req.critique):
-        reviewer = req.reviewer_model or router.critique_pair(cfg, model)
+        reviewer = router.pick_reviewer(cfg, model, req.reviewer_model, pinned)
 
     info = llm.resolve(cfg, model)
     if mode in ("code", "swarm-code") and not info["tools"]:
         raise HTTPException(400, f"モデル '{model}' は tools 非対応のため {mode} で使えません")
+
+    # direct 適格でも実行モデルが遅い高性能モデルのときは、高速モデル先行の
+    # カスケードへ格上げする (cascade_fast_model が有効で実行モデルと違う場合)。
+    # ただしモデル明示指定時は格上げしない (選んだモデル自身が書く)。
+    mode = router.maybe_cascade(mode, model, cfg, pinned)
 
     hybrid = _is_hybrid(cfg, model, reviewer or "")
     # Claudeレビューは成果物ファイルを直接直す工程なので、ファイルを作るモードのみ
@@ -280,22 +315,50 @@ async def start_run(req: RunRequest) -> dict:
                          approve=req.approve, max_iter=max_iter, hybrid=hybrid,
                          critique=req.critique, deliverable=deliverable,
                          claude_review=claude_on,
-                         api_review=req.api_review and mode in ("code", "swarm-code"))
+                         api_review=req.api_review and mode in ("code", "swarm-code"),
+                         gen_override=gen_override, pinned=pinned)
 
     def factory():
-        if run.mode == "critique":
-            return CritiqueOrchestrator(run.bus, cfg, run.model, run.reviewer_model).run(task, run.id)
-        if run.mode == "code":
-            return CodeOrchestrator(run, cfg, critique=req.critique,
+        if run.mode == "cascade":
+            fast = cfg.get("cascade_fast_model")
+            if fast not in cfg.get("models", {}):
+                fast = None
+            if fast and fast != run.model:
+                coro = CascadeOrchestrator(run.bus, cfg, run.model,
+                                           fast, gen_override=run.gen_override).run(task, run.id)
+            else:
+                coro = DirectOrchestrator(run.bus, cfg, run.model,
+                                          gen_override=run.gen_override).run(task, run.id)
+        elif run.mode == "direct":
+            coro = DirectOrchestrator(run.bus, cfg, run.model,
+                                      gen_override=run.gen_override).run(task, run.id)
+        elif run.mode == "critique":
+            coro = CritiqueOrchestrator(run.bus, cfg, run.model, run.reviewer_model).run(task, run.id)
+        elif run.mode == "code":
+            coro = CodeOrchestrator(run, cfg, critique=req.critique,
                                     reviewer_model=run.reviewer_model).run_task(task)
-        if run.mode == "swarm-code":
-            return SwarmCodeOrchestrator(run, cfg, worker_model=run.model).run_task(task)
-        return Orchestrator(run.bus, cfg, run.model).run(task, run.id)
+        elif run.mode == "swarm-code":
+            coro = SwarmCodeOrchestrator(run, cfg, worker_model=run.model).run_task(task)
+        else:
+            # orchestra の分解だけ小型高速モデルへ振り分ける(第4弾)。models.yaml の
+            # orchestra_planner_model が未設定/未知キーなら実行モデルが分解も行う。
+            # モデル明示指定時は差し替えない (router.orchestra_planner)。
+            planner_model = router.orchestra_planner(cfg, run.pinned)
+            coro = Orchestrator(run.bus, cfg, run.model,
+                                planner_model=planner_model,
+                                gen_override=run.gen_override).run(task, run.id)
+        # 同一タスクの再実行キャッシュ (文章系モードのみ、answer_cache 参照)。
+        # 生成パラメータ指定付きの Run はキャッシュ対象外 (キーが task/model/mode のみで、
+        # パラメータ違いの回答が混ざるのを防ぐ)。モデル明示指定時も対象外:
+        # 公式のモデル選択と同じく、選んだモデルが毎回その場で生成する。
+        if run.gen_override or run.pinned:
+            return coro
+        return answer_cache.wrap(run, task, coro)
 
     manager.start(run, factory)
     return {"status": "started", "run_id": run.id, "model": model,
             "model_tag": info["tag"], "mode": mode, "deliverable": deliverable,
-            "reviewer_model": reviewer, "hybrid": hybrid,
+            "reviewer_model": reviewer, "hybrid": hybrid, "pinned": pinned,
             "claude_review": claude_on,
             "api_review": run.api_review,
             "decided_by": decided_by, "reason": reason}
@@ -590,4 +653,5 @@ async def events(run_id: str) -> StreamingResponse:
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    # バインド先は AAL_HOST / api_settings.json で変更可 (既定は従来どおり 127.0.0.1)
+    uvicorn.run(app, host=openai_api.bind_host(), port=8765, log_level="warning")

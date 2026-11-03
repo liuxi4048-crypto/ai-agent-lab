@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import re
 
+import httpx
+
 import llm
 
 # 「軽い」hybrid はこの RAM オフロード量(GB)まで既定で許可する。
@@ -243,6 +245,13 @@ _THINK_RE = re.compile(
     r"どう思う|まとめて|要約|調査|説明して|教えて|なぜ", re.IGNORECASE)
 _POLISH_RE = re.compile(
     r"推敲|添削|ブラッシュアップ|磨いて|練り直|文章を直して|校正", re.IGNORECASE)
+# 単発の説明・質問(direct モード用)。広がりのある依頼は orchestra に残すため、
+# 比較・調査・要約などの語があるものと長文(素材付き)は direct にしない。
+_DIRECT_RE = re.compile(r"説明して|教えて|なぜ|とは|どういう意味|どういうこと")
+_BREADTH_RE = re.compile(
+    r"比較|分析|調査|レビュー|意見|提案|アイデア|複数|それぞれ|観点|"
+    r"メリット|デメリット|違い|要約|まとめ|長所|短所", re.IGNORECASE)
+_DIRECT_MAX_CHARS = 200
 
 
 def pick_mode(task: str) -> str:
@@ -250,8 +259,13 @@ def pick_mode(task: str) -> str:
     if _POLISH_RE.search(task):
         return "critique"
     # 「このコードがなぜ動かないか説明して」のような質問は、コード系名詞を含んでいても
-    # 調査・考察(orchestra)。制作動詞が無い質問文を build に誤判定しない。
+    # 制作扱いにしない。制作動詞が無い質問文を build に誤判定しないため。
     if _THINK_RE.search(task) and not _BUILD_VERB_RE.search(task):
+        # 単発の説明・質問は多段構成(orchestra)にせず単一呼び出し(direct)で
+        # 完結させる(2026-10-28 第2弾)。広がりのある依頼は従来どおり orchestra。
+        if (_DIRECT_RE.search(task) and not _BREADTH_RE.search(task)
+                and len(task) <= _DIRECT_MAX_CHARS):
+            return "direct"
         return "orchestra"
     build = bool(_BUILD_RE.search(task))
     if build and _BIG_RE.search(task):
@@ -269,7 +283,7 @@ def pick_mode(task: str) -> str:
 TRIAGE_SCHEMA = {
     "type": "object",
     "properties": {
-        "mode": {"type": "string", "enum": ["code", "swarm-code", "orchestra", "critique"]},
+        "mode": {"type": "string", "enum": ["code", "swarm-code", "orchestra", "critique", "direct"]},
         "deliverable": {"type": "string", "enum": ["html", "exe", "script", "none"]},
         "reason": {"type": "string"},
     },
@@ -281,14 +295,15 @@ TRIAGE_SYSTEM = """あなたは依頼を仕分ける司令塔です。ユーザ�
 mode(進め方):
 - "code": 何かを作る/直す。ほとんどの依頼はこれ。
 - "swarm-code": 独立した部品が3つ程度に明確に分かれる大きめの制作物。迷ったら code にする。
-- "orchestra": 物を作らず、調査・比較・考察・要約・説明などの文章で答える依頼。
+- "orchestra": 物を作らず、調査・比較・考察・要約などの文章で答える依頼。複数の観点や素材の読み込みが要るもの。
 - "critique": 文章を練り上げる依頼(企画書・記事などの推敲)。
+- "direct": 単発の説明・質問に1回の生成で答える依頼。短く、観点が1つで完結するもの。
 
 deliverable(成果物の形式):
 - "html": ゲーム・UI・可視化など、ブラウザで開けば動くもの。作る依頼では最優先で検討する。
 - "exe": Windowsの実行ファイルが明示的に求められている場合。
 - "script": CLIツール・ライブラリ・自動化スクリプトなど、コマンドで動かすもの。
-- "none": mode が orchestra / critique のとき(何も作らない)。
+- "none": mode が orchestra / critique / direct のとき(何も作らない)。
 
 判定例:
 - 「ブロック崩しゲームを作って」→ {"mode":"code","deliverable":"html","reason":"ブラウザゲーム制作"}
@@ -296,6 +311,7 @@ deliverable(成果物の形式):
 - 「このコードがなぜ動かないのか説明して」→ {"mode":"orchestra","deliverable":"none","reason":"説明を求める質問"}
 - 「フロントとAPIとDBのTODOアプリ一式を作って」→ {"mode":"swarm-code","deliverable":"script","reason":"独立部品3つの制作"}
 - 「この企画書を推敲して」→ {"mode":"critique","deliverable":"none","reason":"文章の推敲"}
+- 「分数の割り算がなぜ逆数をかけるのか説明して」→ {"mode":"direct","deliverable":"none","reason":"単発の説明"}
 - 「ポモドーロタイマーのデスクトップアプリ(exe)が欲しい」→ {"mode":"code","deliverable":"exe","reason":"exe明示指定"}
 
 必ず {"mode": "...", "deliverable": "...", "reason": "20字以内の理由"} のJSONだけを出力してください。"""
@@ -319,6 +335,108 @@ def heuristic_confident(task: str) -> bool:
     return False
 
 
+# Kev(TypeSafe System One 互換の判断モデル。github.com/jaredpalmer/kev)による仕分け。
+# models.yaml の kev_triage.base_url を設定したときだけ、LLM 判定の前に試す。
+# 選択肢の確率が min_prob 未満・失敗時は従来の LLM 判定へ回す。
+_KEV_MODES = {
+    "code": "何かを作る/直す。ほとんどの依頼はこれ",
+    "swarm-code": "独立した部品が3つ程度に明確に分かれる大きめの制作物",
+    "orchestra": "物を作らず、調査・比較・考察・要約などの文章で答える。複数の観点や素材の読み込みが要る",
+    "critique": "企画書・記事などの文章を推敲して練り上げる",
+    "direct": "単発の説明・質問に1回で答える。短く観点が1つで完結する",
+}
+_KEV_DELIVERABLES = {
+    "html": "ゲーム・UI・可視化など、ブラウザで開けば動くもの",
+    "exe": "Windowsの実行ファイルが明示的に求められている",
+    "script": "CLIツール・ライブラリ・自動化スクリプトなど、コマンドで動かすもの",
+}
+
+
+async def kev_triage(cfg, task: str) -> dict | None:
+    kev = cfg.get("kev_triage") or {}
+    if not kev.get("base_url"):
+        return None
+    body = {"model": kev.get("model", "kev-latest"), "state": task, "questions": {
+        "mode": {"type": "choice", "instructions": "この依頼の進め方はどれか?",
+                 "criteria": _KEV_MODES},
+        "deliverable": {"type": "choice", "instructions": "何かを作るなら成果物の形式はどれか?",
+                        "criteria": _KEV_DELIVERABLES},
+    }}
+    async with httpx.AsyncClient(timeout=kev.get("timeout", 30)) as client:
+        r = await client.post(kev["base_url"].rstrip("/") + "/v1/systemone", json=body)
+        r.raise_for_status()
+    answers = r.json()["answers"]
+    mode = answers["mode"]["choice"]
+    if mode not in _KEV_MODES:
+        return None
+    prob = answers["mode"]["probabilities"][mode]
+    if prob < kev.get("min_prob", 0.5):
+        return None
+    return _triaged(task, mode, answers["deliverable"]["choice"], f"Kev判定 p={prob:.2f}", "kev")
+
+
+# --- Kev 意味ゲート (シャドウ) -------------------------------------------
+# cascade の下書きは _draft_gate (orchestrator) が決定的検査だけで合否を
+# 決めており、内容の良し悪しは見ていない。ここでは同じ下書きを Kev にも
+# 判定させて記録するだけにする (合否には一切使わない)。記録が貯まり、
+# 決定的ゲートとの食い違いを較正できたら、本採用を別途判断する。
+_KEV_GATE_CRITERIA = ["ほとんど満たしていない", "一部は満たしている", "ほぼ満たしている"]
+
+
+def kev_gate_config(cfg) -> dict | None:
+    """意味ゲート (シャドウ) が有効なら接続設定を返す。無効・未設定なら None。"""
+    gate = cfg.get("kev_gate") or {}
+    if not gate.get("shadow"):
+        return None
+    base = gate.get("base_url") or (cfg.get("kev_triage") or {}).get("base_url")
+    if not base:
+        return None
+    return {"base_url": base, "timeout": gate.get("timeout", 15),
+            "max_state_chars": int(gate.get("max_state_chars", 12000))}
+
+
+async def kev_gate_judge(cfg, task: str, text: str) -> dict | None:
+    """下書きの意味的な充足度を Kev に聞く。失敗時は例外を呼び出し側へ投げる。"""
+    gate = kev_gate_config(cfg)
+    if gate is None:
+        return None
+    state = f"依頼:\n{task}\n\n回答:\n{text}"
+    maxc = gate["max_state_chars"]
+    truncated = False
+    if len(state) > maxc:
+        state = state[: maxc * 2 // 3] + "\n...(中略)...\n" + state[-maxc // 3:]
+        truncated = True
+    body = {"model": "kev-latest", "state": state, "questions": {
+        "fulfillment": {"type": "score",
+                        "instructions": "この回答は依頼の要件をどれだけ満たしているか",
+                        "criteria": _KEV_GATE_CRITERIA},
+        "on_target": {"type": "noul",
+                      "instructions": "この回答は依頼に沿った内容になっているか",
+                      "criteria": {"true": "依頼に沿っている",
+                                   "false": "的外れ・無関係な内容が主体"}},
+    }}
+    async with httpx.AsyncClient(timeout=gate["timeout"]) as client:
+        r = await client.post(gate["base_url"].rstrip("/") + "/v1/systemone",
+                              json=body)
+        r.raise_for_status()
+    data = r.json()
+    answers = data["answers"]
+    return {"fulfillment_score": answers["fulfillment"]["score"],
+            "fulfillment_probs": answers["fulfillment"]["probabilities"],
+            "on_target_prob": answers["on_target"]["noul"],
+            "latency_ms": data.get("latency_ms"),
+            "truncated": truncated}
+
+
+def _triaged(task: str, mode: str, deliverable, reason: str, by: str) -> dict:
+    if mode in ("code", "swarm-code"):
+        if deliverable not in ("html", "exe", "script"):
+            deliverable = pick_deliverable(task)
+    else:
+        deliverable = None
+    return {"mode": mode, "deliverable": deliverable, "reason": reason, "by": by}
+
+
 async def triage(cfg, task: str, model_key: str) -> dict:
     """メインエージェントに mode と deliverable を決めさせる。
 
@@ -326,12 +444,18 @@ async def triage(cfg, task: str, model_key: str) -> dict:
     失敗・不正出力ならヒューリスティックへフォールバックする。
     明確なケースは heuristic_confident で即決し、LLM 呼び出し自体を省く
     (2026-10-27監査: 全 auto Run の開始前に LLM 判定が必ず直列で入っていた)。
-    返り値: {"mode","deliverable","reason","by"} (by = "agent" | "heuristic")
+    返り値: {"mode","deliverable","reason","by"} (by = "agent" | "kev" | "heuristic")
     """
     fallback = {"mode": pick_mode(task), "deliverable": pick_deliverable(task),
                 "reason": "キーワードから判定", "by": "heuristic"}
     if heuristic_confident(task):
         return fallback
+    try:
+        picked = await kev_triage(cfg, task)
+        if picked:
+            return picked
+    except Exception as e:
+        print(f"[triage] Kev判定失敗→LLM判定: {type(e).__name__}: {e}")
     try:
         # num_predict は thinking も消費する。gpt-oss系は既定 reasoning(medium)が
         # 分類前に数百トークン使うため、effort を low に落とし予算も余裕を持たせる
@@ -350,19 +474,67 @@ async def triage(cfg, task: str, model_key: str) -> dict:
         data = json.loads(raw)
         mode = data.get("mode")
         deliverable = data.get("deliverable")
-        if mode not in ("code", "swarm-code", "orchestra", "critique"):
+        if mode not in ("code", "swarm-code", "orchestra", "critique", "direct"):
             return fallback
-        if mode in ("code", "swarm-code"):
-            if deliverable not in ("html", "exe", "script"):
-                deliverable = pick_deliverable(task)
-        else:
-            deliverable = None
-        return {"mode": mode, "deliverable": deliverable,
-                "reason": str(data.get("reason") or "")[:40], "by": "agent"}
+        return _triaged(task, mode, deliverable, str(data.get("reason") or "")[:40], "agent")
     except Exception as e:
         # フォールバック率の観測用(サーバーログに残す)
         print(f"[triage] LLM判定失敗→ヒューリスティック: {type(e).__name__}: {e}")
         return fallback
+
+
+# --- 明示モデル固定 (pinned) -------------------------------------------------
+# OpenAI / Anthropic のモデル選択と同じ動きにするための規則一式。
+# モデルを名指ししたら、そのモデル自身が生成する。他モデルの下書き・
+# 振り分け・役割差し替えを挟まない (「最善のモデルを選んだのに別のモデルが
+# 書いた」が起きないようにする)。auto 選択時は従来どおり最適化層が働く。
+
+def is_pinned_model(req_model) -> bool:
+    """リクエストでモデルが明示指定されているか (\"auto\" は指定ではない)。"""
+    return bool(req_model) and req_model != "auto"
+
+
+def pinned_mode(req_mode: str) -> str:
+    """モデル明示時の進め方。auto なら direct (そのモデルの単独実行)。
+
+    進め方まで明示されている場合はそちらを尊重する (呼び出しは固定された
+    モデルだけで行う。maybe_cascade / orchestra_planner / pick_reviewer 参照)。
+    """
+    return "direct" if req_mode == "auto" else req_mode
+
+
+def maybe_cascade(mode: str, model: str, cfg, pinned: bool) -> str:
+    """direct → cascade への格上げ判定。モデル明示時は格上げしない。"""
+    if pinned or mode != "direct":
+        return mode
+    fast = cfg.get("cascade_fast_model")
+    if fast in cfg.get("models", {}) and fast != model:
+        return "cascade"
+    return mode
+
+
+def orchestra_planner(cfg, pinned: bool):
+    """orchestra の分解役のキー。None は「実行モデル自身が分解する」。
+
+    モデル明示時は小型モデルへ差し替えない。
+    """
+    if pinned:
+        return None
+    planner = cfg.get("orchestra_planner_model")
+    return planner if planner in cfg.get("models", {}) else None
+
+
+def pick_reviewer(cfg, author_key: str, req_reviewer, pinned: bool) -> str:
+    """レビュアー選定。レビュアーの明示指定が最優先。
+
+    モデル明示時は作成者自身 (自己批評) に固定し、異ファミリーへの
+    自動選定 (critique_pair) をしない。
+    """
+    if req_reviewer:
+        return req_reviewer
+    if pinned:
+        return author_key
+    return critique_pair(cfg, author_key)
 
 
 def critique_pair(cfg, author_key: str) -> str:

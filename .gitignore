@@ -16,3 +16,8 @@ build/
 .venv/
 frontend/node_modules/
 .env
+api_settings.json
+*.bak-*
+answer_cache.json
+kev_gate_shadow.jsonl
+tools/llama/

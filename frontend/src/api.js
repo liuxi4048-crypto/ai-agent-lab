@@ -68,3 +68,7 @@ export const explainInsight = (source, id, model) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source, id, model }),
   }).then(jsonOrThrow);
+
+// ---- OpenAI互換APIのキー(発行はこのPCからのみ) ----
+export const fetchApiKeyStatus = () => fetch("/api-key", { cache: "no-store" }).then(jsonOrThrow);
+export const generateApiKey = () => fetch("/api-key/generate", { method: "POST" }).then(jsonOrThrow);

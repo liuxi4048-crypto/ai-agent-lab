@@ -2,6 +2,8 @@
 # anthropic: tag は Claude のモデルID。キーは環境変数 ANTHROPIC_API_KEY のみ。従量課金あり。
 #   接続先は https://api.anthropic.com/v1/messages。base_url は適用しない。
 #   拡張思考の有効化・構造化出力の強制は未対応。num_ctx / min_p は送信しない。
+#   5.5系は temperature / top_p / top_k を送ると 400 (deprecated) になるため、
+#   llm._anthropic_payload がその世代では送信しない (2026-10-30 実測)。
 # base_url: openai の接続先(/v1 を含む)。モデル設定、環境変数 OPENAI_COMPAT_BASE、既定値 http://localhost:8080/v1 の順に優先。
 # server_name: openai の接続先サーバーの表示名(任意。例: llama-server / Strata)。
 #   UIのモデル選択は接続先サーバーごとにグループ表示する。付けるとその名前で表示され、
@@ -46,6 +48,65 @@
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
+  deepseek_strata:
+    tag: "deepseek-v4.1-flash"
+    backend: openai
+    base_url: "http://127.0.0.1:8082/v1"
+    server_name: "Strata"
+    family: deepseek
+    tier: external
+    placement: hybrid
+    tools: true
+    num_ctx: 8192
+    think: "low"
+    options: {temperature: 0.3, top_p: 0.95}
+    for: "DeepSeek V4.1 Flash, 8K"
+  deepseek_strata_q:
+    tag: "deepseek-v4.1-flash"
+    backend: openai
+    base_url: "http://127.0.0.1:8083/v1"
+    server_name: "Strata"
+    family: deepseek
+    tier: external
+    placement: hybrid
+    tools: true
+    num_ctx: 8192
+    think: "low"
+    options: {temperature: 0.3, top_p: 0.95}
+    for: "DeepSeek V4.1 Flash UD-Q2 quality pack, 8K"
+  claude-opus:
+    tag: "claude-opus-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  claude-haiku:
+    tag: "claude-haiku-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  claude-sonnet:
+    tag: "claude-sonnet-5-5"
+    backend: anthropic
+    tier: external
+    tools: true
+    options: {}
+  llama-local:
+    tag: "served-model"
+    backend: openai
+    base_url: "http://127.0.0.1:8081/v1"
+    tier: external
+    tools: true
+    options: {temperature: 0.7, top_p: 0.95, min_p: 0}
+  strata-qwen:
+    tag: "qwen3.8-flash-next-iq2_xs"
+    backend: openai
+    base_url: "http://127.0.0.1:8080/v1"
+    server_name: "Strata"
+    tier: external
+    tools: true
+    options: {temperature: 0.7, top_p: 0.95, min_p: 0}
   impl-plan-review:
     tag: "qwen3.8:27b"
     family: qwen35
@@ -131,6 +192,16 @@ models:
     # think:false のときに使う non-thinking(Instruct)側の公式推奨。presence_penalty=1.5 が特徴
     options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
     think: "low"             # 既定ONかつ深めなので明示的に浅くする(tools併用も実測で正常)
+    think_rescue_tokens: 3456  # 思考救済のモデル別閾値 (概算トークン。発動点は
+                             # 約10,368字)。2026-11-01 に実績分布 (Run 記録135件)
+                             # から再設計: 既定3072 (発動点9,216字) は pro が単発で
+                             # 完結できる域の内側にあり、メモのみ引き継ぎの質低下
+                             # (変種実験で実測) を招く恐れがあるため、生成上限
+                             # 8,192 の残量から逆算して上げる。内訳: 発動時点で
+                             # 思考の実トークンは約4,100 (実測換算2.54字/トークン)、
+                             # 残り約4,100 が本文の実測最大 (約3,500) を上回る。
+                             # pro の思考の実測最大は 6,101字 (発動点は +70%)。
+                             # smart は既定 3072 を維持 (下の think_rescue 節)。
     strengths: [coding, tool, reasoning]   # visionは対応するがアプリ側に画像送信の経路が無い
     for: "最新Qwen。高品質・長文脈のエージェント"
     use: "dense27.3B+vision / 64層中16層のみfull attention=KVが通常の約1/4 / MTP自己投機ON /
@@ -255,6 +326,7 @@ models:
     tools: true
     mtp: false
     num_ctx: 16384
+    keep_alive: "12h"             # cascade の高速側: 期限切れで下書きが再ロード待ちにならないよう長め (既定30m。追い出し対策は server の keep-warm)
     options: {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0, repeat_penalty: 1.0}
     options_no_think: {temperature: 0.7, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 1.5, repeat_penalty: 1.0}
     think: "low"
@@ -421,6 +493,8 @@ models:
   #   for: "超大型MoE(552B)。Strata経由・低速・8K文脈"
 
 default: coder
+orchestra_planner_model: distill4b
+cascade_fast_model: distill4b
 
 # カスケード(安価な一次受け → 本命 → 上位のエスカレーション)。
 # router.escalation_ladder が参照する。false にすると従来どおり pick_model の
@@ -429,6 +503,34 @@ default: coder
 # coder(qwen3:30b, hybrid) 44.2 tok/s・ロード27.1s。簡単なタスクは worker が
 # 3反復で完了し、hybrid のロードもスピルも一切払わずに済む(実測)。
 cascade: true
+
+# 思考暴走の救済 (orchestrator が参照。対象は direct の最終回答段のみ):
+# 実効 think が有効な生成で、思考の累積が tokens (概算トークン。実測換算
+# 約3字=1トークンで数える) を超えたらストリームを中断し、思考メモを
+# 引き継いで think なしで本文を再生成する。通常の思考には介入しない。
+# 既定 3072 の根拠: pro の健全な思考の実測最大 (約1,900トークン) を
+# 切らず、smart の病的引き (12,430字) を捉える水準。
+# 無効化: この節を false にするか enabled: false (全体)。モデル別は
+# モデル別の設定状況 (2026-11-01): pro のみ 3456 に上書き済み
+# (pro エントリの think_rescue_tokens)。smart は既定 3072 のまま
+# (病的引きへの救済が実測で有効。本文 82字の事故型を防ぐ側を優先)。
+# 各エントリの think_rescue_tokens で上書きする (0 でそのモデルは無効)。
+think_rescue:
+  tokens: 3072
+
+# 依頼の仕分け(mode/deliverable)を Kev(TypeSafe System One 互換の判断モデル)で行う。
+# 起動: C:\project\kev で python -m kev.serve --run jaredpalmer/kev-4b --port 8009 --device cpu
+# 未起動・確率 min_prob 未満なら従来の LLM 判定へ回る。使わないならこの節を消す。
+kev_triage:
+  base_url: "http://127.0.0.1:8009"
+  min_prob: 0.5
+  timeout: 30
+
+# cascade 下書きの意味ゲート (シャドウ)。Kev にも判定させて
+# kev_gate_shadow.jsonl へ記録するだけ。合否は _draft_gate が決める。
+kev_gate:
+  shadow: true
+  timeout: 15
 
 # 批評ループの異ファミリーペア既定(router.pyが参照)。
 # レビュアーは原則 vram 常駐の reasoner に寄せる: hybrid 同士のペア(旧 heavy→smart 等)は

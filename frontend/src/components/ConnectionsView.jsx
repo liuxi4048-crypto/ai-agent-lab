@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Copy, KeyRound, RefreshCw } from "lucide-react";
+import { fetchApiKeyStatus, generateApiKey } from "../api.js";
 import { modelStatusNote, serverDisplayName, shortBaseUrl } from "../derive.js";
 
 // 接続状態パネル: バックエンド/サーバーごとに「今つながっているか・
-// 何が使えるか」を1画面で確認する。設定の変更はここでは行わない
-// (モデル登録は models.yaml、APIキーは環境変数が正)。
+// 何が使えるか」を1画面で確認する。変更できるのは OpenAI互換APIのキー発行だけ
+// (モデル登録は models.yaml、Claude APIキーは環境変数が正)。
 
 const CONN_TITLE = {
   ollama: "Ollama（このPC）",
@@ -31,6 +32,94 @@ function registeredFor(c, models) {
     return models.filter((m) => m.backend === "openai" && (m.base_url || "") === c.base_url);
   if (c.kind === "anthropic") return models.filter((m) => m.backend === "anthropic");
   return models.filter((m) => (m.backend ?? "ollama") === "ollama");
+}
+
+const KEY_SOURCE = {
+  env: { cls: "border-green-500/50 bg-green-500/10 text-green-300", text: "環境変数で設定済み" },
+  file: { cls: "border-green-500/50 bg-green-500/10 text-green-300", text: "発行済み" },
+  none: { cls: "border-amber-500/50 bg-amber-500/10 text-amber-300", text: "未発行（認証なし）" },
+};
+
+// OpenAI互換API(/v1)のキー発行カード。生成したキーは発行直後の1回だけ表示する。
+function ApiKeyCard() {
+  const [status, setStatus] = useState(null);
+  const [newKey, setNewKey] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    fetchApiKeyStatus().then(setStatus, (e) => setError(e.message));
+  }, []);
+
+  const handleGenerate = async () => {
+    if (status?.source === "file" &&
+        !window.confirm("今のキーは使えなくなります。新しいキーを発行しますか？")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { key } = await generateApiKey();
+      setNewKey(key);
+      setCopied(false);
+      setStatus((s) => ({ ...s, source: "file" }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopy = () =>
+    navigator.clipboard.writeText(newKey).then(() => setCopied(true), () => setError("コピーできませんでした"));
+
+  const chip = status && KEY_SOURCE[status.source];
+  const endpoint = `http://${status?.host === "0.0.0.0" ? "<このPCのIP>" : status?.host ?? "127.0.0.1"}:${status?.port ?? 8765}/v1`;
+
+  return (
+    <section className="mt-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
+      <div className="flex items-center gap-2">
+        <KeyRound size={15} className="shrink-0 text-slate-400" />
+        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">OpenAI互換API のキー</h3>
+        {chip && (
+          <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold ${chip.cls}`}>{chip.text}</span>
+        )}
+      </div>
+      <p className="mt-1 font-mono text-xs text-slate-500">接続先 {endpoint}</p>
+      <p className="mt-2 text-[13px] leading-relaxed text-slate-400">
+        外部ツールから呼ぶときは <span className="font-mono">Authorization: Bearer &lt;キー&gt;</span> を付けます。
+        キーは api_settings.json に保存され、再起動なしで有効になります。
+      </p>
+
+      {status && status.source !== "env" && (
+        <button
+          onClick={handleGenerate}
+          disabled={busy}
+          className="mt-3 rounded-lg border border-slate-700 px-3 py-2 text-[13px] text-slate-200 transition-colors hover:border-slate-500 hover:text-white disabled:opacity-50"
+        >
+          {status.source === "file" ? "キーを再発行" : "キーを発行"}
+        </button>
+      )}
+      {status?.source === "env" && (
+        <p className="mt-3 text-xs text-slate-500">環境変数 AAL_API_KEY が優先されるため、画面からは発行できません。</p>
+      )}
+
+      {newKey && (
+        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+          <p className="text-xs font-semibold text-amber-300">このキーは今だけ表示されます。控えてください。</p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all font-mono text-[13px] text-slate-100">{newKey}</code>
+            <button
+              onClick={handleCopy}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:border-slate-500"
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "コピー済み" : "コピー"}
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </section>
+  );
 }
 
 export default function ConnectionsView({ models, onRefresh }) {
@@ -143,8 +232,10 @@ export default function ConnectionsView({ models, onRefresh }) {
           </div>
         )}
 
+        <ApiKeyCard />
+
         <p className="mt-6 text-xs leading-relaxed text-slate-500">
-          設定の変更はこの画面では行いません。モデルの登録・接続先・表示名（server_name）は models.yaml、
+          APIキーの発行以外の設定はこの画面では行いません。モデルの登録・接続先・表示名（server_name）は models.yaml、
           Claude API のキーは環境変数 ANTHROPIC_API_KEY で設定します（キーを画面に表示・保存することはありません）。
         </p>
       </div>
