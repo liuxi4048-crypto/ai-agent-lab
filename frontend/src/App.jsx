@@ -621,7 +621,7 @@ export default function App() {
                   </section>
                 )}
                 {agentNodes.length === 0 ? (
-                  <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-slate-600">
+                  <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-slate-400">
                     <Inbox size={36} strokeWidth={1.2} />
                     <p className="text-sm">エージェントを起動しています…</p>
                   </div>
@@ -639,7 +639,7 @@ export default function App() {
                           <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
                             {pm.label}
                           </h2>
-                          <span className="hidden text-[10px] text-slate-600 sm:inline">{pm.hint}</span>
+                          <span className="hidden text-[10px] text-slate-400 sm:inline">{pm.hint}</span>
                           {/* 決定的進捗(n/m)は待機許容度に効くため1件でも常時出す */}
                           <span className="shrink-0 rounded bg-slate-800/80 px-1.5 text-[10px] tabular-nums text-slate-400">
                             {doneCount}/{seg.nodes.length} 完了
@@ -687,7 +687,7 @@ export default function App() {
           )}
 
           {!drafting && !benching && !insighting && !currentRun && (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-600">
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-400">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">{runsLoaded ? "左の一覧からタスクを選ぶか、新しいタスクを開始してください" : "読み込み中…"}</p>
               {runsLoaded && (
@@ -736,7 +736,7 @@ export default function App() {
               )}
               <button
                 onClick={() => dismissNotice(n.key)}
-                className="shrink-0 rounded p-0.5 text-slate-500 hover:text-slate-300"
+                className="shrink-0 rounded p-0.5 text-slate-400 hover:text-slate-300"
                 title="閉じる"
               >
                 <X size={13} />

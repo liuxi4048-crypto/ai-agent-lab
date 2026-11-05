@@ -71,7 +71,7 @@ export default function AgentCard({
       </div>
 
       {/* 2行目: 経過 + t/s + 依存(待機系のみ) + ctx警告。tok/進捗は LogDrawer ヘッダーへ退避 */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
         {model.has && (
           <span
             className="flex min-w-0 items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-1.5 py-px font-mono text-[11.5px] text-slate-300"
@@ -88,16 +88,16 @@ export default function AgentCard({
           <span className="tabular-nums font-semibold text-blue-400">{tps.toFixed(1)} t/s</span>
         )}
         {agentState.key === "active" && (tps == null || tps <= 0) && node.tokens > 0 && (
-          <span className="tabular-nums text-slate-500">0.0 t/s</span>
+          <span className="tabular-nums text-slate-400">0.0 t/s</span>
         )}
         {agentState.key === "active" && node.tokens === 0 && sinceMs != null && (
-          <span className="tabular-nums text-slate-500">初回トークン待ち {Math.floor(sinceMs / 1000)}s</span>
+          <span className="tabular-nums text-slate-400">初回トークン待ち {Math.floor(sinceMs / 1000)}s</span>
         )}
         {/* 前段依存は「何を待っているか」が意味を持つ待機系状態のときだけ表示する
             (完了後まで出し続けると全カードに常設チップが並び雑音になる) */}
         {dep && ["waiting", "queued"].includes(agentState.key) ? (
           <span className="flex min-w-0 items-center gap-1">
-            <span className="shrink-0 text-slate-600">前段:</span>
+            <span className="shrink-0 text-slate-400">前段:</span>
             <span className={`flex min-w-0 items-center gap-1 rounded-full border border-slate-700 px-1.5 py-px ${depState ? AGENT_STATES[depState.key].text : "text-slate-400"}`}>
               <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${depState ? AGENT_STATES[depState.key].dot : "bg-slate-500"}`} />
               <span className="max-w-32 truncate">{dep.title}</span>
@@ -113,7 +113,7 @@ export default function AgentCard({
           </span>
         )}
         {/* 詳細導線はカード全体がクリック可能なので、hover/focus時のアイコンのみに抑える */}
-        <span className="ml-auto shrink-0 text-slate-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <span className="ml-auto shrink-0 text-slate-400 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           <BookOpen size={11} aria-hidden="true" />
         </span>
       </div>
@@ -129,13 +129,13 @@ export default function AgentCard({
           {(node.output || "エラー詳細なし").split("\n")[0]}
         </p>
       ) : agentState.key === "canceled" ? (
-        <p className="truncate px-0.5 font-mono text-[11px] text-slate-500">
+        <p className="truncate px-0.5 font-mono text-[11px] text-slate-400">
           依存先の失敗により自動キャンセルされました
         </p>
       ) : line ? (
-        <p className="truncate px-0.5 font-mono text-[11px] text-slate-500">{line}</p>
+        <p className="truncate px-0.5 font-mono text-[11px] text-slate-400">{line}</p>
       ) : (
-        <p className="px-0.5 font-mono text-[11px] text-slate-500">
+        <p className="px-0.5 font-mono text-[11px] text-slate-400">
           {agentState.key === "waiting" ? "前段の完了を待機中…" : agentState.key === "queued" ? "GPUの空きを待機中…" : " "}
         </p>
       )}

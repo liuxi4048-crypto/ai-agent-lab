@@ -130,7 +130,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
                 <User size={13} />
               </span>
               <p className="min-w-0 flex-1 whitespace-pre-wrap break-words rounded-lg bg-blue-500/10 px-2.5 py-1.5 italic text-slate-300">
-                {pendingMsg} <span className="not-italic text-slate-500">(送信中…)</span>
+                {pendingMsg} <span className="not-italic text-slate-400">(送信中…)</span>
               </p>
             </div>
           )}
@@ -139,7 +139,7 @@ export default function ChatPanel({ runId, nodes, order, running, resumable, run
       )}
 
       <div className="flex items-end gap-2 px-4 py-2.5">
-        <MessageSquare size={14} className="mb-2.5 shrink-0 text-slate-600" aria-hidden="true" />
+        <MessageSquare size={14} className="mb-2.5 shrink-0 text-slate-400" aria-hidden="true" />
         <textarea
           ref={textareaRef}
           value={msg}

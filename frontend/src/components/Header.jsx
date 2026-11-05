@@ -50,7 +50,7 @@ function Header({
       </button>
       <div className="flex items-center gap-2">
         <FlaskConical size={18} className="text-blue-400" />
-        <h1 className="text-sm font-semibold tracking-wide text-slate-100">ai-agent-lab</h1>
+        <h1 className="hidden whitespace-nowrap text-sm font-semibold tracking-wide text-slate-100 sm:block">ai-agent-lab</h1>
       </div>
 
       {/* 狭幅: サイドバーを開かずに新規タスクへ */}
@@ -63,7 +63,7 @@ function Header({
         <Plus size={16} />
       </button>
 
-      <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden">
+      <div className="hidden min-w-0 flex-nowrap items-center gap-2 overflow-hidden md:flex">
         {connections.map((c, i) => {
           const ok = c.kind === "anthropic" ? c.key_set : c.reachable;
           const label = c.kind === "anthropic" ? `Claude API キー${ok ? "設定済み" : "未設定"}` : `${c.kind === "ollama" ? "Ollama" : serverDisplayName(c.server_name || c.name, c.base_url)} ${ok ? "接続OK" : "未接続"}`;
@@ -72,13 +72,13 @@ function Header({
       </div>
       {/* 要対応バッジ群(条件を満たすときだけ現れる) */}
       {oom && (
-        <span className="soft-pulse flex items-center gap-1 rounded-full border border-red-500 px-2 py-0.5 text-xs font-bold text-red-400">
+        <span className="soft-pulse flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-red-500 px-2 py-0.5 text-xs font-bold text-red-400">
           <AlertTriangle size={11} /> VRAM残りわずか
         </span>
       )}
       {externalFull && (
         <span
-          className="flex items-center gap-1 rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-400"
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-slate-600 px-2 py-0.5 text-xs text-slate-400"
           title="Ollama 以外のプロセス(Strata 等)が VRAM の大半を使用しています"
         >
           外部プロセスでVRAM使用中
@@ -120,12 +120,12 @@ function Header({
               <span className="hidden sm:inline">実行中</span>
             </>
           ) : (
-            <Gauge size={13} className="text-slate-500" />
+            <Gauge size={13} className="text-slate-400" />
           )}
           {queueCount > 0 && (
             <span className="tabular-nums text-yellow-400">⏳{queueCount}</span>
           )}
-          <ChevronDown size={11} className="text-slate-500" />
+          <ChevronDown size={11} className="text-slate-400" />
         </button>
         <SystemStatusPopover
           open={statusOpen}

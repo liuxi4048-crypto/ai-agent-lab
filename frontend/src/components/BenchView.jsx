@@ -127,7 +127,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
           {onCancel && (
             <button
               onClick={onCancel}
-              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-[11.5px] text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[11.5px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               title="ベンチ設定をやめて元の画面へ戻る(Esc)"
             >
               <X size={13} /> キャンセル
@@ -168,7 +168,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
             ]}
             describe={() => ({ blocked: false, note: "", suffix: "" })}
           />
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="sticky bottom-0 z-10 -mx-1 mt-4 flex flex-wrap items-center gap-2 bg-slate-950/95 px-1 py-2 backdrop-blur">
             <label className="flex items-center gap-2 text-xs text-slate-400" title="各課題の反復回数。2以上にすると速度のばらつき(±)が出る">
               反復
               <input
@@ -188,7 +188,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
           </div>
 
           {/* 課題 */}
-          <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
+          <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-400">
             <span className="font-semibold uppercase tracking-wider">課題</span>
             <span className="tabular-nums">{selectedIds.length}/{tasks.length}</span>
             <button onClick={() => setSelected(null)} className="underline-offset-2 hover:text-slate-300 hover:underline">全て</button>
@@ -206,16 +206,17 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                       checked={isSelected(t.id)}
                       onChange={() => toggleTask(t.id)}
                       onClick={(e) => e.stopPropagation()}
+                      aria-label={`${t.title} をベンチに含める`}
                       className="accent-blue-500"
                     />
                     <span className="min-w-0 flex-1 truncate">{t.title}</span>
                     <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">{t.category}</span>
-                    <ChevronRight size={12} className="shrink-0 text-slate-600 transition-transform group-open:rotate-90" />
+                    <ChevronRight size={12} className="shrink-0 text-slate-400 transition-transform group-open:rotate-90" />
                   </summary>
                   <pre className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-slate-800 px-2.5 py-2 text-[11px] leading-relaxed text-slate-400">
                     {t.prompt}
                   </pre>
-                  <p className="border-t border-slate-800 px-2.5 py-1 text-[10.5px] text-slate-600">
+                  <p className="border-t border-slate-800 px-2.5 py-1 text-[10.5px] text-slate-400">
                     自動チェック: {t.checks.length ? t.checks.join(", ") : "なし(採点のみ)"}
                   </p>
                 </details>
@@ -228,20 +229,20 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
         {/* 比較表 */}
         <div className="mt-6">
           <div className="mb-1.5 flex items-center gap-2">
-            <p className="text-[10.5px] font-semibold uppercase tracking-wider text-slate-600">モデル比較(完了したベンチ)</p>
-            <label className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-slate-500">
+            <p className="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">モデル比較(完了したベンチ)</p>
+            <label className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-slate-400">
               <input type="checkbox" checked={latestOnly} onChange={(e) => setLatestOnly(e.target.checked)} className="accent-blue-500" />
               モデルごとに最新のみ
             </label>
           </div>
           {rows.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-[12px] text-slate-600">
+            <p className="rounded-lg border border-dashed border-slate-800 px-3 py-4 text-center text-[12px] text-slate-400">
               まだ完了したベンチがありません
             </p>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-slate-800">
               <table className="w-full text-[11.5px] text-slate-300">
-                <thead className="bg-slate-900 text-[10.5px] uppercase tracking-wider text-slate-500">
+                <thead className="bg-slate-900 text-[10.5px] uppercase tracking-wider text-slate-400">
                   <tr>
                     {th("モデル", null)}
                     {th("課題", null, "課題数×反復(比較は同じ条件のRun同士で)")}
@@ -265,18 +266,18 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                         title="クリックでこのベンチの詳細を開く"
                       >
                         <td className="px-2 py-1.5 font-semibold text-slate-100">{r.model_tag || r.model}</td>
-                        <td className="px-2 py-1.5 tabular-nums text-slate-500">
+                        <td className="px-2 py-1.5 tabular-nums text-slate-400">
                           {r.bench.tasks?.length ?? "?"}{r.bench.repeats > 1 ? `×${r.bench.repeats}` : ""}
                         </td>
                         <td className="px-2 py-1.5 tabular-nums font-semibold text-blue-300">
-                          {fmt(a.tok_per_s)}{a.tok_per_s_sd != null && <span className="text-slate-500"> ±{fmt(a.tok_per_s_sd)}</span>}
+                          {fmt(a.tok_per_s)}{a.tok_per_s_sd != null && <span className="text-slate-400"> ±{fmt(a.tok_per_s_sd)}</span>}
                         </td>
                         <td className="px-2 py-1.5 tabular-nums">{fmtMs(a.warm_ttft_ms ?? a.ttft_ms)}</td>
-                        <td className="px-2 py-1.5 tabular-nums text-slate-500">{fmtMs(a.max_load_ms)}</td>
+                        <td className="px-2 py-1.5 tabular-nums text-slate-400">{fmtMs(a.max_load_ms)}</td>
                         <td className="px-2 py-1.5 tabular-nums">{a.checks_passed}/{a.checks_total}</td>
                         <td className="px-2 py-1.5 tabular-nums">{a.judge_avg != null ? `${fmt(a.judge_avg, 2)}/5` : "—"}</td>
                         <td className="px-2 py-1.5 tabular-nums font-semibold text-green-300">{fmt(a.quality_score, 0)}</td>
-                        <td className="px-2 py-1.5 tabular-nums text-slate-500">{fmtAgo(r.created_at)}</td>
+                        <td className="px-2 py-1.5 tabular-nums text-slate-400">{fmtAgo(r.created_at)}</td>
                       </tr>
                     );
                   })}
@@ -284,7 +285,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
               </table>
             </div>
           )}
-          <p className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-relaxed text-slate-600">
+          <p className="mt-2 flex items-start gap-1.5 text-[10.5px] leading-relaxed text-slate-400">
             <Info size={11} className="mt-0.5 shrink-0" />
             単発生成のベンチです。tok/s が高くてもエージェント実運用(ツールループ)の完走を保証しません
             (2026-08-20実測: 9.7 tok/s のモデルが 21.5 tok/s のモデルより先に完走)。

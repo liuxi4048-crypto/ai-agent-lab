@@ -44,9 +44,9 @@ export default function RunInsight({ trace }) {
           <div key={c.key} className={`mb-2 rounded-r-lg border-l-4 bg-slate-900 px-4 py-3 ${c.level === "high" ? "border-red-500" : c.level === "mid" ? "border-amber-500" : "border-slate-500"}`}>
             <div className="text-[13px] font-semibold text-slate-100">{c.title}</div>
             <div className="text-[13px] text-slate-300"><TermText text={c.evidence} /></div>
-            <div className="text-[12px] text-slate-500">対策: <TermText text={c.action} /></div>
+            <div className="text-[12px] text-slate-400">対策: <TermText text={c.action} /></div>
           </div>
-        )) : <p className="text-[13px] text-slate-500">目立つ候補はありません。</p>}
+        )) : <p className="text-[13px] text-slate-400">目立つ候補はありません。</p>}
       </Section>
     </div>
   );
@@ -56,7 +56,7 @@ function Section({ title, note, children }) {
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
       <h3 className="text-sm font-semibold text-slate-100">{title}</h3>
-      {note && <p className="mb-2 mt-0.5 text-[12px] text-slate-500">{note}</p>}
+      {note && <p className="mb-2 mt-0.5 text-[12px] text-slate-400">{note}</p>}
       {children}
     </section>
   );
@@ -77,7 +77,7 @@ function Stats({ run, stats }) {
         {cards.map(([v, k]) => (
           <div key={k} className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
             <div className="text-lg font-bold tabular-nums text-slate-100">{v}</div>
-            <div className="text-xs text-slate-500"><TermText text={k} /></div>
+            <div className="text-xs text-slate-400"><TermText text={k} /></div>
           </div>
         ))}
       </div>
@@ -179,7 +179,7 @@ function Timeline({ nodes, t, setT, sel, onSel, byId }) {
           </select>
         </label>
         <input type="range" min={-1} max={events.length - 1} value={idx} onChange={(e) => { setPlaying(false); setIdx(+e.target.value); }} className="min-w-40 flex-1 accent-blue-500" aria-label="再生位置" />
-        <span className="tabular-nums text-slate-500">{idx + 1}/{events.length}</span>
+        <span className="tabular-nums text-slate-400">{idx + 1}/{events.length}</span>
       </div>
       <div className="min-h-12 rounded-lg bg-slate-950/60 px-3 py-2 text-[13px]">
         {cur ? (
@@ -189,7 +189,7 @@ function Timeline({ nodes, t, setT, sel, onSel, byId }) {
               <div className="mt-0.5 text-slate-400">矢印 {kindOf(byId.get(cur.n.parent)?.kind).label} → {kindOf(cur.n.kind).label}: <TermText text={cur.n.edge} /></div>
             )}
           </>
-        ) : <span className="text-slate-500">再生を押すと、エージェントが動き始めた順・終わった順に1つずつ説明します。</span>}
+        ) : <span className="text-slate-400">再生を押すと、エージェントが動き始めた順・終わった順に1つずつ説明します。</span>}
       </div>
       <div className="mt-2 overflow-x-auto">
         <svg width={W} height={rows.length * rh + 26} role="img" aria-label="エージェントの実行期間">
@@ -215,7 +215,7 @@ function Timeline({ nodes, t, setT, sel, onSel, byId }) {
 function TokenBars({ nodes, onSel, sel }) {
   const rows = nodes.filter((n) => n.tokens > 0).sort((a, b) => b.tokens - a.tokens);
   const mx = Math.max(1, ...rows.map((n) => n.tokens));
-  if (!rows.length) return <p className="text-[13px] text-slate-500">トークンの記録がありません。</p>;
+  if (!rows.length) return <p className="text-[13px] text-slate-400">トークンの記録がありません。</p>;
   return (
     <div className="space-y-1">
       {rows.map((n) => (
@@ -237,23 +237,23 @@ function NodeDetail({ node: n, parent, onClose }) {
         <button onClick={onClose} className="ml-auto text-[12px] text-slate-400 hover:text-slate-200">閉じる</button>
       </div>
       <dl className="mt-2 grid grid-cols-[110px_1fr] gap-x-3 gap-y-1 text-[13px]">
-        <dt className="text-slate-500">状態</dt><dd>{n.status}{n.stop === "max_iter" ? "(反復の上限で停止)" : ""}</dd>
-        <dt className="text-slate-500">モデル</dt><dd>{n.model || "—"}</dd>
-        <dt className="text-slate-500">時間</dt><dd>{n.start != null ? `${n.start.toFixed(1)}秒 から ${fmtS(n.dur)}` : "—"}</dd>
-        <dt className="text-slate-500">トークン</dt><dd>{fmtNum(n.tokens)}{n.tps ? `(約 ${n.tps} tok/s)` : ""}</dd>
-        <dt className="text-slate-500">字数</dt><dd>入力 {fmtNum(n.prompt_chars)} ・ 出力 {fmtNum(n.output_chars)} ・ 思考 {fmtNum(n.think_chars)}</dd>
-        {parent && <><dt className="text-slate-500">親からの矢印</dt><dd><TermText text={n.edge} /></dd></>}
-        {n.iters > 0 && <><dt className="text-slate-500">反復</dt><dd>{n.iters}{n.max_iter ? ` / 上限 ${n.max_iter}` : ""}</dd></>}
+        <dt className="text-slate-400">状態</dt><dd>{n.status}{n.stop === "max_iter" ? "(反復の上限で停止)" : ""}</dd>
+        <dt className="text-slate-400">モデル</dt><dd>{n.model || "—"}</dd>
+        <dt className="text-slate-400">時間</dt><dd>{n.start != null ? `${n.start.toFixed(1)}秒 から ${fmtS(n.dur)}` : "—"}</dd>
+        <dt className="text-slate-400">トークン</dt><dd>{fmtNum(n.tokens)}{n.tps ? `(約 ${n.tps} tok/s)` : ""}</dd>
+        <dt className="text-slate-400">字数</dt><dd>入力 {fmtNum(n.prompt_chars)} ・ 出力 {fmtNum(n.output_chars)} ・ 思考 {fmtNum(n.think_chars)}</dd>
+        {parent && <><dt className="text-slate-400">親からの矢印</dt><dd><TermText text={n.edge} /></dd></>}
+        {n.iters > 0 && <><dt className="text-slate-400">反復</dt><dd>{n.iters}{n.max_iter ? ` / 上限 ${n.max_iter}` : ""}</dd></>}
       </dl>
       {n.events.length > 0 && (
         <>
-          <h4 className="mt-3 text-[13px] font-semibold text-slate-200">中で起きたこと <span className="font-normal text-slate-500">(<TermText text="順序のみ(時刻なし)" />)</span></h4>
+          <h4 className="mt-3 text-[13px] font-semibold text-slate-200">中で起きたこと <span className="font-normal text-slate-400">(<TermText text="順序のみ(時刻なし)" />)</span></h4>
           <ol className="mt-1 max-h-72 list-decimal space-y-0.5 overflow-auto pl-6 text-[13px]">
             {n.events.map((e, i) => {
               const tool = e.type === "tool" ? n.tools[e.tool] : null;
               return (
-                <li key={i} className={tool?.ok === false ? "text-red-300" : e.type === "compact" ? "text-amber-300" : e.type === "iter" ? "text-slate-500" : "text-slate-300"}>
-                  {tool ? <><b>{tool.name}</b> <span className="text-slate-500">{tool.args}</span> → {tool.result || "—"}</> : e.label}
+                <li key={i} className={tool?.ok === false ? "text-red-300" : e.type === "compact" ? "text-amber-300" : e.type === "iter" ? "text-slate-400" : "text-slate-300"}>
+                  {tool ? <><b>{tool.name}</b> <span className="text-slate-400">{tool.args}</span> → {tool.result || "—"}</> : e.label}
                 </li>
               );
             })}

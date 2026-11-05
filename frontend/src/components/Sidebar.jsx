@@ -83,7 +83,7 @@ function Sidebar({
               </span>
             )}
           </div>
-          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] text-slate-500">
+          <div className="mt-1 flex items-center gap-1.5 pl-4 text-[11.5px] text-slate-400">
             <span className={meta.text}>{meta.label}</span>
             <span className="ml-auto shrink-0 tabular-nums">{fmtAgo(r.created_at)}</span>
             {finished && (
@@ -108,7 +108,7 @@ function Sidebar({
   const group = (label, items) =>
     items.length > 0 && (
       <>
-        <li className="sticky top-0 z-10 flex items-center gap-2 bg-slate-900 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        <li className="sticky top-0 z-10 flex items-center gap-2 bg-slate-900 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
           {label}
           <span className="tabular-nums text-slate-400">{items.length}</span>
         </li>
@@ -191,7 +191,7 @@ function Sidebar({
           </button>
           <button
             onClick={onClose}
-            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200 lg:hidden"
+            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 lg:hidden"
             title="閉じる"
           >
             <X size={16} />
@@ -199,11 +199,12 @@ function Sidebar({
         </div>
 
         <div className="relative px-3 pb-2">
-          <Search size={12} className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-600" />
+          <Search size={12} className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="タスクを検索…"
+            aria-label="タスクを検索"
             className="w-full rounded-md border border-slate-800 bg-slate-950 py-1.5 pl-7 pr-2 text-[12px] text-slate-200 placeholder-slate-600 outline-none focus:border-blue-500"
           />
         </div>
@@ -229,7 +230,7 @@ function Sidebar({
           {group("実行中・待機中", live)}
           {group("履歴", history)}
           {!live.length && !history.length && !drafting && !benching && (
-            <li className="px-3 py-6 text-center text-[12px] text-slate-500">
+            <li className="px-3 py-6 text-center text-[12px] text-slate-400">
               {query ? "一致するタスクがありません" : "まだタスクがありません"}
             </li>
           )}

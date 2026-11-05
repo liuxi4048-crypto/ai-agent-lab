@@ -81,7 +81,7 @@ export default function ModelPicker({ models, value, onChange, extraOptions = []
                 <span className="min-w-0 flex-1 truncate">{g.label}</span>
                 {contains && <span className="h-2 w-2 shrink-0 rounded-full bg-blue-400" title="選択中のモデルはこのサーバー" />}
               </span>
-              <span className="mt-0.5 block text-[11px] text-slate-500">{groupNote(g)}</span>
+              <span className="mt-0.5 block text-[11px] text-slate-400">{groupNote(g)}</span>
             </button>
           );
         })}

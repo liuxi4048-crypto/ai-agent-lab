@@ -121,7 +121,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
           {onCancel && (
             <button
               onClick={onCancel}
-              className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               title="下書きをやめて元の画面へ戻る(Esc)"
             >
               <X size={13} /> キャンセル
@@ -147,6 +147,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
 
         <textarea
           ref={taskRef}
+          aria-label="作りたいもの・調べたいこと"
           value={task}
           onChange={(e) => setTask(e.target.value)}
           onKeyDown={(e) => {
@@ -183,7 +184,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
           />
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="sticky bottom-0 z-10 -mx-1 mt-2 flex flex-wrap items-center gap-2 bg-slate-950/95 px-1 py-2 backdrop-blur">
 
           {/* 選択中モデルの接続先と状態(どのエンジンで動くかを常時見せる) */}
           {statusLine && (
@@ -233,7 +234,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                        className="mt-0.5 accent-blue-500" />
                 <span>
                   <span className="block text-[13px] text-slate-200">コマンド実行前に承認</span>
-                  <span className="block text-xs text-slate-500">コマンドを実行する前に、毎回あなたの確認を挟みます</span>
+                  <span className="block text-xs text-slate-400">コマンドを実行する前に、毎回あなたの確認を挟みます</span>
                 </span>
               </label>
               <label className="flex cursor-pointer items-start gap-2">
@@ -241,7 +242,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                        className="mt-0.5 accent-blue-500" />
                 <span>
                   <span className="block text-[13px] text-slate-200">完了後レビュー</span>
-                  <span className="block text-xs text-slate-500">終わったあと、別のモデルが成果物を批評して必要なら直します</span>
+                  <span className="block text-xs text-slate-400">終わったあと、別のモデルが成果物を批評して必要なら直します</span>
                 </span>
               </label>
               <label className="flex items-start gap-2">
@@ -255,7 +256,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                       className="w-14 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-slate-200 outline-none focus:border-blue-500"
                     />
                   </span>
-                  <span className="block text-xs text-slate-500">「作る→直す」の往復回数の上限です</span>
+                  <span className="block text-xs text-slate-400">「作る→直す」の往復回数の上限です</span>
                 </span>
               </label>
             </div>
@@ -269,10 +270,10 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                   <span className="block text-[13px] text-slate-200">
                     大きいモデルも使う（RAM併用・低速）
                     {models?.free_ram_gb != null && (
-                      <span className="ml-1.5 text-xs text-slate-500">空きRAM {models.free_ram_gb}GB</span>
+                      <span className="ml-1.5 text-xs text-slate-400">空きRAM {models.free_ram_gb}GB</span>
                     )}
                   </span>
-                  <span className="block text-xs text-slate-500">VRAMに収まらない大型モデルも候補に入ります。品質は上がりますが低速になります</span>
+                  <span className="block text-xs text-slate-400">VRAMに収まらない大型モデルも候補に入ります。品質は上がりますが低速になります</span>
                 </span>
               </label>
               <label className={`flex items-start gap-2 ${claude?.available ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
@@ -283,7 +284,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                   <span className={`block text-[13px] ${claudeReview ? "text-orange-300" : "text-slate-200"}`}>
                     🤖 Claudeが最終レビュー
                   </span>
-                  <span className="block text-xs text-slate-500">
+                  <span className="block text-xs text-slate-400">
                     {claude?.available
                       ? `完了後にClaude（${claude.model}）が成果物をレビューし、その場で修正して仕上げます。API課金は発生しませんが、サブスクの5時間利用枠を消費します`
                       : (claude?.reason || "Claudeレビューは利用できません")}
@@ -298,7 +299,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                   <span className={`block text-[13px] ${apiReview ? "text-cyan-300" : "text-slate-200"}`}>
                     🔌 任意モデルで最終レビュー
                   </span>
-                  <span className="block text-xs text-slate-500">
+                  <span className="block text-xs text-slate-400">
                     {api?.available
                       ? `完了後に${api.model}が成果物を読み取りレビューします（修正はしません）。APIキーはサーバー側だけで使われます`
                       : (api?.reason || "任意モデルレビューは利用できません")}
@@ -313,7 +314,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
 
         {suggestions.length > 0 && !task.trim() && (
           <div className="mt-5">
-            <p className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-slate-600">
+            <p className="mb-1.5 text-[11.5px] font-semibold uppercase tracking-wider text-slate-400">
               ここから始める
             </p>
             <div className="flex flex-wrap gap-2">

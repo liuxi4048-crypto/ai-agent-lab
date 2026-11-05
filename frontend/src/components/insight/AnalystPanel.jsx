@@ -45,13 +45,13 @@ export default function AnalystPanel({ source, id, models }) {
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />} {busy ? "解説を作成中…" : "この記録を解説して"}
         </button>
       </div>
-      <p className="mt-1.5 text-[12px] text-slate-500">記録の本文(プロンプトや出力)は渡さず、数えた事実(件数・時間・トークン・改善候補)だけを渡します。API 課金はありません。</p>
+      <p className="mt-1.5 text-[12px] text-slate-400">記録の本文(プロンプトや出力)は渡さず、数えた事実(件数・時間・トークン・改善候補)だけを渡します。API 課金はありません。</p>
       {error && <p className="mt-2 text-[13px] text-red-400">{error}</p>}
       {res && (
         <div className="mt-2 border-t border-slate-800 pt-2">
-          <div className="mb-1 text-xs text-slate-500">{res.model} ・ {res.seconds} 秒</div>
+          <div className="mb-1 text-xs text-slate-400">{res.model} ・ {res.seconds} 秒</div>
           <Markdown text={res.text} className="text-[13px]" />
-          <details className="mt-2 text-[12px] text-slate-500">
+          <details className="mt-2 text-[12px] text-slate-400">
             <summary className="cursor-pointer text-blue-400">渡した事実を見る</summary>
             <pre className="mt-1 max-h-60 overflow-auto rounded bg-slate-950 p-2 text-xs">{JSON.stringify(res.facts, null, 1)}</pre>
           </details>

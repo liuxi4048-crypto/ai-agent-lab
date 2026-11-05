@@ -42,7 +42,7 @@ export function Term({ id, children }) {
       </span>
       {show && (
         <span role="tooltip" className="absolute left-0 top-full z-50 mt-1 block w-72 rounded-lg border border-blue-500/60 bg-slate-900 p-2.5 text-left text-[12px] leading-relaxed text-slate-200 shadow-xl">
-          <span className="block text-[11px] text-slate-500">{t.cat}</span>
+          <span className="block text-[11px] text-slate-400">{t.cat}</span>
           <span className="block text-[13px] font-semibold text-slate-100">{t.term}</span>
           <span className="mt-1 block font-semibold">{t.short}</span>
           <span className="mt-1 block text-slate-400">{t.detail}</span>
@@ -105,14 +105,14 @@ export function GlossaryList({ focusId }) {
         {list.map((t) => (
           <article key={t.id} id={`gl-${t.id}`}
             className={`rounded-xl border bg-slate-900 p-4 ${focusId === t.id ? "border-blue-500" : "border-slate-800"}`}>
-            <div className="text-[11px] text-slate-500">{t.cat}</div>
+            <div className="text-[11px] text-slate-400">{t.cat}</div>
             <h3 className="text-sm font-semibold text-slate-100">{t.term}</h3>
-            {t.aliases.length > 0 && <div className="text-xs text-slate-500">別名: {t.aliases.join("、")}</div>}
+            {t.aliases.length > 0 && <div className="text-xs text-slate-400">別名: {t.aliases.join("、")}</div>}
             <p className="mt-1 text-[13px] font-semibold text-slate-200">{t.short}</p>
             <p className="mt-1 text-[13px] leading-relaxed text-slate-400">{t.detail}</p>
           </article>
         ))}
-        {!list.length && <p className="text-[13px] text-slate-500">該当なし</p>}
+        {!list.length && <p className="text-[13px] text-slate-400">該当なし</p>}
       </div>
     </div>
   );

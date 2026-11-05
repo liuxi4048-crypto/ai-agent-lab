@@ -93,7 +93,7 @@ export default function ApprovalBar({ runId, approvals }) {
               </span>
             )}
             <span
-              className={`shrink-0 tabular-nums text-[11px] ${remainMs < 60_000 ? "font-bold text-red-400" : "text-slate-500"}`}
+              className={`shrink-0 tabular-nums text-[11px] ${remainMs < 60_000 ? "font-bold text-red-400" : "text-slate-400"}`}
               title="この時間を過ぎるとサーバー側で自動的に却下されます"
               aria-hidden="true"
             >
@@ -120,7 +120,7 @@ export default function ApprovalBar({ runId, approvals }) {
                 <X size={12} /> 却下
               </button>
             </div>
-            <span className="w-full pl-6 text-[10px] text-slate-500">cwd: {a.cwd}</span>
+            <span className="w-full pl-6 text-[10px] text-slate-400">cwd: {a.cwd}</span>
             {rowError[a.aid] && (
               <p className="w-full text-[11px] font-semibold text-red-400">{rowError[a.aid]}</p>
             )}

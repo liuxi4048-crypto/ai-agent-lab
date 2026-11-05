@@ -64,8 +64,8 @@ function RunsTab({ models }) {
     fetchInsightRun(id).then((t) => { if (!stale) setTrace(t); }).catch((e) => { if (!stale) setError(e.message); });
     return () => { stale = true; };
   }, [id, reload]);
-  if (!runs) return <p className="text-[13px] text-slate-500">{error ?? "読み込み中…"}</p>;
-  if (!runs.length) return <p className="text-[13px] text-slate-500">まだ Run の記録がありません。タスクを実行すると、ここで中身を見られます。</p>;
+  if (!runs) return <p className="text-[13px] text-slate-400">{error ?? "読み込み中…"}</p>;
+  if (!runs.length) return <p className="text-[13px] text-slate-400">まだ Run の記録がありません。タスクを実行すると、ここで中身を見られます。</p>;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -84,7 +84,7 @@ function RunsTab({ models }) {
           <RunInsight trace={trace} />
           <AnalystPanel source="run" id={trace.run.id} models={models} />
         </>
-      ) : !error && <p className="text-[13px] text-slate-500"><Loader2 size={13} className="mr-1 inline animate-spin" />解析中…</p>}
+      ) : !error && <p className="text-[13px] text-slate-400"><Loader2 size={13} className="mr-1 inline animate-spin" />解析中…</p>}
     </div>
   );
 }
@@ -101,8 +101,8 @@ function ClaudeTab({ models }) {
     buildClaudeSession(sid).then(setBuilt).catch((e) => setError(e.message)).finally(() => setBusy(false));
   };
   // 作成中はセッションを変えられないようにして、別セッションの結果が混ざらないようにする
-  if (!data) return <p className="text-[13px] text-slate-500">{error ?? "読み込み中…"}</p>;
-  if (!data.available) return <p className="text-[13px] text-slate-500">この PC には Claude Code のセッション記録(~/.claude/projects)がありません。</p>;
+  if (!data) return <p className="text-[13px] text-slate-400">{error ?? "読み込み中…"}</p>;
+  if (!data.available) return <p className="text-[13px] text-slate-400">この PC には Claude Code のセッション記録(~/.claude/projects)がありません。</p>;
   return (
     <div className="space-y-4">
       <p className="text-[13px] text-slate-400">
@@ -126,7 +126,7 @@ function ClaudeTab({ models }) {
           {built.token_top.length > 0 && (
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-[13px]">
               <div className="mb-1 font-semibold text-slate-200">トークン改善の上位(概算)</div>
-              {built.token_top.map((c) => <div key={c.key} className="text-slate-300">・{c.title}(約 {c.est_tokens.toLocaleString()})— <span className="text-slate-500">{c.action}</span></div>)}
+              {built.token_top.map((c) => <div key={c.key} className="text-slate-300">・{c.title}(約 {c.est_tokens.toLocaleString()})— <span className="text-slate-400">{c.action}</span></div>)}
             </div>
           )}
           <iframe title="Claude Code セッションのダッシュボード" src={built.url} className="h-[78vh] w-full rounded-xl border border-slate-800 bg-slate-950" />

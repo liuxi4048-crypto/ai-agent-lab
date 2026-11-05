@@ -99,7 +99,7 @@ export default function RunHeader({
               style={{ width: `${ratio * 100}%` }}
             />
           </span>
-          <span className="tabular-nums text-xs text-slate-500">{done}/{total}</span>
+          <span className="tabular-nums text-xs text-slate-400">{done}/{total}</span>
         </span>
       )}
 
@@ -161,7 +161,7 @@ export default function RunHeader({
             </p>
             <dl className="space-y-1.5 border-t border-slate-700 pt-2 text-xs">
               <div className="flex items-center gap-2">
-                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
+                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-400">
                   <Wand2 size={11} className="text-blue-400" /> 進め方
                 </dt>
                 <dd className="text-slate-200">
@@ -170,36 +170,36 @@ export default function RunHeader({
                 </dd>
               </div>
               <div className="flex items-center gap-2">
-                <dt className="w-20 shrink-0 text-slate-500">モデル</dt>
+                <dt className="w-20 shrink-0 text-slate-400">モデル</dt>
                 <dd className="font-semibold text-blue-400">{modelTag}</dd>
               </div>
               {run.claude_review && (
                 <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-slate-500">最終レビュー</dt>
+                  <dt className="w-20 shrink-0 text-slate-400">最終レビュー</dt>
                   <dd className="font-semibold text-orange-400">🤖 Claude</dd>
                 </div>
               )}
               {run.api_review && (
                 <div className="flex items-center gap-2">
-                  <dt className="w-20 shrink-0 text-slate-500">最終レビュー</dt>
+                  <dt className="w-20 shrink-0 text-slate-400">最終レビュー</dt>
                   <dd className="font-semibold text-cyan-400">🔌 APIモデル</dd>
                 </div>
               )}
               {reason && (
                 <div className="flex items-start gap-2">
-                  <dt className="w-20 shrink-0 text-slate-500">判定理由</dt>
+                  <dt className="w-20 shrink-0 text-slate-400">判定理由</dt>
                   <dd className="text-slate-400">{reason}</dd>
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
+                <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-400">
                   <Timer size={11} /> 経過
                 </dt>
                 <dd className="tabular-nums text-slate-200">{fmtElapsed(elapsed)}</dd>
               </div>
               {run.tokens > 0 && (
                 <div className="flex items-center gap-2">
-                  <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-500">
+                  <dt className="flex w-20 shrink-0 items-center gap-1 text-slate-400">
                     <Coins size={11} /> トークン
                   </dt>
                   <dd className="tabular-nums text-slate-200">{run.tokens.toLocaleString()} tok</dd>
