@@ -114,8 +114,8 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
   ].filter(Boolean).length, [critique, approve, allowRam, claudeReview, apiReview, maxIter]);
 
   return (
-    <div className="flex h-full flex-col items-center overflow-y-auto px-4 py-8">
-      <div className="w-full max-w-5xl">
+    <div className="flex h-full flex-col items-center overflow-y-auto px-4 pt-8">
+      <div className="w-full max-w-5xl pb-8">
         <div className="mb-3 flex items-center gap-2">
           <div><h2 className="text-2xl font-bold text-slate-100">何を作りますか？</h2><p className="mt-2 text-sm text-slate-400">やりたいことを自然な言葉で入力してください。進め方・成果物の形式はエージェントが自動で決めます</p></div>
           {onCancel && (
@@ -328,7 +328,7 @@ function TaskInput({ models, onStart, prefill, onCancel, visible, suggestions = 
                   className="max-w-full truncate rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-blue-500 hover:text-blue-400"
                   title={s.text}
                 >
-                  {s.emoji ? `${s.emoji} ` : ""}{s.text}
+                  {s.emoji === "🕘" && <span className="mr-1 text-slate-400">直近</span>}{s.text}
                 </button>
               ))}
             </div>

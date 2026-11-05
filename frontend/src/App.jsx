@@ -698,7 +698,7 @@ export default function App() {
                     onClick={() => handleNewTask(s.text)}
                     className="rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-blue-500 hover:text-blue-400"
                   >
-                    {s.emoji} {s.text}
+                    {s.text}
                   </button>
                 ))}
               </div>

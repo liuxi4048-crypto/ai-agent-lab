@@ -36,7 +36,7 @@ export function Term({ id, children }) {
         onFocus={() => setShow(true)}
         onBlur={() => setShow(false)}
         onClick={(e) => { e.stopPropagation(); setShow((s) => !s); }}
-        className="cursor-help border-b border-dotted border-blue-400"
+        className="cursor-help border-b border-dotted border-blue-400 py-1"
       >
         {children}
       </span>

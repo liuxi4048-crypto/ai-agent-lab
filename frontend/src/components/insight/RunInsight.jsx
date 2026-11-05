@@ -174,11 +174,11 @@ function Timeline({ nodes, t, setT, sel, onSel, byId }) {
         </button>
         <button className="rounded border border-slate-700 p-1" onClick={() => { setPlaying(false); setIdx((i) => Math.min(events.length - 1, i + 1)); }} title="1つ進む" aria-label="1つ進む"><SkipForward size={14} /></button>
         <label className="flex items-center gap-1">速度
-          <select value={speed} onChange={(e) => setSpeed(+e.target.value)} className="rounded border border-slate-700 bg-slate-900 px-1">
+          <select value={speed} onChange={(e) => setSpeed(+e.target.value)} className="min-h-6 rounded border border-slate-700 bg-slate-900 px-1">
             {[0.25, 0.5, 1, 2, 4, 8].map((v) => <option key={v} value={v}>{v}×</option>)}
           </select>
         </label>
-        <input type="range" min={-1} max={events.length - 1} value={idx} onChange={(e) => { setPlaying(false); setIdx(+e.target.value); }} className="min-w-40 flex-1 accent-blue-500" aria-label="再生位置" />
+        <input type="range" min={-1} max={events.length - 1} value={idx} onChange={(e) => { setPlaying(false); setIdx(+e.target.value); }} className="h-6 min-w-40 flex-1 accent-blue-500" aria-label="再生位置" />
         <span className="tabular-nums text-slate-400">{idx + 1}/{events.length}</span>
       </div>
       <div className="min-h-12 rounded-lg bg-slate-950/60 px-3 py-2 text-[13px]">
@@ -219,7 +219,7 @@ function TokenBars({ nodes, onSel, sel }) {
   return (
     <div className="space-y-1">
       {rows.map((n) => (
-        <button key={n.id} onClick={() => onSel(n.id)} className={`grid w-full grid-cols-[150px_1fr_110px] items-center gap-2 rounded px-1 text-left text-[12px] ${sel === n.id ? "bg-slate-800" : "hover:bg-slate-800/60"}`}>
+        <button key={n.id} onClick={() => onSel(n.id)} className={`grid min-h-6 w-full grid-cols-[150px_1fr_110px] items-center gap-2 rounded px-1 text-left text-[12px] ${sel === n.id ? "bg-slate-800" : "hover:bg-slate-800/60"}`}>
           <span className="truncate text-slate-300">{kindOf(n.kind).label.split(" ")[0]} {n.title.slice(0, 10)}</span>
           <span className="h-2.5 rounded" style={{ width: `${(100 * n.tokens) / mx}%`, background: kindOf(n.kind).c }} />
           <span className="tabular-nums text-slate-400">{fmtNum(n.tokens)}{n.tps ? ` ・ ${n.tps} tok/s` : ""}</span>

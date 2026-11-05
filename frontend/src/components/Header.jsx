@@ -106,7 +106,7 @@ function Header({
           onClick={() => setStatusOpen((v) => !v)}
           aria-expanded={statusOpen}
           aria-haspopup="dialog"
-          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+          className={`flex min-h-6 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
             statusOpen
               ? "border-blue-500 text-blue-400"
               : "border-slate-700 text-slate-300 hover:border-slate-500"
@@ -138,10 +138,10 @@ function Header({
         />
       </div>
 
-      {gpu && <div className="flex items-center gap-2 text-xs text-slate-300" title="VRAM使用量">
-        <span>VRAM {(used / 1024 ** 3).toFixed(1)} / {(total / 1024 ** 3).toFixed(1)} GB</span>
-        <span className="h-2 w-20 overflow-hidden rounded-full bg-slate-700"><span className="block h-full rounded-full bg-blue-500" style={{ width: `${total ? Math.min(100, used / total * 100) : 0}%` }} /></span>
-        <span>{total ? Math.round(used / total * 100) : 0}%</span>
+      {gpu && <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs text-slate-300" title="VRAM使用量">
+        <span className="hidden sm:inline">VRAM {(used / 1024 ** 3).toFixed(1)} / {(total / 1024 ** 3).toFixed(1)} GB</span>
+        <span className="hidden h-2 w-20 overflow-hidden rounded-full bg-slate-700 sm:block"><span className="block h-full rounded-full bg-blue-500" style={{ width: `${total ? Math.min(100, used / total * 100) : 0}%` }} /></span>
+        <span><span className="sm:hidden">VRAM </span>{total ? Math.round(used / total * 100) : 0}%</span>
       </div>}
       {/* 全停止: 止められるものがあるときだけ現れる(2段階クリック) */}
       {stoppable && (

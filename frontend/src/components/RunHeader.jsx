@@ -146,7 +146,7 @@ export default function RunHeader({
             }}
             aria-expanded={infoOpen}
             aria-haspopup="dialog"
-            className={`rounded-md border p-1 transition-colors ${
+            className={`min-h-6 min-w-6 rounded-md border p-1 transition-colors ${
               infoOpen ? "border-blue-500 text-blue-400" : "border-slate-700 text-slate-400 hover:text-slate-200"
             }`}
             title="タスク全文と実行条件"

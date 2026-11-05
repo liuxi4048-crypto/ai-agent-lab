@@ -116,11 +116,11 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
   );
 
   return (
-    <div className="flex h-full flex-col items-center overflow-y-auto px-4 py-8">
-      <div className="w-full max-w-5xl">
+    <div className="flex h-full flex-col items-center overflow-y-auto px-4 pt-8">
+      <div className="w-full max-w-5xl pb-8">
         <div className="mb-3 flex items-center gap-2">
-          <Gauge size={15} className="text-blue-400" />
-          <h2 className="text-2xl font-bold text-slate-100">性能ベンチ</h2>
+          <Gauge size={15} className="shrink-0 text-blue-400" />
+          <h2 className="whitespace-nowrap text-2xl font-bold text-slate-100">性能ベンチ</h2>
           <span className="text-sm text-slate-400">
             固定の課題を1モデルに投げ、速度と成果物の質を測る
           </span>
@@ -191,8 +191,8 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
           <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-400">
             <span className="font-semibold uppercase tracking-wider">課題</span>
             <span className="tabular-nums">{selectedIds.length}/{tasks.length}</span>
-            <button onClick={() => setSelected(null)} className="underline-offset-2 hover:text-slate-300 hover:underline">全て</button>
-            <button onClick={() => setSelected(new Set())} className="underline-offset-2 hover:text-slate-300 hover:underline">解除</button>
+            <button onClick={() => setSelected(null)} className="min-h-6 min-w-6 px-1 underline-offset-2 hover:text-slate-300 hover:underline">全て</button>
+            <button onClick={() => setSelected(new Set())} className="min-h-6 min-w-6 px-1 underline-offset-2 hover:text-slate-300 hover:underline">解除</button>
             {suite?.version != null && <span className="ml-auto">suite v{suite.version}</span>}
           </div>
           {suiteError && <p className="mt-1 text-xs text-red-400">{suiteError}</p>}
@@ -207,7 +207,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
                       onChange={() => toggleTask(t.id)}
                       onClick={(e) => e.stopPropagation()}
                       aria-label={`${t.title} をベンチに含める`}
-                      className="accent-blue-500"
+                      className="h-6 w-6 shrink-0 accent-blue-500"
                     />
                     <span className="min-w-0 flex-1 truncate">{t.title}</span>
                     <span className="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">{t.category}</span>
@@ -230,7 +230,7 @@ export default function BenchView({ models, runs, onStart, onCancel, prefill, on
         <div className="mt-6">
           <div className="mb-1.5 flex items-center gap-2">
             <p className="text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">モデル比較(完了したベンチ)</p>
-            <label className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-slate-400">
+            <label className="ml-auto flex min-h-6 cursor-pointer items-center gap-1 text-[11px] text-slate-400">
               <input type="checkbox" checked={latestOnly} onChange={(e) => setLatestOnly(e.target.checked)} className="accent-blue-500" />
               モデルごとに最新のみ
             </label>
