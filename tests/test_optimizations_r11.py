@@ -8,8 +8,14 @@ from tools import Toolbox
 PY = sys.executable
 
 
+async def _yes(command, cwd):
+    return True
+
+
 def _tb(tmp_root: str) -> Toolbox:
-    tb = Toolbox(approve=False)
+    # sys.executable は Windows では C:\... の絶対パスで、approve=False の脱出検知に掛かる。
+    # ここで見たいのは出力の末尾保持なので、承認ありの経路で自動承認して実行する。
+    tb = Toolbox(approve=True, approver=_yes)
     tb.root = tmp_root
     return tb
 
