@@ -24,6 +24,7 @@ GENERIC = "pass" + "word = " + '"Zq8mT3vK9xLp"'                  # keyvalue(gene
 def _fresh(monkeypatch):
     monkeypatch.delenv("PANEL_ALLOW_SECRETS", raising=False)
     monkeypatch.setattr(panel, "_secretscan_mod", None)
+    monkeypatch.setattr(api_review, "_secretscan_mod", None)   # 読み込みのキャッシュをテスト間で持ち越さない
 
 
 def _file(tmp_path, name, text):
