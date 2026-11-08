@@ -22,6 +22,7 @@ import argparse
 import fnmatch
 import asyncio
 import ctypes
+import ipaddress
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlparse
 
 import httpx
 
@@ -193,6 +195,22 @@ def check_outbound(items):
                          + "\n".join(lines) + more + "\n"
                          "ローカル完結で回すなら local-reviewer (--backend ollama)。"
                          "PANEL_ALLOW_SECRETS=1 でもこの内容検査は外れません。")
+
+
+def is_loopback_url(url):
+    """接続先がこの PC 自身(localhost / ループバック IP)か。判定できないものは外部とみなす。"""
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def is_secret_path(path, external=True):
@@ -1050,7 +1068,8 @@ async def main_async(args):
     if unknown:
         raise SystemExit(f"未知のlens: {', '.join(unknown)} / 選択肢: {', '.join(LENSES)}")
 
-    external = args.backend != "ollama"   # codex/openrouter/both/all は本文が外へ出る
+    # codex/openrouter/both/all と、OLLAMA_BASE が他ホストの ollama は本文が外へ出る
+    external = args.backend != "ollama" or not is_loopback_url(llm.OLLAMA_BASE)
     files = []
     content, source = collect_content(args.target, args.diff, args.max_chars, external=external,
                                       files_out=files)
