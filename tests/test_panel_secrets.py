@@ -69,6 +69,39 @@ def test_ollama_only_does_not_scan(tmp_path):
     assert TOKEN in body
 
 
+@pytest.mark.parametrize("base,local", [
+    ("http://localhost:11434", True), ("http://127.0.0.1:11434", True), ("http://[::1]:11434", True),
+    ("http://10.0.0.5:11434", False), ("https://ollama.example.com", False), ("not a url", False)])
+def test_ollama_base_loopback(base, local):
+    assert panel.is_loopback_url(base) is local
+
+
+def test_remote_ollama_is_scanned(tmp_path, monkeypatch):
+    f = _file(tmp_path, "app.py", "token = '%s'\n" % TOKEN)
+    sent = []
+
+    async def alive():
+        return True
+
+    async def models():
+        return []
+
+    async def fake_ollama(cfg, mapping, content, source, instruction):
+        sent.append(content)
+        return [{"lens": "correctness", "backend": "ollama", "model": "m", "seconds": 0,
+                 "output": "ok", "error": None}]
+    monkeypatch.setattr(panel.llm, "load_config", lambda: {})
+    monkeypatch.setattr(panel.llm, "is_alive", alive)
+    monkeypatch.setattr(panel.llm, "list_models", models)
+    monkeypatch.setattr(panel, "run_ollama_all", fake_ollama)
+    assert asyncio.run(panel.main_async(_args(backend="ollama", target=[f]))) == 0   # ローカルは従来どおり検査しない
+    assert TOKEN in sent.pop()
+    monkeypatch.setattr(panel.llm, "OLLAMA_BASE", "http://10.0.0.5:11434")
+    with pytest.raises(SystemExit) as e:
+        asyncio.run(panel.main_async(_args(backend="ollama", target=[f])))
+    assert TOKEN not in str(e.value) and not sent
+
+
 def test_generic_only_passes(tmp_path):
     f = _file(tmp_path, "app.py", GENERIC + "\n")
     body, _ = panel.collect_content([f], None, 10000, external=True)
