@@ -19,6 +19,7 @@ VRAM 16GB(RX 9070 XT)前提のスケジューリング:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import asyncio
 import ctypes
 import json
@@ -30,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+import httpx
 
 import llm
 
@@ -131,9 +134,205 @@ def _next_pow2(n):
 
 # ---------------------------------------------------------------- 入力の収集
 
-def collect_content(targets, diff_repo, max_chars):
-    """レビュー対象のテキストを組み立てる。戻り値: (本文, 由来ラベル)"""
-    parts, labels = [], []
+# 秘密情報を含みうるファイル名。外部 backend(codex/openrouter。both/all を含む)は対象を
+# **外部へ送信する**ため、名前で機械的に弾く。Claude Code 側の permissions.deny は別プロセスの
+# このCLIには及ばないので、プロンプト指示ではなくコードで止める。
+# PANEL_ALLOW_SECRETS=1 で解除できるのは**このファイル名フィルタだけ**。中身の検査(secretscan)
+# は解除できない。ollama だけの実行(ローカル完結)はファイル名フィルタも内容検査もしない。
+SECRET_PATTERNS = [
+    ".env", ".env.*", "*.env", "*.key", "*.pem", "*.p12", "*.pfx", "*.jks",
+    "id_rsa*", "id_ed25519*", "id_ecdsa*", ".credentials.json", ".netrc",
+    ".npmrc", ".pypirc", "*secret*", "*credential*", "*.keystore",
+]
+
+# 秘密検知の正本(~/.claude/scripts/secretscan.py)。sys.path は汚さずファイルから直接読む。
+SECRETSCAN_PATH = os.path.join(os.path.expanduser("~"), ".claude", "scripts", "secretscan.py")
+_secretscan_mod = None
+
+
+def load_secretscan():
+    """secretscan を読み込む。失敗したら None(呼び出し側は外部送信を止める)。"""
+    global _secretscan_mod
+    if _secretscan_mod is None:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_panel_secretscan", SECRETSCAN_PATH)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if not callable(getattr(mod, "find", None)):
+                return None
+            _secretscan_mod = mod
+        except Exception:   # 不在・構文エラー・権限など、理由を問わず読めなければ送らない
+            return None
+    return _secretscan_mod
+
+
+def check_outbound(items):
+    """外部送信する本文を secretscan.find に通す。items: [(ラベル, テキスト)]。
+
+    high があれば**値を出さず**ファイル:行:種別だけを表示して SystemExit(exit 1)。
+    secretscan を読めないときも送らない。内容検査を解除する手段は設けない。
+    """
+    ss = load_secretscan()
+    if ss is None:
+        raise SystemExit("[panel] secretscan を読み込めないため外部送信しません"
+                         f"({SECRETSCAN_PATH})。ローカル完結なら --backend ollama (local-reviewer)。")
+    found = []
+    for label, text in items:
+        if not text:
+            continue
+        try:
+            hits = ss.find(text)
+        except Exception as e:   # 検査が壊れたら送らない(fail-closed)
+            raise SystemExit(f"[panel] secretscan の実行に失敗したため外部送信しません: {type(e).__name__}")
+        found += [(label, h) for h in hits if h.severity == "high"]
+    if found:
+        lines = [f"  {label}:{h.line}:{h.kind}" for label, h in found[:20]]
+        more = f"\n  ... ほか {len(found) - 20} 件" if len(found) > 20 else ""
+        raise SystemExit("[panel] 秘密情報の疑い(high)があるため外部送信を中止しました。値は表示しません。\n"
+                         + "\n".join(lines) + more + "\n"
+                         "ローカル完結で回すなら local-reviewer (--backend ollama)。"
+                         "PANEL_ALLOW_SECRETS=1 でもこの内容検査は外れません。")
+
+
+def is_secret_path(path, external=True):
+    """ファイル名だけで秘密情報らしさを判定する(中身は見ない)。
+
+    external=False(ollama のみ)は常に False。PANEL_ALLOW_SECRETS=1 でも False。
+    """
+    if not external or os.environ.get("PANEL_ALLOW_SECRETS") == "1":
+        return False
+    name = os.path.basename(str(path).replace("\\", "/").rstrip("/")).lower()
+    return any(fnmatch.fnmatch(name, pat) for pat in SECRET_PATTERNS)
+
+
+_GIT_ESC = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
+
+
+def unquote_git_path(p):
+    r"""git の C 形式引用パス("a\tb"、日本語は \ooo の8進 UTF-8 バイト列)を復号する。引用なしはそのまま。"""
+    p = p.rstrip("\t\r")
+    if len(p) < 2 or p[0] != '"' or p[-1] != '"':
+        return p
+    s, out, i = p[1:-1], bytearray(), 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            m = re.match(r"[0-7]{1,3}", s[i + 1:])
+            if m:
+                out.append(int(m.group(), 8) & 0xFF)
+                i += 1 + len(m.group())
+                continue
+            if s[i + 1] in _GIT_ESC:
+                out.append(_GIT_ESC[s[i + 1]])
+                i += 2
+                continue
+        out += c.encode("utf-8")
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _strip_ab(p):
+    return p[2:] if p[:2] in ("a/", "b/") else p
+
+
+def _split_quoted_token(s):
+    """先頭の引用トークンを (トークン, 残り) に分ける。引用で始まらなければ None。"""
+    if not s.startswith('"'):
+        return None
+    i = 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == '"':
+            return s[:i + 1], s[i + 1:].lstrip(" ")
+        i += 1
+    return s, ""
+
+
+def diff_section_paths(sec):
+    """diff の1セクションが指しうるパスの候補(a/b 側・rename/copy・---/+++)を返す。
+
+    空白入りの無引用パスと、引用符付き(日本語は8進エスケープ)パスの両方に対応する。
+    無引用で a/b が一致しない(空白入りの rename)場合は " b/" の位置ごとの分割をすべて候補にする。
+    """
+    lines = sec.splitlines()
+    cands = []
+    head = lines[0] if lines else ""
+    if head.startswith("diff --git "):
+        rest = head[len("diff --git "):]
+        first = _split_quoted_token(rest)
+        if first:
+            cands.append(unquote_git_path(first[0]))
+            second = _split_quoted_token(first[1])
+            cands.append(unquote_git_path(second[0] if second else first[1]))
+        else:
+            n = len(rest) - 5
+            if n > 0 and n % 2 == 0 and rest[:2] == "a/" and rest[2:2 + n // 2] == rest[n // 2 + 5:]:
+                cands.append(rest[2:2 + n // 2])
+            else:
+                for m in re.finditer(r' (?=b/|")', rest):
+                    cands += [unquote_git_path(rest[:m.start()]), unquote_git_path(rest[m.start() + 1:])]
+                if not cands:
+                    cands.append(rest)
+    for ln in lines[1:40]:
+        if ln.startswith("@@"):
+            break
+        for pre in ("--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to "):
+            if ln.startswith(pre):
+                cands.append(unquote_git_path(ln[len(pre):]))
+    return [c for c in (_strip_ab(c) for c in cands) if c and c != "/dev/null"]
+
+
+def strip_secret_diff_sections(diff_text, external=True):
+    """git diff から秘密情報ファイルのセクションを丸ごと落とす。戻り値: (本文, 落としたパス)。"""
+    sections = re.split(r"(?m)^(?=diff --git )", diff_text)
+    kept, dropped = [], []
+    for sec in sections:
+        paths = diff_section_paths(sec) if sec.startswith("diff --git ") else []
+        hit = next((p for p in paths if is_secret_path(p, external)), None)
+        if hit is not None:
+            dropped.append(hit)
+            continue
+        kept.append(sec)
+    return "".join(kept), dropped
+
+
+def make_codex_cwd(root, targets, diff_repo):
+    """Codex の cwd を、対象ファイルだけを複写した一時ディレクトリにする(リポジトリ全体を読ませない)。
+
+    --diff のときは diff 本文をプロンプトに載せるので空ディレクトリ。同名ファイルは連番の下位ディレクトリへ。
+    """
+    cwd = os.path.join(root, "cwd")
+    os.makedirs(cwd, exist_ok=True)
+    if diff_repo:
+        return cwd
+    for i, t in enumerate(x for x in targets if x != "-"):
+        dest = os.path.join(cwd, os.path.basename(t))
+        if os.path.exists(dest):
+            os.makedirs(os.path.join(cwd, f"t{i}"), exist_ok=True)
+            dest = os.path.join(cwd, f"t{i}", os.path.basename(t))
+        try:
+            shutil.copyfile(t, dest)
+        except OSError:
+            pass
+    return cwd
+
+
+def _diff_item_label(sec):
+    paths = diff_section_paths(sec)
+    return "diff:" + (paths[-1] if paths else "?")
+
+
+def collect_content(targets, diff_repo, max_chars, external=True):
+    """レビュー対象のテキストを組み立てる。戻り値: (本文, 由来ラベル)
+
+    external=True(codex/openrouter を含む実行)のときだけ、ファイル名フィルタと
+    secretscan による内容検査(high なら SystemExit)を行う。ollama のみは検査しない。
+    """
+    parts, labels, scan_items = [], [], []
+    diff_all_excluded = None
 
     if diff_repo:
         proc = subprocess.run(["git", "-C", diff_repo, "diff", "HEAD"],
@@ -143,8 +342,17 @@ def collect_content(targets, diff_repo, max_chars):
             raise SystemExit(f"git diff に失敗: {proc.stderr.strip()[:300]}")
         if not proc.stdout.strip():
             raise SystemExit(f"{diff_repo} に未コミットの差分がありません。")
-        parts.append(f"--- git diff HEAD ({diff_repo}) ---\n{proc.stdout}")
-        labels.append(f"diff:{os.path.basename(os.path.abspath(diff_repo))}")
+        diff_text, dropped = strip_secret_diff_sections(proc.stdout, external)
+        if dropped:
+            print(f"[panel] 秘密情報の疑いで除外: {', '.join(dropped)}", file=sys.stderr)
+        if not diff_text.strip():
+            # 即終了せず、未追跡ファイル・明示指定ファイルを集めた後で空かどうかを判定する
+            diff_all_excluded = diff_repo
+        else:
+            parts.append(f"--- git diff HEAD ({diff_repo}) ---\n{diff_text}")
+            labels.append(f"diff:{os.path.basename(os.path.abspath(diff_repo))}")
+            scan_items += [(_diff_item_label(sec), sec)
+                           for sec in re.split(r"(?m)^(?=diff --git )", diff_text)]
 
         # git diff HEAD には未追跡(git add前)の新規ファイルが乗らないため、
         # 別途 ls-files で拾って本文に加える(1ファイルあたり4000字上限)
@@ -152,6 +360,7 @@ def collect_content(targets, diff_repo, max_chars):
             ["git", "-C", diff_repo, "ls-files", "--others", "--exclude-standard"],
             capture_output=True, text=True, encoding="utf-8", errors="replace")
         new_files = [p.strip() for p in (untracked.stdout or "").splitlines() if p.strip()]
+        new_files = [r for r in new_files if not is_secret_path(r, external)]
         for rel in new_files:
             try:
                 with open(os.path.join(diff_repo, rel), "r", encoding="utf-8", errors="replace") as f:
@@ -159,6 +368,7 @@ def collect_content(targets, diff_repo, max_chars):
             except OSError:
                 continue
             parts.append(f"--- new file: {rel} ---\n{text}")
+            scan_items.append((rel, text))
         if new_files:
             labels.append(f"new:{len(new_files)}件")
 
@@ -166,16 +376,28 @@ def collect_content(targets, diff_repo, max_chars):
         if t == "-":
             text = sys.stdin.read()
             parts.append(f"--- stdin ---\n{text}")
+            scan_items.append(("stdin", text))
             labels.append("stdin")
             continue
         if os.path.isdir(t):
             raise SystemExit(f"ディレクトリは対象にできません(ファイルを指定): {t}")
+        if is_secret_path(t, external):
+            raise SystemExit(f"秘密情報を含みうるファイルは対象にできません: {t}\n"
+                             "意図的に渡す場合のみ PANEL_ALLOW_SECRETS=1 を設定する"
+                             "(ファイル名フィルタだけが外れる。内容検査は外れない)。")
         with open(t, "r", encoding="utf-8", errors="replace") as f:
-            parts.append(f"--- {t} ---\n{f.read()}")
+            text = f.read()
+        parts.append(f"--- {t} ---\n{text}")
+        scan_items.append((t, text))
         labels.append(os.path.basename(t))
 
     if not parts:
+        if diff_all_excluded:
+            raise SystemExit(f"{diff_all_excluded} の差分は全て除外対象でした(秘密情報の疑い)。")
         raise SystemExit("--target か --diff のどちらかを指定してください。")
+
+    if external:   # 切り詰める前の全文を検査する(省略部に残った秘密も送出側の事故として止める)
+        check_outbound(scan_items)
 
     body = "\n\n".join(parts)
     if len(body) > max_chars:
@@ -632,6 +854,104 @@ async def run_codex_all(lens_names, content, source, instruction, cwd):
     ]))
 
 
+# ---------------------------------------------------------------- OpenRouter
+
+OPENROUTER_BASE = os.environ.get("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
+OPENROUTER_TIMEOUT = float(os.environ.get("PANEL_OPENROUTER_TIMEOUT", "180"))
+
+# lens -> OpenRouterモデル。2026-09-04に9モデルへ同一のレビューを投げて選定した
+# (欠陥6件を仕込んだ subject.py + 誤検出の罠1件。$/Mtok in/out)。
+#
+#   model                        検出  罠   時間   実費      判定
+#   openai/gpt-oss-120b   .037/.170  6/6  回避   37秒  $0.0008  既定。sol と同点で30倍安い
+#   openai/gpt-5.6-sol   2.000/10.0  6/6  回避   27秒  $0.0243  唯一「SELECT に ORDER BY が無く
+#                                                              順序が保証されない」まで指摘。design用
+#   z-ai/glm-5.3-flash    .075/.250  6/6  回避  327秒  $0.0031  質は良いが遅すぎる(既定から降格)
+#   deepseek-v4-flash     .089/.177  6/6  踏む   46秒  $0.0014  ast.literal_eval を「安全でない
+#                                                              デシリアライズ」と誤検出(降格)
+#   google/gemini-2.5-flash .30/2.50  5/6  踏む   10秒  $0.0041  最速だが取りこぼし+誤検出2件
+#   qwen/*                                          —  上流429で頻繁に失敗。既定に使わない
+#
+# 注意: 測定は1ファイル・Python・n=1。言語や規模が変われば順位は動きうる。
+# 環境変数 PANEL_OPENROUTER_MODEL か --or-model で全lensを上書きできる。
+OPENROUTER_MODELS = {
+    "correctness": "openai/gpt-oss-120b",
+    "security":    "openai/gpt-oss-120b",
+    "perf":        "openai/gpt-oss-120b",
+    "design":      "openai/gpt-5.6-sol",
+    "simplify":    "openai/gpt-oss-120b",
+}
+OPENROUTER_DEFAULT = "openai/gpt-oss-120b"
+
+
+def openrouter_key():
+    """APIキーを 環境変数 -> ccm の secrets ファイル の順に探す。無ければ None。
+
+    ccm(~/.claude/model-profiles.json)と同じ置き場を共有するので、
+    キーの管理場所が二重化しない。
+    """
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if key:
+        return key
+    path = os.path.join(os.path.expanduser("~"), ".claude", "model-profiles.secrets.json")
+    try:
+        # utf-8-sig: PowerShell の Set-Content/Out-File が既定でBOMを付けるため、
+        # BOM付きJSONを無言で「キー未設定」と誤判定しないようにする。
+        with open(path, encoding="utf-8-sig") as f:
+            return ((json.load(f) or {}).get("openrouter") or "").strip() or None
+    except (OSError, ValueError):
+        return None
+
+
+async def run_openrouter_lens(lens_name, content, source, instruction, model, key):
+    started = time.monotonic()
+
+    def result(text, error, cost=None):
+        return {"lens": lens_name, "backend": "openrouter", "model": model,
+                "seconds": round(time.monotonic() - started, 1),
+                "output": text or "(空応答)", "error": error, "cost_usd": cost}
+
+    prompt = build_prompt(lens_name, LENSES[lens_name]["focus"], content, source, instruction)
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT},
+                     {"role": "user", "content": prompt}],
+        "usage": {"include": True},   # 実費を応答に含めさせる(見えない従量課金を作らない)
+    }
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        async with httpx.AsyncClient(timeout=OPENROUTER_TIMEOUT) as client:
+            r = await client.post(f"{OPENROUTER_BASE}/chat/completions", json=payload,
+                                  headers=headers)
+            # usage.include はOpenRouter側の仕様変更で弾かれうる。400なら実費表示を諦めて1回だけ再試行する
+            # (実費が見えないことより、レビューが走らないことのほうが痛い)。
+            if r.status_code == 400 and "usage" in payload:
+                payload.pop("usage")
+                r = await client.post(f"{OPENROUTER_BASE}/chat/completions", json=payload,
+                                      headers=headers)
+        if r.status_code != 200:
+            return result("", f"HTTP {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return result("", f"choicesが空: {json.dumps(data, ensure_ascii=False)[:300]}")
+        text = strip_think((choices[0].get("message", {}).get("content") or "").strip())
+        cost = (data.get("usage") or {}).get("cost")
+        return result(text, None if text else "空応答", cost)
+    except Exception as e:   # 1lensの失敗で全体を落とさない
+        return result("", f"{type(e).__name__}: {e}")
+
+
+async def run_openrouter_all(lens_names, content, source, instruction, override, key):
+    """VRAM制約が無いので全lensを並列に投げる(Ollama側と違い直列化しない)。"""
+    return list(await asyncio.gather(*[
+        run_openrouter_lens(n, content, source, instruction,
+                            override or OPENROUTER_MODELS.get(n, OPENROUTER_DEFAULT), key)
+        for n in lens_names
+    ]))
+
+
 # ---------------------------------------------------------------- スケジューリング
 
 def resolve_models(cfg, lens_names, installed, override):
@@ -677,9 +997,12 @@ def render_markdown(results, source, elapsed):
             f"対象: {source} / レビュアー {len(results)}体 / 合計 {elapsed:.0f}秒\n")
     body = []
     for r in sorted(results, key=lambda x: x["lens"]):
-        title = f"\n## [{r['lens']}] {r['backend']}:{r['model']} ({r['seconds']}秒)\n"
+        cost = f" ${r['cost_usd']:.4f}" if r.get("cost_usd") else ""
+        title = f"\n## [{r['lens']}] {r['backend']}:{r['model']} ({r['seconds']}秒{cost})\n"
         body.append(title + (f"\n**失敗**: {r['error']}\n" if r["error"] else f"\n{r['output']}\n"))
-    tail = f"\n---\n成功 {len(ok)} / 失敗 {len(ng)}\n"
+    spent = sum(r.get("cost_usd") or 0 for r in results)
+    tail = (f"\n---\n成功 {len(ok)} / 失敗 {len(ng)}"
+            + (f" / 実費 ${spent:.4f}" if spent else "") + "\n")
     return head + "".join(body) + tail
 
 
@@ -700,9 +1023,12 @@ async def cmd_check(cfg):
         print(f"codex CLI: {' '.join(argv[:3])}")
         auth = os.path.join(os.path.expanduser("~"), ".codex", "auth.json")
         print(f"  ログイン: {'済' if os.path.exists(auth) else '未 (codex login が必要)'}")
+    key = openrouter_key()
+    print(f"OpenRouter: {'キーあり' if key else '未設定 (OPENROUTER_API_KEY か ~/.claude/model-profiles.secrets.json)'}")
+
     print("\nlens:")
     for name, spec in LENSES.items():
-        print(f"  {name:12s} -> {spec['model']}")
+        print(f"  {name:12s} -> ollama:{spec['model']:9s} openrouter:{OPENROUTER_MODELS.get(name, OPENROUTER_DEFAULT)}")
     print("preset: " + ", ".join(f"{k}({len(v)})" for k, v in PRESETS.items()))
     return 0 if alive else 1
 
@@ -721,23 +1047,53 @@ async def main_async(args):
     if unknown:
         raise SystemExit(f"未知のlens: {', '.join(unknown)} / 選択肢: {', '.join(LENSES)}")
 
-    content, source = collect_content(args.target, args.diff, args.max_chars)
+    external = args.backend != "ollama"   # codex/openrouter/both/all は本文が外へ出る
+    content, source = collect_content(args.target, args.diff, args.max_chars, external=external)
+    if external:
+        check_outbound([("--instruction", args.instruction), ("source", source)])
     started = time.monotonic()
     tasks = []
 
-    if args.backend in ("ollama", "both"):
-        if not await llm.is_alive():
-            raise SystemExit(f"Ollamaに接続できません({llm.OLLAMA_BASE})。`ollama serve` を確認。")
-        installed = set(await llm.list_models())
-        mapping = resolve_models(cfg, lens_names, installed, args.model)
-        tasks.append(run_ollama_all(cfg, mapping, content, source, args.instruction))
+    # 複数バックエンド指定時は、1つが不通でも他を諦めない(lens単位の失敗を握りつぶして
+    # 部分成功を許す設計に合わせる)。単一指定のときだけ従来どおり即エラーにする。
+    multi = args.backend in ("both", "all")
 
-    if args.backend in ("codex", "both"):
-        cwd = args.diff or (os.path.dirname(os.path.abspath(args.target[0]))
-                            if args.target and args.target[0] != "-" else os.getcwd())
+    def unavailable(reason):
+        if not multi:
+            raise SystemExit(reason)
+        print(f"[panel] スキップ: {reason}", file=sys.stderr)
+
+    if args.backend in ("ollama", "both", "all"):
+        if not await llm.is_alive():
+            unavailable(f"Ollamaに接続できません({llm.OLLAMA_BASE})。`ollama serve` を確認。")
+        else:
+            installed = set(await llm.list_models())
+            mapping = resolve_models(cfg, lens_names, installed, args.model)
+            tasks.append(run_ollama_all(cfg, mapping, content, source, args.instruction))
+
+    codex_root = None
+    if args.backend in ("codex", "both", "all"):
+        # Codex の cwd は対象だけを複写した一時ディレクトリ(終了後に削除)。リポジトリ全体は読ませない
+        codex_root = tempfile.mkdtemp(prefix="panel-cwd-")
+        cwd = make_codex_cwd(codex_root, args.target, args.diff)
         tasks.append(run_codex_all(lens_names, content, source, args.instruction, cwd))
 
-    gathered = await asyncio.gather(*tasks)
+    if args.backend in ("openrouter", "all"):
+        key = openrouter_key()
+        if not key:
+            unavailable("OpenRouterのAPIキーが無い。環境変数 OPENROUTER_API_KEY か "
+                        '~/.claude/model-profiles.secrets.json の "openrouter" に設定する。')
+        else:
+            tasks.append(run_openrouter_all(lens_names, content, source, args.instruction,
+                                            args.or_model, key))
+
+    if not tasks:
+        raise SystemExit("実行できるバックエンドがありません(すべて不通・未設定)。")
+    try:
+        gathered = await asyncio.gather(*tasks)
+    finally:
+        if codex_root:
+            shutil.rmtree(codex_root, ignore_errors=True)
     results = [r for group in gathered for r in group]
     elapsed = time.monotonic() - started
 
@@ -762,7 +1118,12 @@ def main():
     p.add_argument("--lens", help=f"観点をカンマ区切りで指定: {', '.join(LENSES)}")
     p.add_argument("--preset", default="default", choices=list(PRESETS),
                    help="lens未指定時のプリセット(既定: default)")
-    p.add_argument("--backend", default="ollama", choices=["ollama", "codex", "both"])
+    p.add_argument("--backend", default="ollama",
+                   choices=["ollama", "codex", "openrouter", "both", "all"],
+                   help="both=ollama+codex(従来互換) / all=3つ全部")
+    p.add_argument("--or-model", dest="or_model",
+                   default=os.environ.get("PANEL_OPENROUTER_MODEL"),
+                   help="OpenRouterの全lensをこのモデルIDで上書き(例: z-ai/glm-5.3-flash)")
     p.add_argument("--model", help="全lensのモデルをこのmodels.yamlキーで上書き")
     p.add_argument("--instruction", help="全レビュアーへの追加指示")
     p.add_argument("--max-chars", type=int, default=60000, help="対象本文の最大文字数")
