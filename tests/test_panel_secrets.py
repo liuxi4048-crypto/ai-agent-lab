@@ -166,9 +166,9 @@ def test_make_codex_cwd_copies_only_targets(tmp_path):
     _file(tmp_path, "neighbor.py", "N")
     root = tmp_path / "root"
     root.mkdir()
-    cwd = panel.make_codex_cwd(str(root), [a], None)
+    cwd = panel.make_codex_cwd(str(root), [(a, "A")], None)
     assert sorted(os.listdir(cwd)) == ["a.py"]
-    empty = panel.make_codex_cwd(str(tmp_path / "root2"), [a], str(tmp_path))
+    empty = panel.make_codex_cwd(str(tmp_path / "root2"), [(a, "A")], str(tmp_path))
     assert os.listdir(empty) == []
 
 
@@ -190,6 +190,27 @@ def test_codex_runs_in_temp_cwd_and_cleans_up(tmp_path, monkeypatch):
     assert seen["files"] == ["app.py"]                     # 隣の other.py は見えない
     assert Path(seen["cwd"]).resolve() != sub.resolve()
     assert not os.path.exists(seen["cwd"])                 # 終了後に削除されている
+
+
+def test_codex_cwd_gets_scanned_text_not_reread(tmp_path, monkeypatch):
+    f = _file(tmp_path, "app.py", "x = 1\n")
+    seen = {}
+    real_collect = panel.collect_content
+
+    def collect_then_swap(*a, **kw):
+        out = real_collect(*a, **kw)
+        Path(f).write_text(f"t = '{TOKEN}'\n", encoding="utf-8")   # 検査の直後に差し替える
+        return out
+
+    async def fake_codex(lens_names, content, source, instruction, cwd):
+        seen["text"] = (Path(cwd) / "app.py").read_text(encoding="utf-8")
+        return [{"lens": "correctness", "backend": "codex", "model": "m", "seconds": 0,
+                 "output": "ok", "error": None}]
+    monkeypatch.setattr(panel, "collect_content", collect_then_swap)
+    monkeypatch.setattr(panel, "run_codex_all", fake_codex)
+    monkeypatch.setattr(panel.llm, "load_config", lambda: {})
+    assert asyncio.run(panel.main_async(_args(backend="codex", target=[f]))) == 0
+    assert seen["text"] == "x = 1\n"                        # 検査した内容だけが渡る
 
 
 # ---------------------------------------------------------------- diff のパス解釈

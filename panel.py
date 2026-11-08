@@ -299,24 +299,23 @@ def strip_secret_diff_sections(diff_text, external=True):
     return "".join(kept), dropped
 
 
-def make_codex_cwd(root, targets, diff_repo):
-    """Codex の cwd を、対象ファイルだけを複写した一時ディレクトリにする(リポジトリ全体を読ませない)。
+def make_codex_cwd(root, files, diff_repo):
+    """Codex の cwd を、対象ファイルだけを置いた一時ディレクトリにする(リポジトリ全体を読ませない)。
 
+    files は collect_content が検査した (パス, 本文) の組。元ファイルは読み直さない(検査後の差し替えを渡さない)。
     --diff のときは diff 本文をプロンプトに載せるので空ディレクトリ。同名ファイルは連番の下位ディレクトリへ。
     """
     cwd = os.path.join(root, "cwd")
     os.makedirs(cwd, exist_ok=True)
     if diff_repo:
         return cwd
-    for i, t in enumerate(x for x in targets if x != "-"):
+    for i, (t, text) in enumerate(files):
         dest = os.path.join(cwd, os.path.basename(t))
         if os.path.exists(dest):
             os.makedirs(os.path.join(cwd, f"t{i}"), exist_ok=True)
             dest = os.path.join(cwd, f"t{i}", os.path.basename(t))
-        try:
-            shutil.copyfile(t, dest)
-        except OSError:
-            pass
+        with open(dest, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
     return cwd
 
 
@@ -325,8 +324,10 @@ def _diff_item_label(sec):
     return "diff:" + (paths[-1] if paths else "?")
 
 
-def collect_content(targets, diff_repo, max_chars, external=True):
+def collect_content(targets, diff_repo, max_chars, external=True, files_out=None):
     """レビュー対象のテキストを組み立てる。戻り値: (本文, 由来ラベル)
+
+    files_out にリストを渡すと、読んだ対象ファイルの (パス, 本文) を追加する(make_codex_cwd 用)。
 
     external=True(codex/openrouter を含む実行)のときだけ、ファイル名フィルタと
     secretscan による内容検査(high なら SystemExit)を行う。ollama のみは検査しない。
@@ -389,6 +390,8 @@ def collect_content(targets, diff_repo, max_chars, external=True):
             text = f.read()
         parts.append(f"--- {t} ---\n{text}")
         scan_items.append((t, text))
+        if files_out is not None:
+            files_out.append((t, text))
         labels.append(os.path.basename(t))
 
     if not parts:
@@ -1048,7 +1051,9 @@ async def main_async(args):
         raise SystemExit(f"未知のlens: {', '.join(unknown)} / 選択肢: {', '.join(LENSES)}")
 
     external = args.backend != "ollama"   # codex/openrouter/both/all は本文が外へ出る
-    content, source = collect_content(args.target, args.diff, args.max_chars, external=external)
+    files = []
+    content, source = collect_content(args.target, args.diff, args.max_chars, external=external,
+                                      files_out=files)
     if external:
         check_outbound([("--instruction", args.instruction), ("source", source)])
     started = time.monotonic()
@@ -1075,7 +1080,11 @@ async def main_async(args):
     if args.backend in ("codex", "both", "all"):
         # Codex の cwd は対象だけを複写した一時ディレクトリ(終了後に削除)。リポジトリ全体は読ませない
         codex_root = tempfile.mkdtemp(prefix="panel-cwd-")
-        cwd = make_codex_cwd(codex_root, args.target, args.diff)
+        try:
+            cwd = make_codex_cwd(codex_root, files, args.diff)
+        except BaseException:
+            shutil.rmtree(codex_root, ignore_errors=True)
+            raise
         tasks.append(run_codex_all(lens_names, content, source, args.instruction, cwd))
 
     if args.backend in ("openrouter", "all"):
