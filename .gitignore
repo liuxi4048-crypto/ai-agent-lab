@@ -20,3 +20,5 @@ frontend/node_modules/
 # ローカル秘密・実行時データ（コミットしない）
 api_settings.json
 answer_cache.json
+
+music_out/
