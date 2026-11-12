@@ -280,6 +280,20 @@ models:
     for: "Google新世代・マルチモーダル。VRAM全載りで高速"
     use: "MoE 25.2B/活性≈4B(gemma4) / tools・thinking・vision対応 / 94%GPU・59.5tok/s実測(2026-08-23) /
       ツールコール中断バグはdense31B版の報告でありMoE版では未再現(smoke OK) / 系統多様化(Google)"
+  gemma12:
+    tag: "gemma4:12b"        # dense 11.9B Q4_K_M・8.0GB。要Ollama>=0.30.9
+    family: gemma4
+    tier: probation          # 2026-11-12登録・未ベンチ
+    placement: vram          # 実測 100%GPU・50.9tok/s(ロード後, num_ctx 16384, 2026-11-12)
+    tools: true              # Capabilities: tools/thinking/vision/audio。tool-call疎通OK(実測)
+    mtp: false
+    num_ctx: 16384           # ネイティブ262K
+    think: "low"             # gemma と同じく既定ONの長考を抑える
+    options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}
+    strengths: [tool, chat]
+    for: "Gemma4 dense 12B。省VRAMで速い普段づかい"
+    use: "dense 11.9B(gemma4) / tools・thinking・vision対応 / 100%GPU・50.9tok/s実測(2026-11-12) /
+      26B MoE版(gemma)より軽く、VRAMに余裕を残したいとき向け"
   granite:
     tag: "granite4.1:8b-q8_0"   # 8B級はQ8でも軽い。tool-caller/ルーター役として品質優先でQ8採用
     family: granite
