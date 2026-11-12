@@ -91,7 +91,7 @@ def test_preload_keeps_explicit_zero_keep_alive(client, monkeypatch):
     monkeypatch.setattr(llm_gateway.httpx, "AsyncClient",
                         lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     assert client.post("/api/generate", json={"model": "fast", "keep_alive": 0}).status_code == 200
-    assert sent == {"model": "gemma3:12b", "keep_alive": 0}
+    assert sent == {"model": "gemma3:12b", "options": {"num_ctx": 16384}, "keep_alive": 0}
 
 
 def test_token_required_when_set(client, monkeypatch):

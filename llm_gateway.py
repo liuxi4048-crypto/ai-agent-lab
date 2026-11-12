@@ -88,8 +88,12 @@ async def generate(request: Request):
         # Ollama と同じく、プロンプト無しはモデルの読み込みだけ（事前ウォームアップ用）
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=llm.CONNECT_TIMEOUT)) as c:
+                # 本番の llm.chat と同じ num_ctx／num_gpu で読み込む（違うと次の依頼で読み込み直しになる）
+                opts = {"num_ctx": info["num_ctx"]}
+                if info.get("num_gpu") is not None:
+                    opts["num_gpu"] = info["num_gpu"]
                 r = await c.post(f"{llm.OLLAMA_BASE}/api/generate", json={
-                    "model": info["tag"],
+                    "model": info["tag"], "options": opts,
                     "keep_alive": info["keep_alive"] if body.get("keep_alive") is None else body["keep_alive"]})
             r.raise_for_status()
         except httpx.HTTPError as e:
