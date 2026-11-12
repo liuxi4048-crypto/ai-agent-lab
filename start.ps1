@@ -125,6 +125,22 @@ try {
     Write-Log "[warn] /health の取得に失敗: $_"
 }
 
+# --- 3.5 LLM窓口(外部連携) ---------------------------------------------------
+# 連携が1件以上あり自動起動がオンなら、サーバ経由で llm_gateway.py を起動する(冪等)
+$LabDir = if ($env:LAB_DATA_DIR) { $env:LAB_DATA_DIR } else { Join-Path $Root '.lab' }
+$ConnPath = Join-Path $LabDir 'connections.json'
+if (Test-Path $ConnPath) {
+    try {
+        $conn = Get-Content $ConnPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (@($conn.connections).Count -gt 0 -and $conn.gateway.autostart) {
+            $gw = Invoke-RestMethod -Method Post -Uri "$Url/gateway/start" -TimeoutSec 15
+            Write-Log ("[ok] LLM窓口: {0}:{1} running={2}" -f $gw.host, $gw.port, $gw.running)
+        }
+    } catch {
+        Write-Log "[warn] LLM窓口の起動に失敗: $_"
+    }
+}
+
 # --- 4. ブラウザ -----------------------------------------------------------
 if ($NoBrowser) {
     Write-Log "[skip] ブラウザは開きません ($Url)"

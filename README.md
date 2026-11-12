@@ -209,6 +209,17 @@ LLM自体の速度と成果物の質を2軸で測る**。結果は通常のRun�
   `POST /insight/explain {source: run|claude, id, model}` `GET /insight/glossary`
 - 取り込んだ cc-session-lab の更新は `python -I insight/sync_cclab.py`(取り込み元は環境変数 `CCLAB_SRC`)。
 
+## 外部連携（他のアプリから使う）
+
+別のアプリ（別PCのデモ等）から、このPCのローカルLLMを `models.yaml` の最適化込みで呼べます。`llm_gateway.py` が Ollama 互換の `GET /api/tags` と `POST /api/generate`（stream=false）だけを受けます。使えるのは Ollama バックエンドのモデルだけです。
+
+- ダッシュボード左の「外部連携」（プラグのアイコン）で **連携を追加**（名前とモデルを選ぶ）→ **接続コード** が出ます。接続済みの連携は一覧の [接続コードをコピー] でいつでも取り出せます。
+- 接続コード: `aal://<ホスト>:<ポート>?model=<モデル>&key=<合言葉>`。相手側では `npm run demo:ai -- --connect <接続コード>`。
+- LLM窓口は同じ画面の [起動]/[停止]。「起動時に自動で開始」がオンなら、連携が1件以上あるとき `start.ps1` が自動で起動します（`stop.ps1` で停止）。ログは `gateway.log`。
+- 待ち受け先は、保存した値 → このPCの Tailscale IP（`tailscale ip -4`）→ `127.0.0.1` の順。ポートは既定 8766。
+- 合言葉は連携ごとに別で、[合言葉を再発行] すると古いコードは使えなくなります。環境変数 `GATEWAY_TOKEN` の合言葉も従来どおり使えます。保存先は `.lab/connections.json`（git管理外・`LAB_DATA_DIR` で変更可）。合言葉はここにだけ置かれます。
+- ファイアウォール: TCP 8766 は Tailscale のアドレス帯 `100.64.0.0/10` からだけ許可してください（それ以外へは開けない）。
+
 ## 起動
 
 **ワンボタン**: デスクトップの「🧪 AI Agent Lab」ショートカットをダブルクリック。

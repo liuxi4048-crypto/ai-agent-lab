@@ -16,3 +16,5 @@ build/
 .venv/
 frontend/node_modules/
 .env
+.lab/
+gateway.log

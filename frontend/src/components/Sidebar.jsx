@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Sparkles, Trash2, X, Gauge, Microscope } from "lucide-react";
+import { Plus, Search, Sparkles, Trash2, X, Gauge, Microscope, Plug } from "lucide-react";
 import { RUN_STATUS, fmtAgo } from "../derive.js";
 
 /**
@@ -12,7 +12,7 @@ import { RUN_STATUS, fmtAgo } from "../derive.js";
  * lg未満ではオフキャンバス(ハンバーガーで開閉)、lg以上は常設カラム。
  */
 export default function Sidebar({
-  runs, currentId, drafting, onSelect, onDelete, onNew, onBench, benching, onInsight, insighting, open, onClose,
+  runs, currentId, drafting, onSelect, onDelete, onNew, onBench, benching, onInsight, insighting, onConnections, connecting, open, onClose,
 }) {
   const [query, setQuery] = useState("");
   // 削除は誤操作防止の2段階確認(1回目で「削除?」→3秒以内の再クリックで実行)
@@ -43,7 +43,7 @@ export default function Sidebar({
 
   const row = (r) => {
     const meta = RUN_STATUS[r.status] ?? RUN_STATUS.cancelled;
-    const selected = !drafting && !benching && !insighting && r.id === currentId;
+    const selected = !drafting && !benching && !insighting && !connecting && r.id === currentId;
     const finished = !["running", "queued"].includes(r.status);
     return (
       <li key={r.id}>
@@ -173,6 +173,21 @@ export default function Sidebar({
             aria-label="インサイト"
           >
             <Microscope size={15} />
+          </button>
+          <button
+            onClick={() => {
+              onConnections?.();
+              onClose?.();
+            }}
+            className={`rounded-lg border px-2.5 py-2 text-[13px] transition-colors ${
+              connecting
+                ? "border-blue-500 bg-blue-500/10 text-blue-300"
+                : "border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+            }`}
+            title="外部連携(他のアプリ向けの接続コードとLLM窓口)"
+            aria-label="外部連携"
+          >
+            <Plug size={15} />
           </button>
           <button
             onClick={onClose}

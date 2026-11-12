@@ -68,3 +68,19 @@ export const explainInsight = (source, id, model) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source, id, model }),
   }).then(jsonOrThrow);
+
+// ---- 外部連携(他のアプリ向けの接続コードとLLM窓口) ----
+const send = (url, method, body) =>
+  fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(jsonOrThrow);
+export const fetchConnections = () => fetch("/connections", { cache: "no-store" }).then(jsonOrThrow);
+export const addConnection = (name, model) => send("/connections", "POST", { name, model });
+export const fetchConnectionCode = (id) => fetch(`/connections/${id}/code`, { cache: "no-store" }).then(jsonOrThrow);
+export const rotateConnection = (id) => send(`/connections/${id}/rotate`, "POST");
+export const deleteConnection = (id) => send(`/connections/${id}`, "DELETE");
+export const startGateway = () => send("/gateway/start", "POST");
+export const stopGateway = () => send("/gateway/stop", "POST");
+export const putGateway = (settings) => send("/gateway", "PUT", settings);

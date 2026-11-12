@@ -12,6 +12,7 @@ import ApprovalBar from "./components/ApprovalBar.jsx";
 import BenchView from "./components/BenchView.jsx";
 import BenchPanel from "./components/BenchPanel.jsx";
 import InsightView from "./components/insight/InsightView.jsx";
+import ConnectionsView from "./components/ConnectionsView.jsx";
 import { useRunEvents } from "./useRunEvents.js";
 import { deriveAgentState, dependencyOf, segmentByPhase, PHASE_META } from "./derive.js";
 import { fetchRuns, fetchModels, fetchHealth, fetchGpu, startRun, cancelRun, deleteRun, startBench } from "./api.js";
@@ -38,6 +39,7 @@ export default function App() {
   const currentId = view.kind === "run" ? view.id : null;
   const drafting = view.kind === "draft";
   const benching = view.kind === "bench";
+  const connecting = view.kind === "connections";   // 外部連携(接続コードとLLM窓口)
   const insighting = view.kind === "insight";   // 実行記録の可視化と分析(InsightView)
   const [prefill, setPrefill] = useState(null);
   const [benchPrefill, setBenchPrefill] = useState(null);   // [設定変更して再実行] からのベンチ設定
@@ -280,6 +282,10 @@ export default function App() {
     setView((v) => (v.kind === "insight" ? v : { kind: "insight", from: v.kind === "run" ? v.id : null }));
     setSidebarOpen(false);
   }, []);
+  const handleOpenConnections = useCallback(() => {
+    setView((v) => (v.kind === "connections" ? v : { kind: "connections", from: v.kind === "run" ? v.id : null }));
+    setSidebarOpen(false);
+  }, []);
   const handleOpenBench = useCallback((pre = null) => {
     setBenchPrefill(pre);
     setView((v) => (v.kind === "bench" ? v : { kind: "bench", from: v.kind === "run" ? v.id : null }));
@@ -468,6 +474,8 @@ export default function App() {
           benching={benching}
           onInsight={handleOpenInsight}
           insighting={insighting}
+          onConnections={handleOpenConnections}
+          connecting={connecting}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
@@ -488,6 +496,8 @@ export default function App() {
           </div>
 
           {insighting && <InsightView models={models} />}
+
+          {connecting && <ConnectionsView models={models} />}
 
           {benching && (
             <BenchView
@@ -612,7 +622,7 @@ export default function App() {
             </>
           )}
 
-          {!drafting && !benching && !insighting && !currentRun && (
+          {!drafting && !benching && !insighting && !connecting && !currentRun && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-zinc-600">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">左の一覧からタスクを選ぶか、新しいタスクを開始してください</p>

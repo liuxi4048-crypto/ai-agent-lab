@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -24,9 +28,11 @@ from pydantic import BaseModel
 
 import bench
 import claude_review
+import connections
 import api_review
 import llm
 import router
+from llm_gateway import _key_for
 from artifacts import WORKSPACE as ARTIFACT_DIR
 from orchestrator import (CodeOrchestrator, CritiqueOrchestrator, Orchestrator,
                           SwarmCodeOrchestrator)
@@ -543,6 +549,124 @@ async def events(run_id: str) -> StreamingResponse:
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ======================================================= 外部連携 ----
+# 他のアプリ向けの接続（合言葉つき）とLLM窓口(llm_gateway.py)の起動・停止。合言葉は *_code 系でしか返さない
+ROOT = Path(__file__).parent
+_gateway: dict = {"proc": None}
+
+
+class ConnectionRequest(BaseModel):
+    name: str
+    model: str                     # models.yaml のローカル(ollama)モデルのキーかタグ
+
+
+class GatewayRequest(BaseModel):
+    host: str | None = None
+    port: int | None = None
+    autostart: bool | None = None
+
+
+def _code_of(conn: dict) -> str:
+    return connections.connection_code(conn, connections.default_host(), connections.load()["gateway"]["port"])
+
+
+def _public(conn: dict) -> dict:
+    return {k: v for k, v in conn.items() if k != "token"}
+
+
+def _gateway_status() -> dict:
+    gw = connections.load()["gateway"]
+    host = connections.default_host()
+    proc = _gateway["proc"]
+    alive = proc is not None and proc.poll() is None
+    running = alive
+    if not running:
+        # 外(start.ps1 等)で起動済みでも「起動中」として扱う
+        try:
+            with socket.create_connection(("127.0.0.1" if host == "0.0.0.0" else host, gw["port"]), timeout=0.5):
+                running = True
+        except OSError:
+            pass
+    return {"host": host, "port": gw["port"], "autostart": gw["autostart"],
+            "running": running, "pid": proc.pid if alive else None}
+
+
+@app.get("/connections")
+def list_connections() -> dict:
+    return {"gateway": _gateway_status(),
+            "connections": [_public(c) for c in connections.load()["connections"]]}
+
+
+@app.post("/connections")
+def add_connection(req: ConnectionRequest) -> dict:
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "name が空です")
+    key = _key_for(llm.load_config(), req.model)
+    if key is None:
+        raise HTTPException(400, f"models.yaml にローカルモデル {req.model!r} がありません")
+    conn = connections.add(name, llm.resolve(llm.load_config(), key)["tag"])
+    return {**_public(conn), "code": _code_of(conn)}
+
+
+@app.get("/connections/{conn_id}/code")
+def connection_code(conn_id: str) -> dict:
+    conn = next((c for c in connections.load()["connections"] if c["id"] == conn_id), None)
+    if conn is None:
+        raise HTTPException(404, "接続が見つかりません")
+    return {"code": _code_of(conn)}
+
+
+@app.post("/connections/{conn_id}/rotate")
+def rotate_connection(conn_id: str) -> dict:
+    if connections.rotate(conn_id) is None:
+        raise HTTPException(404, "接続が見つかりません")
+    return connection_code(conn_id)
+
+
+@app.delete("/connections/{conn_id}")
+def delete_connection(conn_id: str) -> dict:
+    if not connections.delete(conn_id):
+        raise HTTPException(404, "接続が見つかりません")
+    return {"ok": True}
+
+
+@app.put("/gateway")
+def put_gateway(req: GatewayRequest) -> dict:
+    try:
+        connections.set_gateway(req.host, req.port, req.autostart)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _gateway_status()
+
+
+@app.post("/gateway/start")
+def start_gateway() -> dict:
+    """冪等: 既に動いていれば何もしない。窓口は別プロセス(python llm_gateway.py)で、出力は gateway.log へ。"""
+    if not _gateway_status()["running"]:
+        gw = connections.load()["gateway"]
+        env = {**os.environ, "GATEWAY_HOST": connections.default_host(), "GATEWAY_PORT": str(gw["port"])}
+        with open(ROOT / "gateway.log", "ab") as log:
+            _gateway["proc"] = subprocess.Popen(
+                [sys.executable, "llm_gateway.py"], cwd=ROOT, env=env, stdout=log, stderr=log,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return _gateway_status()
+
+
+@app.post("/gateway/stop")
+def stop_gateway() -> dict:
+    """このサーバが起動した窓口だけ止める(外で起動したものには触れない)。"""
+    proc = _gateway["proc"]
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    _gateway["proc"] = None
+    return _gateway_status()
 
 
 if __name__ == "__main__":

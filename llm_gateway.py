@@ -9,9 +9,10 @@ server.py とは別プロセスにして、エージェント実行（/run 等�
 使えるのは models.yaml の Ollama バックエンドのモデルだけ（外部APIへは流さない）。
 
 起動: python llm_gateway.py  →  http://127.0.0.1:8766
-  GATEWAY_HOST  待ち受け先（Tailscale から使うなら このPCの Tailscale IP）
-  GATEWAY_PORT  既定 8766
+  GATEWAY_HOST  待ち受け先（未設定なら connections.default_host(): 保存値 → Tailscale IP → 127.0.0.1）
+  GATEWAY_PORT  既定は保存した設定（無ければ 8766）
   GATEWAY_TOKEN 設定すると Authorization: Bearer <token> を必須にする
+  ダッシュボードで保存した外部連携の合言葉（connections.py）も同じ Bearer で通る
 """
 import hmac
 import os
@@ -21,6 +22,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import connections
 import llm
 
 app = FastAPI(title="ai-agent-lab LLM gateway")
@@ -32,10 +34,13 @@ def _token() -> str:
 
 def _unauthorized(request: Request):
     token = _token()
-    if not token:
+    if not token and not connections.load()["connections"]:
         return None
     given = request.headers.get("authorization", "").removeprefix("Bearer ")
-    if hmac.compare_digest(given.encode(), token.encode()):
+    if token and hmac.compare_digest(given.encode(), token.encode()):
+        return None
+    if conn := connections.match_token(given):
+        connections.touch(conn["id"], request.client.host if request.client else None)
         return None
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -113,5 +118,8 @@ async def generate(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=os.environ.get("GATEWAY_HOST", "127.0.0.1"),
-                port=int(os.environ.get("GATEWAY_PORT", "8766")), log_level="warning")
+    host = os.environ.get("GATEWAY_HOST") or connections.default_host()
+    port = int(os.environ.get("GATEWAY_PORT") or connections.load()["gateway"]["port"])
+    if not _token() and not connections.load()["connections"] and host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"[警告] 合言葉なしで {host} に公開します。ダッシュボードの「外部連携」で接続を追加してください")
+    uvicorn.run(app, host=host, port=port, log_level="warning")

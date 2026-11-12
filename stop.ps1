@@ -7,6 +7,9 @@ param([switch]$WithOllama)
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PidPath = Join-Path $Root '.server.pid'
 
+# LLM窓口(外部連携)はサーバの子プロセス。サーバを止める前に止める(失敗は無視)
+try { Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/gateway/stop' -TimeoutSec 10 | Out-Null } catch { }
+
 if (Test-Path $PidPath) {
     $serverPid = (Get-Content $PidPath -Raw).Trim()
     $proc = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
