@@ -19,6 +19,7 @@ CFG = {"models": {
 def client(monkeypatch):
     monkeypatch.setattr(llm, "load_config", lambda *a, **k: CFG)
     monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
+    monkeypatch.setattr(llm_gateway, "_host", "127.0.0.1")  # 認証なしはループバックのみ通る
     return TestClient(llm_gateway.app)
 
 

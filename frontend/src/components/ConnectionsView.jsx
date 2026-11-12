@@ -98,7 +98,7 @@ export default function ConnectionsView({ models }) {
                 disabled={busy}
                 onClick={() => {
                   if (!confirm(`「${c.name}」の合言葉を再発行します。今の接続コードは使えなくなります。`)) return;
-                  run(async () => { await rotateConnection(c.id); flash("再発行しました。新しいコードをコピーしてください"); });
+                  run(async () => { await rotateConnection(c.id); setCreated((cur) => (cur?.id === c.id ? null : cur)); flash("再発行しました。新しいコードをコピーしてください"); });
                 }}
               >
                 <RefreshCw size={12} /> 合言葉を再発行
@@ -108,7 +108,7 @@ export default function ConnectionsView({ models }) {
                 disabled={busy}
                 onClick={() => {
                   if (!confirm(`「${c.name}」を削除します。この接続コードは使えなくなります。`)) return;
-                  run(async () => { await deleteConnection(c.id); await reload(); });
+                  run(async () => { await deleteConnection(c.id); setCreated((cur) => (cur?.id === c.id ? null : cur)); await reload(); });
                 }}
               >
                 <Trash2 size={12} /> 削除
@@ -138,7 +138,7 @@ export default function ConnectionsView({ models }) {
               disabled={busy || !name.trim() || !model}
               onClick={() => run(async () => {
                 const r = await addConnection(name.trim(), model);
-                setCreated({ name: r.name, code: r.code });
+                setCreated({ id: r.id, name: r.name, code: r.code });
                 setName("");
                 setAdding(false);
                 await reload();

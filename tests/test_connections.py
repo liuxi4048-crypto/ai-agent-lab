@@ -47,11 +47,23 @@ def test_touch_is_throttled(monkeypatch):
     connections.touch(c["id"], "100.9.9.9")
     now[0] += 10
     connections.touch(c["id"], "100.8.8.8")
-    got = connections.load()["connections"][0]
+    got = connections.with_usage(connections.load()["connections"])[0]
     assert got["last_used_at"] == 1000.0 and got["last_client"] == "100.9.9.9"
     now[0] += 30
     connections.touch(c["id"], "100.8.8.8")
-    assert connections.load()["connections"][0]["last_client"] == "100.8.8.8"
+    assert connections.with_usage(connections.load()["connections"])[0]["last_client"] == "100.8.8.8"
+
+
+def test_touch_never_rewrites_connections_file():
+    """最終利用は別ファイル: gateway の touch が server 側の rotate/delete を上書きしない。"""
+    c = connections.add("a", "gemma3:12b")
+    before = connections._path().read_text(encoding="utf-8")
+    connections.touch(c["id"], "100.9.9.9")
+    assert connections._path().read_text(encoding="utf-8") == before
+    assert connections._usage_path().exists()
+    new = connections.rotate(c["id"])
+    connections.touch(c["id"], "100.9.9.9")          # 古い読み出しが後から書いても token は戻らない
+    assert connections.match_token(new)["id"] == c["id"]
 
 
 def test_code_round_trip():
@@ -80,18 +92,31 @@ def test_default_host_order(monkeypatch):
 
 def test_gateway_auth_with_saved_tokens(monkeypatch):
     gw = TestClient(llm_gateway.app)
-    assert gw.get("/api/tags").status_code == 200          # 未設定は従来どおり開放
+    monkeypatch.setattr(llm_gateway, "_host", "127.0.0.1")
+    assert gw.get("/api/tags").status_code == 200          # 認証なし＋ループバックだけ開放
     c = connections.add("a", "gemma3:12b")
     assert gw.get("/api/tags").status_code == 401
     ok = gw.get("/api/tags", headers={"Authorization": f"Bearer {c['token']}"})
     assert ok.status_code == 200
-    assert connections.load()["connections"][0]["last_client"] == "testclient"
+    assert connections.with_usage(connections.load()["connections"])[0]["last_client"] == "testclient"
     new = connections.rotate(c["id"])
     assert gw.get("/api/tags", headers={"Authorization": f"Bearer {c['token']}"}).status_code == 401
     assert gw.get("/api/tags", headers={"Authorization": f"Bearer {new}"}).status_code == 200
     monkeypatch.setenv("GATEWAY_TOKEN", "env-token")
     assert gw.get("/api/tags", headers={"Authorization": "Bearer env-token"}).status_code == 200
     assert gw.get("/api/tags", headers={"Authorization": f"Bearer {new}"}).status_code == 200
+    assert gw.get("/api/tags").status_code == 401
+
+
+def test_gateway_closed_without_auth_unless_loopback(monkeypatch):
+    gw = TestClient(llm_gateway.app)
+    for host in ("100.1.2.3", "0.0.0.0", ""):
+        monkeypatch.setattr(llm_gateway, "_host", host)
+        assert gw.get("/api/tags").status_code == 401
+    monkeypatch.setattr(llm_gateway, "_host", "127.0.0.1")
+    c = connections.add("a", "gemma3:12b")
+    connections.delete(c["id"])                            # 最後の接続を消しても開放に戻る先はループバックのみ
+    monkeypatch.setattr(llm_gateway, "_host", "100.1.2.3")
     assert gw.get("/api/tags").status_code == 401
 
 
@@ -161,3 +186,50 @@ def test_gateway_start_stop_idempotent(dash, monkeypatch):
     assert kw["env"]["GATEWAY_HOST"] == "127.0.0.1" and kw["env"]["GATEWAY_PORT"] == "9100"
     assert dash.post("/gateway/stop").json()["running"] is False
     assert dash.put("/gateway", json={"port": 0}).status_code == 400
+
+
+def test_csrf_origin_rejected(dash, monkeypatch):
+    monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **k: FakeProc())
+    evil = {"Origin": "http://evil.example"}
+    assert dash.post("/connections", json={"name": "a", "model": "fast"}, headers=evil).status_code == 403
+    assert dash.put("/gateway", json={"port": 9000}, headers=evil).status_code == 403
+    assert dash.post("/gateway/start", headers=evil).status_code == 403
+    assert dash.post("/gateway/stop", headers=evil).status_code == 403
+    assert dash.delete("/connections/x", headers=evil).status_code == 403
+    assert connections.load()["connections"] == [] and server._gateway["proc"] is None
+    for origin in ("http://127.0.0.1:8765", "http://localhost:8765", "http://localhost:5173"):
+        assert dash.post("/connections", json={"name": "a", "model": "fast"},
+                         headers={"Origin": origin}).status_code == 200
+
+
+def test_gateway_start_concurrent_spawns_once(dash, monkeypatch):
+    import threading
+    import time
+    calls = []
+
+    def slow_popen(cmd, **kw):
+        time.sleep(0.2)
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", slow_popen)
+    ts = [threading.Thread(target=dash.post, args=("/gateway/start",)) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert len(calls) == 1
+
+
+def test_put_gateway_restarts_when_running(dash, monkeypatch):
+    procs = []
+
+    def fake_popen(cmd, **kw):
+        procs.append((FakeProc(), kw["env"]["GATEWAY_PORT"]))
+        return procs[-1][0]
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    dash.post("/gateway/start")
+    dash.put("/gateway", json={"autostart": False})          # host/port 不変なら再起動しない
+    assert len(procs) == 1
+    dash.put("/gateway", json={"port": 9200})
+    assert len(procs) == 2 and not procs[0][0].alive and procs[1][1] == "9200"
+    assert dash.get("/connections").json()["gateway"]["pid"] == 4321

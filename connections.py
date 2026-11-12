@@ -2,6 +2,8 @@
 
 保存先は <repo>/.lab/connections.json（環境変数 LAB_DATA_DIR で変更可、git管理外）。
 llm_gateway.py（認証・最終利用の記録）と server.py（ダッシュボードの管理API）が共有する。
+別プロセスの書き込みが競合しないよう書き手を分ける: connections.json は server.py だけ、
+最終利用は connections_usage.json（id→{last_used_at,last_client}）に llm_gateway.py だけが書く。
 接続コード: aal://<host>:<port>?model=<モデル>&key=<合言葉>
 """
 import hmac
@@ -26,6 +28,10 @@ def _path() -> Path:
     return Path(base) / "connections.json"
 
 
+def _usage_path() -> Path:
+    return _path().with_name("connections_usage.json")
+
+
 def _default() -> dict:
     return {"gateway": {"host": "", "port": DEFAULT_PORT, "autostart": True}, "connections": []}
 
@@ -44,8 +50,8 @@ def load() -> dict:
     return base
 
 
-def _save(data: dict) -> None:
-    p = _path()
+def _save(data: dict, p: Path = None) -> None:
+    p = p or _path()
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
     try:
@@ -66,7 +72,7 @@ def _find(data: dict, conn_id: str):
 
 def add(name: str, model: str) -> dict:
     conn = {"id": secrets.token_hex(4), "name": name, "token": secrets.token_urlsafe(32),
-            "model": model, "created_at": time.time(), "last_used_at": None, "last_client": None}
+            "model": model, "created_at": time.time()}
     with _lock:
         data = load()
         data["connections"].append(conn)
@@ -94,7 +100,6 @@ def delete(conn_id: str) -> bool:
             return False
         data["connections"] = left
         _save(data)
-        _last_touch.pop(conn_id, None)
         return True
 
 
@@ -107,17 +112,31 @@ def match_token(token: str):
     return found
 
 
+def usage() -> dict:
+    try:
+        data = json.loads(_usage_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def with_usage(conns: list) -> list:
+    """接続一覧に最終利用（gateway が書いた別ファイル）を足して返す。保存はしない。"""
+    u = usage()
+    return [{**c, "last_used_at": (u.get(c.get("id")) or {}).get("last_used_at"),
+             "last_client": (u.get(c.get("id")) or {}).get("last_client")} for c in conns]
+
+
 def touch(conn_id: str, client_ip) -> None:
+    """最終利用を記録する（llm_gateway.py からだけ呼ぶ。接続本体は書き換えない）。"""
     now = time.time()
     if now - _last_touch.get(conn_id, 0) < TOUCH_INTERVAL:
         return
     _last_touch[conn_id] = now
     with _lock:
-        data = load()
-        conn = _find(data, conn_id)
-        if conn is not None:
-            conn["last_used_at"], conn["last_client"] = now, client_ip
-            _save(data)
+        data = usage()
+        data[conn_id] = {"last_used_at": now, "last_client": client_ip}
+        _save(data, _usage_path())
 
 
 def set_gateway(host=None, port=None, autostart=None) -> dict:

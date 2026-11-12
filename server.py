@@ -18,10 +18,11 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -555,6 +556,19 @@ async def events(run_id: str) -> StreamingResponse:
 # 他のアプリ向けの接続（合言葉つき）とLLM窓口(llm_gateway.py)の起動・停止。合言葉は *_code 系でしか返さない
 ROOT = Path(__file__).parent
 _gateway: dict = {"proc": None}
+_gateway_lock = threading.Lock()   # 起動・停止・再起動を直列化し、窓口の二重起動を防ぐ
+# 状態を変える操作を受け付けるオリジン（Vite 開発サーバ含む）。Origin 無し（curl 等）は通す
+_ALLOWED_ORIGINS = {f"http://{h}:{p}" for h in ("127.0.0.1", "localhost") for p in (8765, 5173)}
+
+
+def _same_origin(request: Request) -> None:
+    """他サイトのページから叩かれる CSRF を防ぐ。"""
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in _ALLOWED_ORIGINS:
+        raise HTTPException(403, "許可されていないオリジンです")
+
+
+_guard = [Depends(_same_origin)]
 
 
 class ConnectionRequest(BaseModel):
@@ -596,10 +610,10 @@ def _gateway_status() -> dict:
 @app.get("/connections")
 def list_connections() -> dict:
     return {"gateway": _gateway_status(),
-            "connections": [_public(c) for c in connections.load()["connections"]]}
+            "connections": [_public(c) for c in connections.with_usage(connections.load()["connections"])]}
 
 
-@app.post("/connections")
+@app.post("/connections", dependencies=_guard)
 def add_connection(req: ConnectionRequest) -> dict:
     name = req.name.strip()
     if not name:
@@ -619,32 +633,38 @@ def connection_code(conn_id: str) -> dict:
     return {"code": _code_of(conn)}
 
 
-@app.post("/connections/{conn_id}/rotate")
+@app.post("/connections/{conn_id}/rotate", dependencies=_guard)
 def rotate_connection(conn_id: str) -> dict:
     if connections.rotate(conn_id) is None:
         raise HTTPException(404, "接続が見つかりません")
     return connection_code(conn_id)
 
 
-@app.delete("/connections/{conn_id}")
+@app.delete("/connections/{conn_id}", dependencies=_guard)
 def delete_connection(conn_id: str) -> dict:
     if not connections.delete(conn_id):
         raise HTTPException(404, "接続が見つかりません")
     return {"ok": True}
 
 
-@app.put("/gateway")
+@app.put("/gateway", dependencies=_guard)
 def put_gateway(req: GatewayRequest) -> dict:
-    try:
-        connections.set_gateway(req.host, req.port, req.autostart)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    with _gateway_lock:
+        before = (connections.default_host(), connections.load()["gateway"]["port"])
+        try:
+            connections.set_gateway(req.host, req.port, req.autostart)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        proc = _gateway["proc"]
+        if proc is not None and proc.poll() is None and before != (
+                connections.default_host(), connections.load()["gateway"]["port"]):
+            # 接続コードの宛先と実際の待ち受けを合わせるため、新しい設定で再起動する
+            _stop_gateway()
+            _start_gateway()
     return _gateway_status()
 
 
-@app.post("/gateway/start")
-def start_gateway() -> dict:
-    """冪等: 既に動いていれば何もしない。窓口は別プロセス(python llm_gateway.py)で、出力は gateway.log へ。"""
+def _start_gateway() -> None:
     if not _gateway_status()["running"]:
         gw = connections.load()["gateway"]
         env = {**os.environ, "GATEWAY_HOST": connections.default_host(), "GATEWAY_PORT": str(gw["port"])}
@@ -652,12 +672,9 @@ def start_gateway() -> dict:
             _gateway["proc"] = subprocess.Popen(
                 [sys.executable, "llm_gateway.py"], cwd=ROOT, env=env, stdout=log, stderr=log,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return _gateway_status()
 
 
-@app.post("/gateway/stop")
-def stop_gateway() -> dict:
-    """このサーバが起動した窓口だけ止める(外で起動したものには触れない)。"""
+def _stop_gateway() -> None:
     proc = _gateway["proc"]
     if proc is not None and proc.poll() is None:
         proc.terminate()
@@ -666,6 +683,21 @@ def stop_gateway() -> dict:
         except subprocess.TimeoutExpired:
             proc.kill()
     _gateway["proc"] = None
+
+
+@app.post("/gateway/start", dependencies=_guard)
+def start_gateway() -> dict:
+    """冪等: 既に動いていれば何もしない。窓口は別プロセス(python llm_gateway.py)で、出力は gateway.log へ。"""
+    with _gateway_lock:
+        _start_gateway()
+    return _gateway_status()
+
+
+@app.post("/gateway/stop", dependencies=_guard)
+def stop_gateway() -> dict:
+    """このサーバが起動した窓口だけ止める(外で起動したものには触れない)。"""
+    with _gateway_lock:
+        _stop_gateway()
     return _gateway_status()
 
 

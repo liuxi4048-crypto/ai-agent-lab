@@ -12,6 +12,7 @@ server.py とは別プロセスにして、エージェント実行（/run 等�
   GATEWAY_HOST  待ち受け先（未設定なら connections.default_host(): 保存値 → Tailscale IP → 127.0.0.1）
   GATEWAY_PORT  既定は保存した設定（無ければ 8766）
   GATEWAY_TOKEN 設定すると Authorization: Bearer <token> を必須にする
+  認証が何も無い（GATEWAY_TOKEN も保存済みの接続も無い）ときは、ループバック待ち受けのときだけ無認証で通す
   ダッシュボードで保存した外部連携の合言葉（connections.py）も同じ Bearer で通る
 """
 import hmac
@@ -26,6 +27,8 @@ import connections
 import llm
 
 app = FastAPI(title="ai-agent-lab LLM gateway")
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+_host = ""  # 実際の待ち受け先（__main__ で設定）。不明な間はループバック扱いにしない
 
 
 def _token() -> str:
@@ -34,7 +37,7 @@ def _token() -> str:
 
 def _unauthorized(request: Request):
     token = _token()
-    if not token and not connections.load()["connections"]:
+    if not token and not connections.load()["connections"] and _host in LOOPBACK:
         return None
     given = request.headers.get("authorization", "").removeprefix("Bearer ")
     if token and hmac.compare_digest(given.encode(), token.encode()):
@@ -118,8 +121,8 @@ async def generate(request: Request):
 
 
 if __name__ == "__main__":
-    host = os.environ.get("GATEWAY_HOST") or connections.default_host()
+    host = _host = os.environ.get("GATEWAY_HOST") or connections.default_host()
     port = int(os.environ.get("GATEWAY_PORT") or connections.load()["gateway"]["port"])
-    if not _token() and not connections.load()["connections"] and host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"[警告] 合言葉なしで {host} に公開します。ダッシュボードの「外部連携」で接続を追加してください")
+    if not _token() and not connections.load()["connections"] and host not in LOOPBACK:
+        print(f"[警告] 合言葉が無いため {host} への要求は全て 401 になります。ダッシュボードの「外部連携」で接続を追加してください")
     uvicorn.run(app, host=host, port=port, log_level="warning")
