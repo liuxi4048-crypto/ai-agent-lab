@@ -24,6 +24,7 @@ GENERIC = "pass" + "word = " + '"Zq8mT3vK9xLp"'                  # keyvalue(gene
 def _fresh(monkeypatch):
     monkeypatch.delenv("PANEL_ALLOW_SECRETS", raising=False)
     monkeypatch.setattr(panel, "_secretscan_mod", None)
+    monkeypatch.setattr(api_review, "_secretscan_mod", None)   # 読み込みのキャッシュをテスト間で持ち越さない
 
 
 def _file(tmp_path, name, text):
@@ -66,6 +67,39 @@ def test_ollama_only_does_not_scan(tmp_path):
     f = _file(tmp_path, "app.py", "token = '%s'\n" % TOKEN)
     body, _ = panel.collect_content([f], None, 10000, external=False)
     assert TOKEN in body
+
+
+@pytest.mark.parametrize("base,local", [
+    ("http://localhost:11434", True), ("http://127.0.0.1:11434", True), ("http://[::1]:11434", True),
+    ("http://10.0.0.5:11434", False), ("https://ollama.example.com", False), ("not a url", False)])
+def test_ollama_base_loopback(base, local):
+    assert panel.is_loopback_url(base) is local
+
+
+def test_remote_ollama_is_scanned(tmp_path, monkeypatch):
+    f = _file(tmp_path, "app.py", "token = '%s'\n" % TOKEN)
+    sent = []
+
+    async def alive():
+        return True
+
+    async def models():
+        return []
+
+    async def fake_ollama(cfg, mapping, content, source, instruction):
+        sent.append(content)
+        return [{"lens": "correctness", "backend": "ollama", "model": "m", "seconds": 0,
+                 "output": "ok", "error": None}]
+    monkeypatch.setattr(panel.llm, "load_config", lambda: {})
+    monkeypatch.setattr(panel.llm, "is_alive", alive)
+    monkeypatch.setattr(panel.llm, "list_models", models)
+    monkeypatch.setattr(panel, "run_ollama_all", fake_ollama)
+    assert asyncio.run(panel.main_async(_args(backend="ollama", target=[f]))) == 0   # ローカルは従来どおり検査しない
+    assert TOKEN in sent.pop()
+    monkeypatch.setattr(panel.llm, "OLLAMA_BASE", "http://10.0.0.5:11434")
+    with pytest.raises(SystemExit) as e:
+        asyncio.run(panel.main_async(_args(backend="ollama", target=[f])))
+    assert TOKEN not in str(e.value) and not sent
 
 
 def test_generic_only_passes(tmp_path):
@@ -165,9 +199,9 @@ def test_make_codex_cwd_copies_only_targets(tmp_path):
     _file(tmp_path, "neighbor.py", "N")
     root = tmp_path / "root"
     root.mkdir()
-    cwd = panel.make_codex_cwd(str(root), [a], None)
+    cwd = panel.make_codex_cwd(str(root), [(a, "A")], None)
     assert sorted(os.listdir(cwd)) == ["a.py"]
-    empty = panel.make_codex_cwd(str(tmp_path / "root2"), [a], str(tmp_path))
+    empty = panel.make_codex_cwd(str(tmp_path / "root2"), [(a, "A")], str(tmp_path))
     assert os.listdir(empty) == []
 
 
@@ -189,6 +223,27 @@ def test_codex_runs_in_temp_cwd_and_cleans_up(tmp_path, monkeypatch):
     assert seen["files"] == ["app.py"]                     # 隣の other.py は見えない
     assert Path(seen["cwd"]).resolve() != sub.resolve()
     assert not os.path.exists(seen["cwd"])                 # 終了後に削除されている
+
+
+def test_codex_cwd_gets_scanned_text_not_reread(tmp_path, monkeypatch):
+    f = _file(tmp_path, "app.py", "x = 1\n")
+    seen = {}
+    real_collect = panel.collect_content
+
+    def collect_then_swap(*a, **kw):
+        out = real_collect(*a, **kw)
+        Path(f).write_text(f"t = '{TOKEN}'\n", encoding="utf-8")   # 検査の直後に差し替える
+        return out
+
+    async def fake_codex(lens_names, content, source, instruction, cwd):
+        seen["text"] = (Path(cwd) / "app.py").read_text(encoding="utf-8")
+        return [{"lens": "correctness", "backend": "codex", "model": "m", "seconds": 0,
+                 "output": "ok", "error": None}]
+    monkeypatch.setattr(panel, "collect_content", collect_then_swap)
+    monkeypatch.setattr(panel, "run_codex_all", fake_codex)
+    monkeypatch.setattr(panel.llm, "load_config", lambda: {})
+    assert asyncio.run(panel.main_async(_args(backend="codex", target=[f]))) == 0
+    assert seen["text"] == "x = 1\n"                        # 検査した内容だけが渡る
 
 
 # ---------------------------------------------------------------- diff のパス解釈
