@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, Copy, KeyRound, RefreshCw } from "lucide-react";
-import { fetchApiKeyStatus, generateApiKey } from "../api.js";
+import { fetchApiKeyStatus, generateApiKey, revokeModelKey } from "../api.js";
 import { modelStatusNote, serverDisplayName, shortBaseUrl } from "../derive.js";
 
 // 接続状態パネル: バックエンド/サーバーごとに「今つながっているか・
@@ -38,30 +38,33 @@ const KEY_SOURCE = {
   env: { cls: "border-green-500/50 bg-green-500/10 text-green-300", text: "環境変数で設定済み" },
   file: { cls: "border-green-500/50 bg-green-500/10 text-green-300", text: "発行済み" },
   none: { cls: "border-amber-500/50 bg-amber-500/10 text-amber-300", text: "未発行（認証なし）" },
+  modelOnly: { cls: "border-green-500/50 bg-green-500/10 text-green-300", text: "モデル専用キーのみ" },
 };
 
+const BTN =
+  "rounded-lg border border-slate-700 px-3 py-2 text-[13px] text-slate-200 transition-colors hover:border-slate-500 hover:text-white disabled:opacity-50";
+
 // OpenAI互換API(/v1)のキー発行カード。生成したキーは発行直後の1回だけ表示する。
-function ApiKeyCard() {
+// 共通キー(全モデル)と、モデルを選んで発行するモデル専用キーの2種類。
+function ApiKeyCard({ models }) {
   const [status, setStatus] = useState(null);
-  const [newKey, setNewKey] = useState("");
+  const [newKey, setNewKey] = useState(null); // { key, model }
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [model, setModel] = useState("auto");
 
   useEffect(() => {
     fetchApiKeyStatus().then(setStatus, (e) => setError(e.message));
   }, []);
 
-  const handleGenerate = async () => {
-    if (status?.source === "file" &&
-        !window.confirm("今のキーは使えなくなります。新しいキーを発行しますか？")) return;
+  const bound = status?.model_keys ?? [];
+
+  const run = async (fn) => {
     setBusy(true);
     setError("");
     try {
-      const { key } = await generateApiKey();
-      setNewKey(key);
-      setCopied(false);
-      setStatus((s) => ({ ...s, source: "file" }));
+      await fn();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -69,10 +72,35 @@ function ApiKeyCard() {
     }
   };
 
-  const handleCopy = () =>
-    navigator.clipboard.writeText(newKey).then(() => setCopied(true), () => setError("コピーできませんでした"));
+  const handleGenerate = (target = "") => {
+    const exists = target ? bound.includes(target) : status?.source === "file";
+    if (exists && !window.confirm(`${target || "共通"}の今のキーは使えなくなります。新しいキーを発行しますか？`)) return;
+    run(async () => {
+      const { key } = await generateApiKey(target);
+      setNewKey({ key, model: target });
+      setCopied(false);
+      setStatus((s) =>
+        target
+          ? { ...s, model_keys: [...new Set([...(s.model_keys ?? []), target])].sort() }
+          : { ...s, source: "file" },
+      );
+    });
+  };
 
-  const chip = status && KEY_SOURCE[status.source];
+  const handleRevoke = (target) => {
+    if (!window.confirm(`${target} のキーを失効させますか？このキーを使うツールは接続できなくなります。`)) return;
+    run(async () => {
+      await revokeModelKey(target);
+      setStatus((s) => ({ ...s, model_keys: (s.model_keys ?? []).filter((m) => m !== target) }));
+      if (newKey?.model === target) setNewKey(null);
+    });
+  };
+
+  const handleCopy = () =>
+    navigator.clipboard.writeText(newKey.key).then(() => setCopied(true), () => setError("コピーできませんでした"));
+
+  const chip =
+    status && (status.source === "none" && bound.length ? KEY_SOURCE.modelOnly : KEY_SOURCE[status.source]);
   const endpoint = `http://${status?.host === "0.0.0.0" ? "<このPCのIP>" : status?.host ?? "127.0.0.1"}:${status?.port ?? 8765}/v1`;
 
   return (
@@ -90,24 +118,66 @@ function ApiKeyCard() {
         キーは api_settings.json に保存され、再起動なしで有効になります。
       </p>
 
+      <p className="mt-3 text-xs font-semibold text-slate-400">共通キー（すべてのモデルを使える）</p>
       {status && status.source !== "env" && (
-        <button
-          onClick={handleGenerate}
-          disabled={busy}
-          className="mt-3 rounded-lg border border-slate-700 px-3 py-2 text-[13px] text-slate-200 transition-colors hover:border-slate-500 hover:text-white disabled:opacity-50"
-        >
-          {status.source === "file" ? "キーを再発行" : "キーを発行"}
+        <button onClick={() => handleGenerate()} disabled={busy} className={`mt-1.5 ${BTN}`}>
+          {status.source === "file" ? "共通キーを再発行" : "共通キーを発行"}
         </button>
       )}
       {status?.source === "env" && (
-        <p className="mt-3 text-xs text-slate-500">環境変数 AAL_API_KEY が優先されるため、画面からは発行できません。</p>
+        <p className="mt-1.5 text-xs text-slate-500">環境変数 AAL_API_KEY が優先されるため、画面からは発行できません。</p>
       )}
+
+      <div className="mt-4 border-t border-slate-800 pt-3">
+        <p className="text-xs font-semibold text-slate-400">モデル専用キー（選んだモデルに固定）</p>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">
+          このキーで来た要求は、指定された model に関係なく選んだモデルで実行します。
+          発行すると、キーなしの接続は受け付けなくなります。
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            aria-label="キーを発行するモデル"
+            className="min-w-0 max-w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-[13px] text-slate-200"
+          >
+            <option value="auto">auto（自動選択）</option>
+            {models.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.key}（{m.tag}）{m.installed ? "" : " ※使用不可"}
+              </option>
+            ))}
+          </select>
+          <button onClick={() => handleGenerate(model)} disabled={busy || !status} className={BTN}>
+            {bound.includes(model) ? "このモデルのキーを再発行" : "このモデルのキーを発行"}
+          </button>
+        </div>
+        {bound.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {bound.map((m) => (
+              <li key={m} className="flex items-center gap-2 text-[13px]">
+                <span className="min-w-0 flex-1 truncate font-mono text-slate-200">{m}</span>
+                <span className="shrink-0 text-xs text-green-400">発行済み</span>
+                <button
+                  onClick={() => handleRevoke(m)}
+                  disabled={busy}
+                  className="shrink-0 rounded-md border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:border-red-500/60 hover:text-red-300 disabled:opacity-50"
+                >
+                  失効
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {newKey && (
         <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-          <p className="text-xs font-semibold text-amber-300">このキーは今だけ表示されます。控えてください。</p>
+          <p className="text-xs font-semibold text-amber-300">
+            {newKey.model ? `${newKey.model} 専用キー` : "共通キー"}です。このキーは今だけ表示されます。控えてください。
+          </p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="min-w-0 flex-1 break-all font-mono text-[13px] text-slate-100">{newKey}</code>
+            <code className="min-w-0 flex-1 break-all font-mono text-[13px] text-slate-100">{newKey.key}</code>
             <button
               onClick={handleCopy}
               className="flex shrink-0 items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:border-slate-500"
@@ -232,7 +302,7 @@ export default function ConnectionsView({ models, onRefresh }) {
           </div>
         )}
 
-        <ApiKeyCard />
+        <ApiKeyCard models={list} />
 
         <p className="mt-6 text-xs leading-relaxed text-slate-500">
           APIキーの発行以外の設定はこの画面では行いません。モデルの登録・接続先・表示名（server_name）は models.yaml、
