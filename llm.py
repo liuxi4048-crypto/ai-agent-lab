@@ -228,9 +228,12 @@ def resolve(cfg, key):
         "backend": m.get("backend", "ollama"),
         "base_url": (m.get("base_url") or os.environ.get("OPENAI_COMPAT_BASE") or "http://localhost:8080/v1")
                     if m.get("backend") == "openai" else (
-                        ANTHROPIC_BASE if m.get("backend") == "anthropic" else OLLAMA_BASE),
+                        ANTHROPIC_BASE if m.get("backend") == "anthropic" else (
+                            m.get("base_url", "http://127.0.0.1:8001")
+                            if m.get("backend") == "acestep" else OLLAMA_BASE)),
         "server_name": m.get("server_name", ""),  # UI表示用: 接続先サーバーの名前(任意)
-        "tag": m["tag"],
+        "tag": m.get("tag", m.get("dit_model", key)),
+        "kind": m.get("kind", "chat"),
         "family": m.get("family", "unknown"),
         "placement": m.get("placement", "vram"),
         "tools": m.get("tools", False),
@@ -256,7 +259,8 @@ def model_catalog(cfg, installed=None):
     scanned は resolve() のフォールバックで family 推定・tier=discovered が付き、
     自動ルーティングには入らない(明示選択でのみ使用)。埋め込み等は除外。
     """
-    configured = [resolve(cfg, k) for k in cfg.get("models", {})]
+    configured = [resolve(cfg, k) for k, m in cfg.get("models", {}).items()
+                  if m.get("kind") != "music"]
     known_tags = {m["tag"] for m in configured}
     scanned = []
     for tag in sorted(installed or set()):
@@ -809,6 +813,8 @@ async def chat(cfg, key, messages, tools=None, temperature=None,
     返り値には "_usage" 等のメタキーが付く。履歴に足す前に strip_meta() を呼ぶこと。
     """
     info = resolve(cfg, key)
+    if info.get("kind") == "music":
+        raise OllamaFatal("音楽生成モデルです。/music/generate を使ってください")
     payload = _payload(info, messages, tools, temperature, num_ctx, json_mode,
                        True, json_schema, think, num_predict, options_override)
     t = httpx.Timeout(timeout or IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
@@ -850,6 +856,8 @@ async def chat_stream(cfg, key, messages, temperature=None,
     途中まで流した後の再試行は出力が二重になるため行わない。監査 2026-10-27)。
     """
     info = resolve(cfg, key)
+    if info.get("kind") == "music":
+        raise OllamaFatal("音楽生成モデルです。/music/generate を使ってください")
     payload = _payload(info, messages, None, temperature, num_ctx, json_mode,
                        True, json_schema, think, num_predict)
     t = httpx.Timeout(IDLE_TIMEOUT, connect=CONNECT_TIMEOUT)
@@ -959,6 +967,8 @@ async def model_usable(cfg, key, ollama_installed, _probes=None):
     _probes は base_url → probe_openai_models の結果(None可)のキャッシュ。
     """
     info = resolve(cfg, key)
+    if info.get("kind") == "music":
+        return False, "music"
     backend = info.get("backend", "ollama")
     if backend == "openai":
         base = info["base_url"]
@@ -1039,6 +1049,8 @@ def summarize_connections(models, ollama_installed, ollama_alive, probes):
 def unusable_reason(info, status):
     """model_usable の status から、利用者向けの理由文を組む。"""
     tag, base = info["tag"], info.get("base_url", "")
+    if status == "music":
+        return "音楽生成モデルです。/music/generate を使ってください"
     if status == "server_unreachable":
         return (f"モデル '{tag}' の接続先 ({base}) に接続できません。"
                 "llama-server / Strata が起動しているか確認してください")

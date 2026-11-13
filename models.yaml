@@ -1,3 +1,6 @@
+# kind: music は音楽生成専用。チャットには使用しない。
+# backend: acestep は ACE-Step REST API（既定 port 8001）を使用する。
+# 音楽の tier: external は自動ルーティング対象外。
 # backend: ollama (省略時) / openai / anthropic。モデルごとに選択できる。
 # anthropic: tag は Claude のモデルID。キーは環境変数 ANTHROPIC_API_KEY のみ。従量課金あり。
 #   接続先は https://api.anthropic.com/v1/messages。base_url は適用しない。
@@ -48,6 +51,38 @@
 # strengths: ルーティング(model=auto)と批評ペア選定に使う。
 # for: UIのモデル選択に「タグ名 (用途)」として出す短い説明。
 models:
+  # 実測 2026-11-11 (RX 9070 XT 16GB): 30秒インスト turbo ウォーム36.1秒/初回61.9秒、
+  # 60秒日本語歌詞102.4秒。VRAMピークはアダプタ全体で約15〜16GB（他プロセス分を含む）。
+  music:
+    tag: 'acestep-v15-turbo'
+    tools: false
+    kind: music
+    backend: acestep
+    base_url: 'http://127.0.0.1:8001'
+    dit_model: 'acestep-v15-turbo'
+    lm_model: 'acestep-5Hz-lm-1.7B'
+    lm_backend: 'pt'
+    tier: external
+    placement: vram
+    vocal_language: 'ja'
+    inference_steps: 8
+    for: '音楽生成 ACE-Step 1.5 turbo・歌詞/ボーカル可'
+  # 実測 2026-11-11: 30秒 xl-turbo ウォーム78.4秒/初回483.9秒（約9GBモデルDL込み）。
+  music_xl:
+    tag: 'acestep-v15-xl-turbo'
+    tools: false
+    kind: music
+    backend: acestep
+    base_url: 'http://127.0.0.1:8001'
+    dit_model: 'acestep-v15-xl-turbo'
+    lm_model: 'acestep-5Hz-lm-1.7B'
+    lm_backend: 'pt'
+    tier: external
+    placement: vram
+    vocal_language: 'ja'
+    inference_steps: 8
+    offload: true
+    for: '音楽生成 ACE-Step 1.5 XL turbo・高品質(offload前提)'
   deepseek_strata:
     tag: "deepseek-v4.1-flash"
     backend: openai
@@ -257,6 +292,20 @@ models:
     for: "Google新世代・マルチモーダル。VRAM全載りで高速"
     use: "MoE 25.2B/活性≈4B(gemma4) / tools・thinking・vision対応 / 94%GPU・59.5tok/s実測(2026-08-23) /
       ツールコール中断バグはdense31B版の報告でありMoE版では未再現(smoke OK) / 系統多様化(Google)"
+  gemma12:
+    tag: "gemma4:12b"        # dense 11.9B Q4_K_M・8.0GB。要Ollama>=0.30.9
+    family: gemma4
+    tier: probation          # 2026-11-12登録・未ベンチ
+    placement: vram          # 実測 100%GPU・50.9tok/s(ロード後, num_ctx 16384, 2026-11-12)
+    tools: true              # Capabilities: tools/thinking/vision/audio。tool-call疎通OK(実測)
+    mtp: false
+    num_ctx: 16384           # ネイティブ262K
+    think: "low"             # gemma と同じく既定ONの長考を抑える
+    options: {temperature: 1.0, top_p: 0.95, top_k: 64, min_p: 0}
+    strengths: [tool, chat]
+    for: "Gemma4 dense 12B。省VRAMで速い普段づかい"
+    use: "dense 11.9B(gemma4) / tools・thinking・vision対応 / 100%GPU・50.9tok/s実測(2026-11-12) /
+      26B MoE版(gemma)より軽く、VRAMに余裕を残したいとき向け"
   granite:
     tag: "granite4.1:8b-q8_0"   # 8B級はQ8でも軽い。tool-caller/ルーター役として品質優先でQ8採用
     family: granite

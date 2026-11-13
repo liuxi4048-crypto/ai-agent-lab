@@ -11,7 +11,9 @@
   リクエストボディの aal_mode で orchestra 等へ変更できる。
 - 認証: 環境変数 AAL_API_KEY か api_settings.json の api_key が設定されて
   いれば、/v1/* は Authorization: Bearer <key> を必須にする。未設定なら無認証
-  (127.0.0.1 バインド前提)。
+  (127.0.0.1 バインド前提)。api_settings.json の model_keys {モデル名: キー} は
+  モデル専用キーで、そのキーで来た要求は指定に関係なくそのモデルで実行する。
+  共通キーかモデル専用キーが1つでもあれば認証は必須になる。
 - バインド先: 環境変数 AAL_HOST か api_settings.json の host (既定 127.0.0.1)。
   0.0.0.0 にすると LAN / Tailscale から届く。その場合は api_key 設定を強く推奨。
 - キー発行: GUI (接続状態画面) から POST /api-key/generate で api_settings.json に
@@ -61,14 +63,42 @@ def key_source() -> str:
     return "file" if _settings().get("api_key") else "none"
 
 
-def generate_api_key() -> str:
-    """新しいキーを api_settings.json に保存して返す (host など他の項目は保持)。"""
-    key = secrets.token_urlsafe(32)
-    data = _settings()
-    data["api_key"] = key
+def model_keys() -> dict[str, str]:
+    """モデル専用キー {モデル名: キー}。このキーで来た要求はそのモデルに固定する。"""
+    mk = _settings().get("model_keys")
+    return {str(m): str(k) for m, k in mk.items() if k} if isinstance(mk, dict) else {}
+
+
+def _save_settings(data: dict) -> None:
     SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8")
+
+
+def generate_api_key(model: str = "") -> str:
+    """新しいキーを api_settings.json に保存して返す (host など他の項目は保持)。
+
+    model を渡すとそのモデル専用キーを発行・再発行する (共通キーには触れない)。
+    """
+    key = secrets.token_urlsafe(32)
+    data = _settings()
+    if model:
+        mk = data.get("model_keys") if isinstance(data.get("model_keys"), dict) else {}
+        mk[model] = key
+        data["model_keys"] = mk
+    else:
+        data["api_key"] = key
+    _save_settings(data)
     return key
+
+
+def revoke_model_key(model: str) -> bool:
+    data = _settings()
+    mk = data.get("model_keys")
+    if not isinstance(mk, dict) or model not in mk:
+        return False
+    del mk[model]
+    _save_settings(data)
+    return True
 
 
 def _require_local(request: Request) -> None:
@@ -82,13 +112,25 @@ def _require_local(request: Request) -> None:
         raise HTTPException(403, "このページからはAPIキーを発行できません")
 
 
-def _check_auth(request: Request) -> None:
+def _check_auth(request: Request) -> str | None:
+    """認証してキーに固定されたモデル名を返す (共通キー・認証なしは None)。
+
+    共通キーかモデル専用キーが1つでもあれば認証を必須にする。
+    """
     key = api_key()
-    if not key:
-        return
-    auth = request.headers.get("authorization", "")
-    if not hmac.compare_digest(auth.encode(), f"Bearer {key}".encode()):
+    mkeys = model_keys()
+    if not key and not mkeys:
+        return None
+    auth = request.headers.get("authorization", "").encode()
+    if key and hmac.compare_digest(auth, f"Bearer {key}".encode()):
+        return None
+    bound = None
+    for model, k in mkeys.items():  # 一致しても全件比較して所要時間を揃える
+        if hmac.compare_digest(auth, f"Bearer {k}".encode()) and bound is None:
+            bound = model
+    if bound is None:
         raise HTTPException(401, "APIキーが不正です (Authorization: Bearer <key>)")
+    return bound
 
 
 def _error(status: int, message: str, err_type: str = "invalid_request_error") -> JSONResponse:
@@ -179,18 +221,48 @@ def register(app) -> None:
     @app.get("/api-key")
     async def api_key_status(request: Request):
         _require_local(request)
-        return {"source": key_source(), "host": bind_host(), "port": request.url.port}
+        return {"source": key_source(), "host": bind_host(), "port": request.url.port,
+                "model_keys": sorted(model_keys())}
+
+    async def _body_model(request: Request) -> str:
+        # 空ボディは「モデル指定なし」。壊れた JSON を共通キーの再発行として扱わない
+        if not (await request.body()).strip():
+            return ""
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "JSON ボディが不正です")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON ボディが不正です")
+        return str(body.get("model") or "").strip()
 
     @app.post("/api-key/generate")
     async def api_key_generate(request: Request):
         _require_local(request)
+        model = await _body_model(request)
+        if model:
+            if model != "auto" and model not in (llm.load_config().get("models") or {}):
+                raise HTTPException(404, f"モデル '{model}' はありません")
+            return {"key": generate_api_key(model), "model": model}
         if key_source() == "env":
             raise HTTPException(409, "環境変数 AAL_API_KEY が優先されるため、画面からは発行できません")
         return {"key": generate_api_key()}
 
+    @app.post("/api-key/revoke")
+    async def api_key_revoke(request: Request):
+        _require_local(request)
+        model = await _body_model(request)
+        # 共通キーが無いまま最後のキーを消すと /v1 が無認証に戻るため拒否する
+        if not api_key() and set(model_keys()) == {model}:
+            raise HTTPException(409, "最後のキーは失効できません (失効すると認証なしで接続できるようになるため)。"
+                                     "先に共通キーか別のモデルのキーを発行してください")
+        if not revoke_model_key(model):
+            raise HTTPException(404, f"モデル '{model}' のキーはありません")
+        return {"ok": True}
+
     @app.get("/v1/models")
     async def v1_models(request: Request):
-        _check_auth(request)
+        bound = _check_auth(request)
         cfg = llm.load_config()
         now = int(time.time())
         data = [{"id": "auto", "object": "model", "created": now,
@@ -199,11 +271,13 @@ def register(app) -> None:
             data.append({"id": key, "object": "model", "created": now,
                          "owned_by": "ai-agent-lab",
                          "description": (m or {}).get("for", "")})
+        if bound:
+            data = [d for d in data if d["id"] == bound]
         return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions")
     async def v1_chat(request: Request):
-        _check_auth(request)
+        bound = _check_auth(request)
         try:
             body = await request.json()
         except ValueError:
@@ -218,7 +292,7 @@ def register(app) -> None:
 
         import server  # 循環 import 回避 (server が本モジュールを読み込む)
         cfg = llm.load_config()
-        model = req.model or "auto"
+        model = bound or req.model or "auto"  # モデル専用キーは指定より優先
         if model != "auto" and model not in (cfg.get("models") or {}):
             return _error(404, f"モデル '{model}' はありません", "model_not_found")
         mode = (request.headers.get("x-aal-mode") or req.aal_mode or "direct").strip()

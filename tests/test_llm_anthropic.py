@@ -66,6 +66,22 @@ def test_max_tokens_floor():
     assert llm._anthropic_payload(payload([], num_predict=big))["max_tokens"] == big
     assert llm._anthropic_max_tokens({}) == llm.ANTHROPIC_MAX_TOKENS
     assert llm._anthropic_max_tokens({"num_predict": 4096}) == llm.ANTHROPIC_MAX_TOKENS
+def test_payload_drops_sampling_params_for_55_family():
+    # Claude 5.5 系は temperature/top_p/top_k を送ると API が 400 を返す
+    # (2026-10-30 実測)。世代判定で落とし、他の項目は従来どおり送る。
+    cfg55 = {"models": {"opus": {"tag": "claude-opus-5-5", "backend": "anthropic",
+             "tools": True, "num_ctx": 100000,
+             "options": {"temperature": 0.6, "top_p": 0.9, "top_k": 20, "min_p": 0}}}}
+    p = llm._payload(llm.resolve(cfg55, "opus"),
+                     [{"role": "user", "content": "a"}], None, 0.2, None,
+                     False, True, None, None, 30)
+    result = llm._anthropic_payload(p)
+    assert not {"temperature", "top_p", "top_k"} & result.keys()
+    assert result["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS and result["model"] == "claude-opus-5-5"
+    for tag in ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5-20261001"):
+        assert llm._anthropic_no_sampling(tag) is True
+    for tag in ("claude-opus-5", "claude-sonnet-4-5-20250929", "claude-test"):
+        assert llm._anthropic_no_sampling(tag) is False
 
 
 @pytest.mark.parametrize("kwargs", [{"json_mode": True}, {"schema": {"type": "object"}}])

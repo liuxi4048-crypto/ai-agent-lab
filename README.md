@@ -572,3 +572,44 @@ Anthropic は `ANTHROPIC_API_KEY` が設定されているときだけ選択で�
 - Muse Glimmer の3-bit量子化(unsloth UD-Q3_K_XL 13.4GB)をimportすればVRAM全載りで
   大幅高速化の余地(SWE-bench 76.0級がvram枠に入る)。品質劣化は要実測
 - PyInstaller化: `pyinstaller --noconfirm --windowed --name AgentLab --add-data "static;static" --collect-all uvicorn app.py`
+
+## 音楽生成（ACE-Step 1.5）
+
+自宅PCの `C:\project\ace-step` で ROCm 版 `start_api_server_rocm.bat` を起動してください。
+ACE-Step REST API は `http://127.0.0.1:8001`、ai-agent-lab は従来どおり port 8765 を使用します。
+ACE-Step 1.5 は MIT ライセンスです。[公式 API 仕様](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/API.md) も参照してください。
+
+```bash
+curl http://127.0.0.1:8765/music/models
+curl -X POST http://127.0.0.1:8765/music/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"music","prompt":"穏やかなジャズピアノ","duration":30,"instrumental":true,"seed":42}'
+```
+
+認証キー `AAL_API_KEY` を設定している場合は `Authorization: Bearer <キー>` を付けます。
+歌詞付きの場合は `instrumental: false` と `lyrics`、必要に応じて `vocal_language: "ja"` を指定します。
+結果の `file` は保存ファイル名、`url` は `/music/file/<name>` のダウンロード先です。
+音声は `music_out/` に保存され、Git 管理対象から除外されます。
+接続確認は短時間のキャッシュを使用し、生成待ちの上限は既定600秒です。
+
+| プロファイル | 内容 |
+| --- | --- |
+| `music` | ACE-Step v15-turbo（2B）、8 steps、LM 1.7B / pt。通常の歌詞・ボーカル・インスト向け |
+| `music_xl` | ACE-Step v15-xl-turbo（4B）、8 steps、LM 1.7B / pt。高品質向け。サービス側で offload（モデルの一部を RAM に置く設定）を有効にする前提 |
+
+XL 用のモデル読み込みと offload / INT8 設定は ACE-Step サービス側で行ってください。
+`models.yaml` の `offload: true` は運用条件の記録です。生成要求によるサービスの起動設定変更は行いません。
+両プロファイルは音楽専用で、自動モデル選択には入りません。チャットでは `/music/generate` の案内エラーを返します。
+生成処理は直列実行します。生成中は他の重量級モデル（Ollama / Strata / ComfyUI 等）と VRAM を取り合うため、他の重量級処理も同時実行せず順番に動かしてください。
+
+実測（2026-11-11 01:32–01:45、自宅PC RX 9070 XT 16GB / ROCm Windows、LM 1.7B・pt）:
+
+| 条件 | 所要秒 | 音声長 | VRAMピーク（アダプタ全体） |
+| --- | --- | --- | --- |
+| A 初回: turbo・30秒インスト（モデル読込込み） | 61.9 | 30.0秒 | 約15.0GB |
+| A 2回目: 同上（ウォーム） | 36.1 | 30.0秒 | 約15.9GB |
+| B: turbo・日本語歌詞60秒 | 102.4 | 60.0秒 | 約15.8GB |
+| C 初回: xl-turbo・30秒（約9GBモデルDL込み） | 483.9 | 30.0秒 | 約16.0GB |
+| C 2回目: 同上（ウォーム） | 78.4 | 30.0秒 | 約15.9GB |
+
+注意: VRAMピークはアダプタ全体の値で他プロセス分を含む（ACE-Step単体値ではない）。計測時はComfyUI（約5.6GB）が稼働したまま開始し途中で終了、Ollamaも常駐のまま。ほぼ16GBを使い切るため、他の重量級処理との同時稼働は避けること。同一seedでもLM由来でbpmが実行ごとに変わる（A: 120/125）ため完全再現はしない。Cウォームはモデル切替読込を含む可能性あり。

@@ -71,4 +71,12 @@ export const explainInsight = (source, id, model) =>
 
 // ---- OpenAI互換APIのキー(発行はこのPCからのみ) ----
 export const fetchApiKeyStatus = () => fetch("/api-key", { cache: "no-store" }).then(jsonOrThrow);
-export const generateApiKey = () => fetch("/api-key/generate", { method: "POST" }).then(jsonOrThrow);
+const postModel = (url, model) =>
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(model ? { model } : {}),
+  }).then(jsonOrThrow);
+// model を渡すとそのモデル専用キー(要求はそのモデルに固定される)
+export const generateApiKey = (model = "") => postModel("/api-key/generate", model);
+export const revokeModelKey = (model) => postModel("/api-key/revoke", model);

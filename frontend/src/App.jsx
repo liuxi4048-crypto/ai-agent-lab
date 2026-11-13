@@ -686,7 +686,7 @@ export default function App() {
             </>
           )}
 
-          {!drafting && !benching && !insighting && !currentRun && (
+          {!drafting && !benching && !insighting && !connecting && !currentRun && (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-400">
               <Inbox size={36} strokeWidth={1.2} />
               <p className="text-sm">{runsLoaded ? "左の一覧からタスクを選ぶか、新しいタスクを開始してください" : "読み込み中…"}</p>
