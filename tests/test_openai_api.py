@@ -105,6 +105,68 @@ def test_generate_api_key_saves_and_keeps_other_settings(monkeypatch, tmp_path):
     assert openai_api.generate_api_key() != key
 
 
+def test_model_key_issue_reissue_revoke(monkeypatch, tmp_path):
+    f = tmp_path / "api_settings.json"
+    f.write_text('{"host": "0.0.0.0", "api_key": "common"}', encoding="utf-8")
+    monkeypatch.setattr(openai_api, "SETTINGS_FILE", f)
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    k1 = openai_api.generate_api_key("coder")
+    assert openai_api.model_keys() == {"coder": k1}
+    assert openai_api.api_key() == "common" and openai_api.bind_host() == "0.0.0.0"
+    k2 = openai_api.generate_api_key("coder")
+    assert k2 != k1 and openai_api.model_keys() == {"coder": k2}
+    assert openai_api.revoke_model_key("coder") is True
+    assert openai_api.revoke_model_key("coder") is False
+    assert openai_api.model_keys() == {} and openai_api.api_key() == "common"
+
+
+def test_auth_returns_bound_model(monkeypatch):
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    monkeypatch.setattr(openai_api, "_settings",
+                        lambda: {"api_key": "common", "model_keys": {"coder": "ck", "smart": "sk"}})
+    assert openai_api._check_auth(_FakeRequest({"authorization": "Bearer common"})) is None
+    assert openai_api._check_auth(_FakeRequest({"authorization": "Bearer ck"})) == "coder"
+    assert openai_api._check_auth(_FakeRequest({"authorization": "Bearer sk"})) == "smart"
+    for headers in ({}, {"authorization": "Bearer nope"}):
+        try:
+            openai_api._check_auth(_FakeRequest(headers))
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 401
+        else:
+            raise AssertionError("unknown key must be rejected")
+
+
+def test_model_key_alone_makes_auth_required(monkeypatch):
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    monkeypatch.setattr(openai_api, "_settings", lambda: {"model_keys": {"coder": "ck"}})
+    try:
+        openai_api._check_auth(_FakeRequest({}))
+    except Exception as e:
+        assert getattr(e, "status_code", None) == 401
+    else:
+        raise AssertionError("model key must make auth mandatory")
+
+
+def test_key_endpoints_reject_bad_json_and_last_key_revoke(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    f = tmp_path / "api_settings.json"
+    f.write_text('{"model_keys": {"coder": "ck"}}', encoding="utf-8")
+    monkeypatch.setattr(openai_api, "SETTINGS_FILE", f)
+    monkeypatch.delenv("AAL_API_KEY", raising=False)
+    monkeypatch.setattr(openai_api, "LOOPBACK", openai_api.LOOPBACK + ("testclient",))
+    app = FastAPI()
+    openai_api.register(app)
+    c = TestClient(app)
+    assert c.post("/api-key/generate", content="{broken").status_code == 400
+    assert openai_api.api_key() == ""  # 壊れた JSON で共通キーを作らない
+    assert c.post("/api-key/revoke", json={"model": "coder"}).status_code == 409
+    assert openai_api.model_keys() == {"coder": "ck"}
+    openai_api.generate_api_key("auto")
+    assert c.post("/api-key/revoke", json={"model": "coder"}).status_code == 200
+    assert c.post("/api-key/revoke", json={"model": "coder"}).status_code == 404
+
+
 def test_key_source(monkeypatch):
     monkeypatch.setattr(openai_api, "_settings", lambda: {})
     monkeypatch.delenv("AAL_API_KEY", raising=False)
