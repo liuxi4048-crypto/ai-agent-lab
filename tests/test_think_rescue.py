@@ -549,3 +549,45 @@ def test_critique_draft_normal_no_rescue(monkeypatch):
     assert bus.completed.get("node-answer") == "通常のドラフト"
     assert not any("思考救済" in line for line in bus.logs)
     assert bus.finished is None
+
+
+# ---- 第2段の上限が Run 単位の num_predict 指定で戻されない (2026-11-13) ----
+
+def _stage2_kwargs_via_real_stream(monkeypatch, make_orch, call):
+    captured = []
+
+    async def fake_chat_stream(cfg, key, messages, **kwargs):
+        captured.append(kwargs)
+        yield {"content": "本文"}
+        yield {"done": True, "meta": {}}
+
+    monkeypatch.setattr(orchestrator.llm, "chat_stream", fake_chat_stream)
+    orch = make_orch()
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "元のタスク"}]
+    rescue = _ThinkRescueAborted("考えたこと" * 10, 999, 3072)
+    asyncio.run(call(orch, messages, rescue))
+    return captured[-1]
+
+
+@pytest.mark.parametrize("override, expected", [(1000, 8192), (12000, 12000)])
+@pytest.mark.parametrize("path", ["direct", "aggregate", "cascade"])
+def test_rescue_stage2_budget_survives_gen_override(monkeypatch, path, override, expected):
+    gen = {"num_predict": override, "temperature": 0.3}
+    if path == "direct":
+        make = lambda: DirectOrchestrator(RunBus(), make_cfg(), "m1", gen_override=gen)
+        call = lambda o, m, r: o._rescue_answer("a1", m, r)
+    elif path == "aggregate":
+        make = lambda: Orchestrator(AggBus(), make_cfg(), "m1", gen_override=gen)
+        call = lambda o, m, r: o._rescue_aggregate("node-aggregator", m, r)
+    else:
+        make = lambda: CascadeOrchestrator(CascadeBus(), _cascade_cfg(), "m1", "fast",
+                                           gen_override=gen)
+        call = lambda o, m, r: o._rescue_answer("a1", m, r)
+    kw = _stage2_kwargs_via_real_stream(monkeypatch, make, call)
+    # 指定が下限未満なら底上げ後の 8192、下限以上ならその値。いずれも上書きで戻らない
+    assert kw["num_predict"] == expected
+    assert kw["think"] is False
+    # num_predict 以外の Run 単位指定は第2段にも効く
+    assert kw["temperature"] == 0.3
+    assert gen == {"num_predict": override, "temperature": 0.3}

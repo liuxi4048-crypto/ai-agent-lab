@@ -422,6 +422,20 @@ def _apply_think_floor(num_predict, tk, num_ctx, prompt_chars):
     return result, result > base, clamped
 
 
+def _rescue_stage2_budget(default, gen_override, num_ctx, prompt_chars):
+    """思考救済の第2段の (生成上限, 渡す gen_override) を返す。
+
+    Run 単位の num_predict 指定を底上げの起点に含めて上限を確定し、
+    _stream_llm で再び上書きされないよう num_predict を除いた
+    gen_override を返す (temperature 等の他の指定はそのまま効かせる)。
+    """
+    override = dict(gen_override or {})
+    base = override.pop("num_predict", None)
+    num_predict, _, _ = _apply_think_floor(
+        default if base is None else base, True, num_ctx, prompt_chars)
+    return num_predict, override
+
+
 # ---- 思考暴走の救済型自動発動 (2026-11-01) ----
 # 根拠: think-large-design-20261031/report-thinking-budget-variants.md の
 # 最終判断。通常は単発 think で走らせ、思考が暴走した引きだけを
@@ -829,15 +843,16 @@ class Orchestrator:
                 break
         prompt_chars = sum(len(m["content"]) for m in stage2
                            if isinstance(m.get("content"), str))
-        num_predict, _, _ = _apply_think_floor(
-            _AGGREGATE_NUM_PREDICT, True, info.get("num_ctx"), prompt_chars)
+        num_predict, override2 = _rescue_stage2_budget(
+            _AGGREGATE_NUM_PREDICT, self.gen_override, info.get("num_ctx"),
+            prompt_chars)
 
         async def gen2(msgs, early_abort):
             return await self._run_llm(
                 agg_id, msgs, num_predict=num_predict, think=False,
                 early_abort=(lang_guard.partial_is_contaminated
                              if early_abort else None),
-                gen_override=self.gen_override)
+                gen_override=override2)
 
         return await _guard_lang(bus, agg_id, stage2, gen2)
 
@@ -992,8 +1007,9 @@ class DirectOrchestrator:
                 break
         prompt_chars = sum(len(m["content"]) for m in stage2
                            if isinstance(m.get("content"), str))
-        num_predict, _, _ = _apply_think_floor(
-            _AGGREGATE_NUM_PREDICT, True, info.get("num_ctx"), prompt_chars)
+        num_predict, override2 = _rescue_stage2_budget(
+            _AGGREGATE_NUM_PREDICT, self.gen_override, info.get("num_ctx"),
+            prompt_chars)
 
         async def gen2(msgs, early_abort):
             return await _stream_llm(
@@ -1001,7 +1017,7 @@ class DirectOrchestrator:
                 num_predict=num_predict, think=False,
                 early_abort=(lang_guard.partial_is_contaminated
                              if early_abort else None),
-                gen_override=self.gen_override)
+                gen_override=override2)
 
         return await _guard_lang(bus, answer_id, stage2, gen2)
 
@@ -1375,8 +1391,9 @@ class CascadeOrchestrator:
                 break
         prompt_chars = sum(len(m["content"]) for m in stage2
                            if isinstance(m.get("content"), str))
-        num_predict, _, _ = _apply_think_floor(
-            _AGGREGATE_NUM_PREDICT, True, info.get("num_ctx"), prompt_chars)
+        num_predict, override2 = _rescue_stage2_budget(
+            _AGGREGATE_NUM_PREDICT, self.gen_override, info.get("num_ctx"),
+            prompt_chars)
 
         async def gen2(msgs, early_abort):
             return await _stream_llm(
@@ -1384,7 +1401,7 @@ class CascadeOrchestrator:
                 num_predict=num_predict, think=False,
                 early_abort=(lang_guard.partial_is_contaminated
                              if early_abort else None),
-                gen_override=self.gen_override)
+                gen_override=override2)
 
         return await _guard_lang(bus, answer_id, stage2, gen2)
 
